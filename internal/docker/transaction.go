@@ -300,6 +300,9 @@ func (m *Manager) Recover(ctx context.Context) error {
 		if err := m.recoverLocked(ctx); err != nil {
 			return err
 		}
+		if _, err := m.cleanupRecordTemps(); err != nil {
+			return err
+		}
 		if os.IsNotExist(statErr) {
 			m.maintainFiles()
 		}

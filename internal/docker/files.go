@@ -50,6 +50,10 @@ func privateDir(path string) error {
 	return dir.Chmod(0700)
 }
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	return atomicWriteWithPrefix(path, data, mode, ".docker-write-")
+}
+
+func atomicWriteWithPrefix(path string, data []byte, mode os.FileMode, prefix string) error {
 	if err := safePath(path); err != nil {
 		return err
 	}
@@ -61,7 +65,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	defer dir.Close()
-	f, err := dir.createTemp(".docker-write-")
+	f, err := dir.createTemp(prefix)
 	if err != nil {
 		return err
 	}

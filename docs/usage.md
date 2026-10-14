@@ -177,6 +177,8 @@ sudo proxydock cleanup --yes
 
 完整清理开始前会写入 `/var/lib/proxyforge/docker/xray-cleanup.json`。删除中途失败或进程中断时，记录保留，状态显示“清理未完成”；修复故障后再次执行 `proxydock cleanup --yes` 即可继续，完成后记录自动删除。清理尚未完成时拒绝部署及配置写入，请勿手动删除这份记录。
 
+清理记录使用专属临时文件名 `.xray-cleanup-write-<随机值>`，`recover` 和 `cleanup` 会回收安全属性符合要求的中断残片。旧 `.docker-write-*` 残片还须包含完整且属于本实例的清理记录；无法确认归属的文件保留并显示路径。清理完成后，仅回收为空的 `/opt/proxyforge`、`/var/lib/proxyforge/docker` 和 `/var/lib/proxyforge` 父目录，有其他数据的目录保留。实例锁文件保留以维持并发保护，管理程序、Docker 镜像和用户导出的配置也保留；清理结果会显示这些保留项及原因。
+
 ProxyDock 只清理自己的 Docker 实例，不协调原生内核清理。ProxyForge 的 `cleanup all` 保留历史 Docker 数据，由 `proxydock cleanup` 单独清理。Docker daemon 不可达且无法完成归属检查时，ProxyDock 拒绝清理。
 
 不自动删除 Docker Engine、共享镜像或其他容器，不运行全局 prune。

@@ -3,12 +3,10 @@ package docker
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"proxydock/internal/docker/model"
 )
@@ -658,9 +656,13 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 		}
 	}
 	if m.hasData() {
-		if err := saveJSON(m.paths.CleanupRecord(), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+		if err := m.saveCleanupRecord(); err != nil {
 			return err
 		}
+	}
+	retained, err := m.cleanupRecordTemps()
+	if err != nil {
+		return err
 	}
 	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
 		m.op(phaseApply, levelStep, "删除数据", path)
@@ -671,13 +673,16 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 	if err := removePrivateFile(m.paths.CleanupRecord()); err != nil {
 		return err
 	}
-	for _, path := range []string{filepath.Dir(m.paths.Data()), m.paths.resolve("/var/lib/proxyforge")} {
-		err := os.Remove(path)
-		if err != nil && !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTEMPTY) {
-			return err
-		}
+	if err := m.cleanupEmptyParents(); err != nil {
+		return err
 	}
-	m.op(phaseResult, levelResult, "清理结果", "其他容器和镜像未改动")
+	m.op(phaseResult, levelInfo, "保留锁文件", m.paths.Lock()+"（并发保护）")
+	m.op(phaseResult, levelInfo, "保留资源", "ProxyDock 程序、Docker 镜像及用户导出配置（超出本次数据清理范围）")
+	result := "实例数据已清理；其他容器和镜像未改动"
+	if retained > 0 {
+		result += fmt.Sprintf("；保留 %d 个无法确认安全删除的残留", retained)
+	}
+	m.op(phaseResult, levelResult, "清理结果", result)
 	return nil
 }
 

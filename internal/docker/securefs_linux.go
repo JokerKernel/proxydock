@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 func openSecureDir(path string, create bool) (*secureDir, error) {
@@ -65,6 +66,24 @@ func (d *secureDir) unlink(name string) error {
 	err := syscall.Unlinkat(int(d.Fd()), name)
 	if err != nil {
 		return &os.PathError{Op: "remove", Path: filepath.Join(d.Name(), name), Err: err}
+	}
+	return nil
+}
+
+// AT_REMOVEDIR removes only an empty directory; it never unlinks a file or
+// follows a symlink if the entry is replaced after the path check.
+func (d *secureDir) removeDir(name string) error {
+	if name != filepath.Base(name) || name == "." || name == ".." {
+		return fmt.Errorf("不安全目录名: %q", name)
+	}
+	p, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return err
+	}
+	const atRemovedir = 0x200
+	_, _, errno := syscall.Syscall(syscall.SYS_UNLINKAT, d.Fd(), uintptr(unsafe.Pointer(p)), atRemovedir)
+	if errno != 0 {
+		return &os.PathError{Op: "remove directory", Path: filepath.Join(d.Name(), name), Err: errno}
 	}
 	return nil
 }

@@ -367,6 +367,8 @@ func TestUnchangedSettingsSkipBackupMaintenance(t *testing.T) {
 func TestBackupPruningRetainsReferencesFromNewestSnapshots(t *testing.T) {
 	m, _ := deployed(t)
 	snaps := managedSnapshots(t, m)
+	// Keep these newer than deployment backups regardless of the calendar date.
+	stamp := m.now().UTC().Add(time.Second)
 	for i := 0; i < 6; i++ {
 		copy := append([]fileSnapshot(nil), snaps...)
 		for j := range copy {
@@ -380,7 +382,7 @@ func TestBackupPruningRetainsReferencesFromNewestSnapshots(t *testing.T) {
 				}
 			}
 		}
-		name := fmt.Sprintf("20261014T140000.%09dZ-aaaaaaaaaaaa", i)
+		name := stamp.Add(time.Duration(i)*time.Nanosecond).Format("20060102T150405.000000000Z") + "-aaaaaaaaaaaa"
 		if err := saveJSON(filepath.Join(m.paths.Backups(), name, "snapshot.json"), copy); err != nil {
 			t.Fatal(err)
 		}
