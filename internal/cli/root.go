@@ -35,9 +35,6 @@ func newCommandWithUpdater(version string, opts docker.Options, update func(cont
 			}).Run(ctx, options)
 		}
 	}
-	opts.ProgramManagement = func(ctx context.Context, action string) error {
-		return update(ctx, selfupdate.Options{Uninstall: action == "uninstall", AssumeYes: true})
-	}
 	root = docker.New(opts).Command()
 	root.Version = version
 	root.SetVersionTemplate("{{.Name}} {{.Version}}\n")

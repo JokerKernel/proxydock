@@ -47,7 +47,7 @@ sudo proxydock update --version VERSION --force
 sudo proxydock update --version VERSION --allow-downgrade
 ```
 
-`update` 使用随当前程序内置的安装脚本；不在运行时下载并执行 main 分支的新脚本。可在中文菜单第 7 项执行更新，更新流程成功后退出，重新运行 `proxydock` 使用新程序。
+`update` 使用随当前程序内置的安装脚本；不在运行时下载并执行 main 分支的新脚本。更新流程成功后，重新运行 `proxydock` 使用新程序。
 
 默认安装目标为 `/usr/local/sbin/proxydock`，即使从源码目录运行 `./proxydock update`，也更新这个目标。自定义安装位置需要在后续更新和卸载时提供同一个 `PROXYDOCK_INSTALL_DIR`。
 
@@ -75,7 +75,7 @@ sudo proxydock uninstall --yes
 sudo bash /tmp/proxydock-install.sh uninstall --yes
 ```
 
-交互卸载需要确认，非交互卸载必须提供 `--yes`。菜单第 8 项也可卸载。卸载只删除安装目标中的 ProxyDock 二进制；已卸载时再次执行会直接返回。
+交互卸载需要确认，非交互卸载必须提供 `--yes`。卸载只删除安装目标中的 ProxyDock 二进制；已卸载时再次执行会直接返回。
 
 若需要移除 Docker 实例及数据，先使用 `proxydock remove --yes`，再按需执行 `proxydock cleanup --yes`，最后卸载程序。
 

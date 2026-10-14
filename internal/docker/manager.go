@@ -39,29 +39,26 @@ type Options struct {
 	HealthCheck func(context.Context, []int, string) error
 	PortFree    func(int) error
 	HTTPClient  *http.Client
-	// Optional entry-layer program management, separate from Xray image updates.
-	ProgramManagement func(context.Context, string) error
 }
 
 type Manager struct {
-	paths             Paths
-	runner            Runner
-	out, errOut       io.Writer
-	now               func() time.Time
-	rootCheck         func() error
-	lookPath          func(string) (string, error)
-	targetCheck       func(context.Context, string, string, string) error
-	healthCheck       func(context.Context, []int, string) error
-	portFree          func(int) error
-	http              *http.Client
-	codec             *xray.Codec
-	stateWrite        func(string, []byte, os.FileMode) error
-	physicalIPs       func() ([]publicAddress, error)
-	externalIP        func(context.Context) (string, error)
-	probeSNI          func(context.Context, []string, string, int) ([]sniCandidate, error)
-	quietDockerNotes  bool
-	programManagement func(context.Context, string) error
-	review            *ui
+	paths            Paths
+	runner           Runner
+	out, errOut      io.Writer
+	now              func() time.Time
+	rootCheck        func() error
+	lookPath         func(string) (string, error)
+	targetCheck      func(context.Context, string, string, string) error
+	healthCheck      func(context.Context, []int, string) error
+	portFree         func(int) error
+	http             *http.Client
+	codec            *xray.Codec
+	stateWrite       func(string, []byte, os.FileMode) error
+	physicalIPs      func() ([]publicAddress, error)
+	externalIP       func(context.Context) (string, error)
+	probeSNI         func(context.Context, []string, string, int) ([]sniCandidate, error)
+	quietDockerNotes bool
+	review           *ui
 }
 
 func New(opts Options) *Manager {
@@ -94,7 +91,6 @@ func New(opts Options) *Manager {
 		m.portFree = checkPortFree
 	}
 	m.stateWrite = atomicWrite
-	m.programManagement = opts.ProgramManagement
 	if m.healthCheck == nil {
 		m.healthCheck = m.waitHealthy
 	}
