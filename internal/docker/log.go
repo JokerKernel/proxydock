@@ -51,15 +51,21 @@ func (m *Manager) breakOp() {
 }
 
 func (m *Manager) dockerOp(ctx context.Context, label opLabel, args ...string) ([]byte, error) {
+	callCtx, stop := m.callContext(ctx)
+	defer stop()
 	full := append([]string{"--host", endpoint}, args...)
 	m.logDockerCommand(label, full)
-	return m.runner.Run(ctx, "docker", full...)
+	out, err := m.runner.Run(callCtx, "docker", full...)
+	return out, interruptedCall(ctx, callCtx, err)
 }
 
 func (m *Manager) dockerStreamOp(ctx context.Context, label opLabel, out, errOut io.Writer, args ...string) error {
+	callCtx, stop := m.callContext(ctx)
+	defer stop()
 	full := append([]string{"--host", endpoint}, args...)
 	m.logDockerCommand(label, full)
-	return m.runner.RunStreaming(ctx, out, errOut, "docker", full...)
+	err := m.runner.RunStreaming(callCtx, out, errOut, "docker", full...)
+	return interruptedCall(ctx, callCtx, err)
 }
 
 func (m *Manager) composeOp(ctx context.Context, label opLabel, args ...string) ([]byte, error) {

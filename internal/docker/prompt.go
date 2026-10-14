@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -118,7 +119,14 @@ func (u *ui) chooseNumberInput(label string, min, max, def int, cancelable bool)
 		} else {
 			fmt.Fprintf(u.out, "%s：", prompt)
 		}
-		line, err := u.reader.ReadString('\n')
+		line, err := u.readLine()
+		if errors.Is(err, errInterrupted) {
+			fmt.Fprintln(u.out)
+			if cancelable || min > 0 {
+				return 0, errCancelled
+			}
+			return 0, nil
+		}
 		if err != nil && len(line) == 0 {
 			return 0, err
 		}
@@ -171,7 +179,11 @@ func (u *ui) ask(label, def string) (string, error) {
 	} else {
 		fmt.Fprintf(u.out, "%s: ", label)
 	}
-	line, err := u.reader.ReadString('\n')
+	line, err := u.readLine()
+	if errors.Is(err, errInterrupted) {
+		fmt.Fprintln(u.out)
+		return "", errCancelled
+	}
 	if err != nil && len(line) == 0 {
 		return "", err
 	}
@@ -203,7 +215,11 @@ func (u *ui) confirmChoice(message string, defaultYes bool) error {
 		} else {
 			fmt.Fprint(u.out, "确认操作？[Y/1=确认，Q/0=返回]： ")
 		}
-		line, err := u.reader.ReadString('\n')
+		line, err := u.readLine()
+		if errors.Is(err, errInterrupted) {
+			fmt.Fprintln(u.out)
+			return errCancelled
+		}
 		if err != nil && len(line) == 0 {
 			return err
 		}
@@ -250,6 +266,17 @@ func (u *ui) confirmationPanel(title string, details []string, sections ...confi
 		}
 	}
 	fmt.Fprintln(u.out, "----------------------------------------")
+}
+
+func (u *ui) readLine() (string, error) {
+	if u.intrR == nil || u.signals == nil {
+		return u.reader.ReadString('\n')
+	}
+	if u.signals.takeLatch() {
+		u.discardPendingInput()
+		return "", errInterrupted
+	}
+	return u.readLineInterruptible()
 }
 
 func (u *ui) discardBufferedInput() bool {

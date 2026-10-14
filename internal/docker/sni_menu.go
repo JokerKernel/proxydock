@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -281,7 +282,13 @@ func (u *ui) readSNIPageChoice(total, page, pages int, opts sniPageOptions) (str
 	invalidShown := false
 	for {
 		fmt.Fprintf(u.out, "%s：", prompt)
-		line, err := u.reader.ReadString('\n')
+		line, err := u.readLine()
+		if errors.Is(err, errInterrupted) {
+			if opts.AllowBack {
+				return sniPageActionBack, 0, nil
+			}
+			return sniPageActionCancel, 0, nil
+		}
 		if err != nil && len(line) == 0 {
 			return "", 0, err
 		}

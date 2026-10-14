@@ -15,6 +15,14 @@ import (
 	"proxydock/internal/docker/model"
 )
 
+func (m *Manager) consumeInterrupt(err error) (error, bool) {
+	if !errors.Is(err, errInterrupted) {
+		return err, false
+	}
+	m.op(phaseResult, levelResult, "操作结果", "已取消")
+	return nil, true
+}
+
 func (m *Manager) askGenerate(input io.Reader, opts model.GenerateOptions) (model.GenerateOptions, error) {
 	return m.askGenerateUI(context.Background(), newUI(input, m.out), opts)
 }
@@ -24,6 +32,8 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		return err
 	}
 	u := newUI(input, m.out)
+	detachSignals := attachMenuSignals(ctx, u)
+	defer detachSignals()
 	previous := m.review
 	m.review = u
 	defer func() { m.review = previous }()
@@ -79,6 +89,10 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		}
 		if errors.Is(err, errBack) {
 			continue
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+			shouldPause = true
 		}
 		cancelled := errors.Is(err, errCancelled)
 		if cancelled {
@@ -354,6 +368,10 @@ func (m *Manager) configMenu(ctx context.Context, u *ui) error {
 		if errors.Is(err, errCancelled) {
 			continue
 		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+			shouldPause = true
+		}
 		if err != nil && ctx.Err() == nil {
 			m.printMenuError(err)
 		}
@@ -580,6 +598,10 @@ func (m *Manager) modifyMenu(ctx context.Context, u *ui) error {
 		}
 		if errors.Is(err, errCancelled) {
 			continue
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+			shouldPause = true
 		}
 		if err != nil {
 			m.printMenuError(err)
@@ -830,6 +852,9 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 				fmt.Fprintln(m.out)
 			}
 			err = e
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
 		}
 		if err != nil && ctx.Err() == nil {
 			m.printMenuError(err)
