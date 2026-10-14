@@ -91,7 +91,7 @@ sudo proxydock config reset --rotate-certificate --yes
 
 DNS 支持 `system`、`public-cloudflare`、`public-google`、`doh-cloudflare`、`doh-google`；地址族策略支持 `prefer-ipv4`、`prefer-ipv6`、`ipv4-only`、`ipv6-only`、`unset`。
 
-编辑器打开候选副本，校验通过后才提交正式文件。受管 UUID、密钥、端口、SNI 与证书引用通过专用入口修改，手动编辑破坏这些字段时会拒绝提交。其他无关 JSON 字段可保留。
+编辑器打开候选副本，校验通过后才提交正式文件。主节点和落地线路的受管 UUID、密钥、监听地址、端口、传输方式、SNI 与证书引用，以及 REALITY 回落入站和目标，通过专用入口修改；手动编辑破坏这些字段时会拒绝提交。其他无关 JSON 字段可保留。
 
 切换已有主节点协议且有线路时，需要先移除线路或显式使用 `--drop-links`。`--rotate-credentials` 与 `--rotate-certificate` 可用于生成过程中主动轮换。
 
@@ -135,7 +135,7 @@ sudo proxydock config landing peer upstream --output /root/upstream-peer.json
 
 导出支持主节点、启用的落地接入和中转线路；文件默认以 `0600` 权限创建，覆盖已有导出文件需要 `--force`。服务端配置、客户端和 peer 信息包含凭据，应妥善保存。
 
-客户端配置从本地受管配置生成，不调用 Docker；原生 JSON 为 Xray 格式。存在未完成事务时，客户端导出和服务端配置校验会提示先执行 `proxydock recover`，不会自动恢复或重建业务容器。
+客户端配置从本地受管配置生成，不调用 Docker；原生 JSON 为 Xray 格式。存在未完成事务时，客户端导出、落地 peer 导出、名单/线路列表和服务端配置校验会提示先执行 `proxydock recover`，不会自动恢复或重建业务容器。
 
 ## 服务、升级与恢复
 
@@ -155,6 +155,8 @@ sudo proxydock recover
 升级先拉取镜像并校验当前配置，再重建容器，保留节点凭据、证书、名单和线路。运行中的实例重建后核验镜像、监听端口和持续运行情况；已停止实例升级后保持停止。
 
 配置或升级失败时恢复旧文件和原运行状态。回滚无法完成会保留恢复记录并显示错误；下次写操作会尝试恢复，也可显式执行 `recover`。不要手动删除 `transaction.json` 或它引用的备份。
+
+名单的增加、删除、模式和开关变更会在恢复事务后，基于最新已提交状态执行，防止恢复结果被旧名单覆盖。删除 TLS 落地线路后可以同名重建；重建使用新证书目录，旧证书保留供历史恢复记录使用。
 
 镜像更新仍会拉取选定标签确认 digest；镜像未变化时跳过能力探测和容器重建。重复设置相同策略、启动已运行实例或停止已停止实例时，会跳过不必要的校验和事务。日志直接从已核验归属的容器读取，不依赖 Compose 文件是否完整。
 

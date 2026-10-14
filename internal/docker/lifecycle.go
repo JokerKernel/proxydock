@@ -707,6 +707,9 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 		}
 		var state State
 		if action != "stop" {
+			if in != nil && in.Image != md.ImageID {
+				return fmt.Errorf("实际容器镜像与记录不一致")
+			}
 			var b []byte
 			state, b, err = m.managedConfig()
 			if err != nil {

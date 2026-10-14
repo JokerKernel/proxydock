@@ -219,7 +219,23 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 		s.Detail = err.Error()
 		return s, err
 	}
-	in, err := m.inspect(ctx)
+	pending := false
+	if _, err := os.Lstat(m.paths.Journal()); err == nil {
+		if err = safePath(m.paths.Journal()); err != nil {
+			s.Label, s.Detail = "异常", err.Error()
+			return s, err
+		}
+		pending = true
+	} else if !os.IsNotExist(err) {
+		s.Label, s.Detail = "异常", err.Error()
+		return s, err
+	}
+	check := m.checkOwned
+	if pending {
+		// A transaction can leave new Compose files beside the old container.
+		check = m.checkOwnedIdentity
+	}
+	in, err := m.inspectWithCheck(ctx, check)
 	if err != nil {
 		s.Label = "异常"
 		var queryErr *dockerQueryError
@@ -229,16 +245,9 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 		s.Detail = err.Error()
 		return s, err
 	}
-	if _, err = os.Lstat(m.paths.Journal()); err == nil {
-		if err = safePath(m.paths.Journal()); err != nil {
-			s.Label = "异常"
-			s.Detail = err.Error()
-			return s, err
-		}
+	if pending {
 		s.Label = "需恢复"
 		return s, nil
-	} else if !os.IsNotExist(err) {
-		return s, err
 	}
 	md, metaErr := m.metadata()
 	if metaErr != nil && !os.IsNotExist(metaErr) {

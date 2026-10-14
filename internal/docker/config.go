@@ -626,6 +626,13 @@ func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) erro
 	if err != nil {
 		return err
 	}
+	return m.updatePolicy(ctx, func(model.AccessPolicy) (model.AccessPolicy, error) {
+		return normalized, nil
+	})
+}
+
+// Read and change the policy under the same lock, after transaction recovery.
+func (m *Manager) updatePolicy(ctx context.Context, change func(model.AccessPolicy) (model.AccessPolicy, error)) error {
 	return m.withLock(ctx, func() error {
 		if err := m.recoverLocked(ctx); err != nil {
 			return err
@@ -639,6 +646,14 @@ func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) erro
 		}
 		old := s.Node
 		current, err := old.AccessPolicy.Normalize()
+		if err != nil {
+			return err
+		}
+		policy, err := change(current)
+		if err != nil {
+			return err
+		}
+		normalized, err := policy.Normalize()
 		if err != nil {
 			return err
 		}
@@ -829,6 +844,9 @@ func (m *Manager) prepareEditedConfig(data []byte, node model.Node) ([]byte, err
 	if _, err = m.codec.PatchServer(data, original, original, false); err != nil {
 		return nil, fmt.Errorf("编辑破坏了受管节点身份: %w", err)
 	}
+	if _, err = m.codec.PatchLinks(data, original, original); err != nil {
+		return nil, fmt.Errorf("编辑破坏了受管线路: %w", err)
+	}
 	if node.AccessPolicy.Active() {
 		var e error
 		data, e = m.codec.PatchAccessPolicy(data, original, original)
@@ -841,46 +859,133 @@ func (m *Manager) prepareEditedConfig(data []byte, node model.Node) ([]byte, err
 	}
 	return data, nil
 }
+
+type managedInbound struct {
+	Tag      string
+	Listen   string
+	Protocol string
+	Port     int
+	Stream   map[string]json.RawMessage `json:"streamSettings"`
+	Settings json.RawMessage
+}
+
 func managedEndpointMatches(data []byte, n model.Node) error {
 	var root struct {
-		Inbounds []struct {
-			Tag      string
-			Port     int
-			Stream   map[string]json.RawMessage `json:"streamSettings"`
-			Settings json.RawMessage
-		}
+		Inbounds []managedInbound
 	}
 	if err := json.Unmarshal(data, &root); err != nil {
 		return err
 	}
-	found := 0
+	if err := managedPrimaryEndpointMatches(root.Inbounds, n); err != nil {
+		return err
+	}
+	var primary managedInbound
 	for _, in := range root.Inbounds {
+		if in.Tag == n.InboundTag {
+			primary = in
+		}
+	}
+	for _, access := range n.LandingAccesses {
+		if access.UsesPrimaryInbound() {
+			if err := managedClientMatches(primary.Settings, access.UserName, access.UUID, access.Enabled); err != nil {
+				return err
+			}
+			continue
+		}
+		tag := model.LandingTLSInboundTag(access.Name)
+		if !access.Enabled {
+			for _, in := range root.Inbounds {
+				if in.Tag == tag {
+					return fmt.Errorf("已禁用的受管 TLS 落地入站仍存在: %s", access.Name)
+				}
+			}
+			continue
+		}
+		endpoint := model.Node{InboundTag: tag, Port: access.Port, Security: "tls", UUID: access.UUID, UserName: access.UserName, TLSCertificate: &access}
+		if err := managedPrimaryEndpointMatches(root.Inbounds, endpoint); err != nil {
+			return fmt.Errorf("TLS 落地接入 %s: %w", access.Name, err)
+		}
+	}
+	for _, relay := range n.RelayLinks {
+		if err := managedClientMatches(primary.Settings, relay.UserName, relay.UUID, relay.Enabled); err != nil {
+			return err
+		}
+	}
+	if n.XrayFallbackGuard {
+		host, rawPort, err := net.SplitHostPort(n.Target)
+		if err != nil {
+			return err
+		}
+		port, err := strconv.Atoi(rawPort)
+		if err != nil {
+			return err
+		}
+		found := 0
+		for _, in := range root.Inbounds {
+			if in.Tag != "fallback-in" {
+				continue
+			}
+			found++
+			var settings struct {
+				Address string
+				Port    int
+				Network string
+			}
+			if json.Unmarshal(in.Settings, &settings) != nil || in.Listen != "127.0.0.1" || in.Port != n.XrayFallbackPort || in.Protocol != "tunnel" || settings.Address != host || settings.Port != port || settings.Network != "tcp" {
+				return fmt.Errorf("受管回落入站或目标已改变，请使用生成配置或重置入口")
+			}
+		}
+		if found != 1 {
+			return fmt.Errorf("受管回落入站必须唯一存在")
+		}
+	}
+	return nil
+}
+
+func managedClientMatches(data []byte, name, uuid string, enabled bool) error {
+	var settings struct {
+		Clients []struct {
+			ID    string
+			Email string
+			Flow  string
+		}
+	}
+	if json.Unmarshal(data, &settings) != nil {
+		return fmt.Errorf("受管客户端列表无效")
+	}
+	found := 0
+	for _, client := range settings.Clients {
+		if client.Email == name || client.ID == uuid {
+			found++
+			if client.ID != uuid || client.Email != name || client.Flow != model.VisionFlow {
+				return fmt.Errorf("受管用户 %s 的 UUID、用户名或 flow 已改变，请使用专用入口", name)
+			}
+		}
+	}
+	want := 0
+	if enabled {
+		want = 1
+	}
+	if found != want {
+		return fmt.Errorf("受管用户 %s 的数量与启用状态不一致", name)
+	}
+	return nil
+}
+
+func managedPrimaryEndpointMatches(inbounds []managedInbound, n model.Node) error {
+	found := 0
+	for _, in := range inbounds {
 		if in.Tag == n.InboundTag {
 			found++
 			if in.Port != n.Port {
 				return fmt.Errorf("请通过生成配置入口修改受管端口")
 			}
-			var settings struct {
-				Clients []struct {
-					ID    string
-					Email string
-					Flow  string
-				}
+			var network string
+			if in.Listen != "0.0.0.0" || in.Protocol != "vless" || json.Unmarshal(in.Stream["network"], &network) != nil || network != "raw" && network != "tcp" {
+				return fmt.Errorf("受管监听地址、协议或传输方式已改变")
 			}
-			if json.Unmarshal(in.Settings, &settings) != nil {
-				return fmt.Errorf("受管客户端列表无效")
-			}
-			managedClients := 0
-			for _, client := range settings.Clients {
-				if client.Email == n.UserName || client.ID == n.UUID {
-					managedClients++
-					if client.ID != n.UUID || client.Email != n.UserName || client.Flow != model.VisionFlow {
-						return fmt.Errorf("受管 UUID、用户名或 flow 已改变，请使用重置入口")
-					}
-				}
-			}
-			if managedClients != 1 {
-				return fmt.Errorf("受管主客户端必须唯一存在")
+			if err := managedClientMatches(in.Settings, n.UserName, n.UUID, true); err != nil {
+				return err
 			}
 			var security string
 			if json.Unmarshal(in.Stream["security"], &security) != nil || security != model.NormalizeLandingSecurity(n.Security) {

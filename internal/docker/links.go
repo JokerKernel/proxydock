@@ -295,10 +295,11 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 	})
 }
 func (m *Manager) Peer(name string) (model.LandingPeer, error) {
-	if err := m.rootCheck(); err != nil {
-		return model.LandingPeer{}, err
-	}
-	s, _, err := m.managedConfig()
+	return m.peer(context.Background(), name)
+}
+
+func (m *Manager) peer(ctx context.Context, name string) (model.LandingPeer, error) {
+	s, err := m.readManagedState(ctx)
 	if err != nil {
 		return model.LandingPeer{}, err
 	}
@@ -306,6 +307,18 @@ func (m *Manager) Peer(name string) (model.LandingPeer, error) {
 		if a.Name == name {
 			if !a.Enabled {
 				return model.LandingPeer{}, fmt.Errorf("落地接入已禁用")
+			}
+			if !a.UsesPrimaryInbound() {
+				if err := m.validateCertificate(a); err != nil {
+					return model.LandingPeer{}, err
+				}
+			} else if s.Node.IsTLS() {
+				if s.Node.TLSCertificate == nil {
+					return model.LandingPeer{}, fmt.Errorf("TLS 节点缺少证书")
+				}
+				if err := m.validateCertificate(*s.Node.TLSCertificate); err != nil {
+					return model.LandingPeer{}, err
+				}
 			}
 			return landingPeer(s.Node, a), nil
 		}

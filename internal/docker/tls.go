@@ -48,8 +48,18 @@ func (m *Manager) newCertificate(name string) (model.LandingAccess, error) {
 		return model.LandingAccess{}, fmt.Errorf("证书名称无效")
 	}
 	dir := filepath.Join(m.paths.TLS(), name)
-	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
-		return model.LandingAccess{}, fmt.Errorf("证书目录已存在或不可访问")
+	if _, err := os.Lstat(dir); err == nil {
+		// Keep old certificates available to historical transaction snapshots.
+		suffix, err := randomHex(12)
+		if err != nil {
+			return model.LandingAccess{}, err
+		}
+		dir = filepath.Join(m.paths.TLS(), name+"-"+suffix)
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			return model.LandingAccess{}, fmt.Errorf("证书目录已存在或不可访问")
+		}
+	} else if !os.IsNotExist(err) {
+		return model.LandingAccess{}, err
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -99,7 +109,13 @@ func (m *Manager) newCertificate(name string) (model.LandingAccess, error) {
 	return model.LandingAccess{Name: name, Security: "tls", SNI: sni, CertificateFile: certFile, KeyFile: keyFile, CertificateSHA256: digest(der), CertificatePublicKeySHA256: base64.StdEncoding.EncodeToString(pubHash[:]), UpdatedAt: now, Enabled: true}, nil
 }
 func (m *Manager) validateCertificate(a model.LandingAccess) error {
-	if !namePattern.MatchString(a.Name) || filepath.Clean(a.CertificateFile) != filepath.Join(m.paths.TLS(), a.Name, "cert.pem") || filepath.Clean(a.KeyFile) != filepath.Join(m.paths.TLS(), a.Name, "key.pem") {
+	name := filepath.Base(filepath.Dir(a.CertificateFile))
+	validName := name == a.Name
+	if suffix, ok := strings.CutPrefix(name, a.Name+"-"); ok && len(suffix) == 24 {
+		decoded, err := hex.DecodeString(suffix)
+		validName = err == nil && len(decoded) == 12 && strings.ToLower(suffix) == suffix
+	}
+	if !namePattern.MatchString(a.Name) || !validName || filepath.Clean(a.CertificateFile) != filepath.Join(m.paths.TLS(), name, "cert.pem") || filepath.Clean(a.KeyFile) != filepath.Join(m.paths.TLS(), name, "key.pem") {
 		return fmt.Errorf("证书不属于 Docker 模块")
 	}
 	for _, p := range []string{a.CertificateFile, a.KeyFile} {
@@ -141,8 +157,9 @@ func (m *Manager) renderNode(n model.Node) (model.Node, error) {
 		if err := m.validateCertificate(*a); err != nil {
 			return err
 		}
-		a.CertificateFile = "/etc/xray/tls/" + a.Name + "/cert.pem"
-		a.KeyFile = "/etc/xray/tls/" + a.Name + "/key.pem"
+		name := filepath.Base(filepath.Dir(a.CertificateFile))
+		a.CertificateFile = "/etc/xray/tls/" + name + "/cert.pem"
+		a.KeyFile = "/etc/xray/tls/" + name + "/key.pem"
 		return nil
 	}
 	if rendered.TLSCertificate != nil {

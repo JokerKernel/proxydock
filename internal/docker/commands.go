@@ -214,74 +214,77 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 func (m *Manager) accessCommand() *cobra.Command {
 	var exact bool
 	cmd := &cobra.Command{Use: "access <list|mode|switch|add|remove|clear> [args]", Short: "白名单、黑名单和访问模式", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		s, _, err := m.managedConfig()
-		if err != nil {
-			return err
-		}
-		policy := s.Node.AccessPolicy
-		switch args[0] {
-		case "list":
+		if args[0] == "list" {
 			if len(args) != 1 {
 				return fmt.Errorf("list 不接受参数")
 			}
-			b, _ := jsonBytes(policy)
+			s, err := m.readManagedState(cmd.Context())
+			if err != nil {
+				return err
+			}
+			b, _ := jsonBytes(s.Node.AccessPolicy)
 			fmt.Fprint(m.out, string(b))
 			return nil
-		case "mode":
-			if len(args) != 2 {
-				return fmt.Errorf("mode <default|whitelist>")
+		}
+		change, err := accessPolicyChange(args, exact)
+		if err != nil {
+			return err
+		}
+		return m.updatePolicy(cmd.Context(), change)
+	}}
+	cmd.Flags().BoolVar(&exact, "exact", false, "域名精确匹配")
+	return cmd
+}
+
+// Validate arguments before locking or recovering, then apply them to fresh state.
+func accessPolicyChange(args []string, exact bool) (func(model.AccessPolicy) (model.AccessPolicy, error), error) {
+	switch args[0] {
+	case "mode":
+		if len(args) != 2 || args[1] != model.AccessModeDefault && args[1] != model.AccessModeWhitelist {
+			return nil, fmt.Errorf("mode <default|whitelist>")
+		}
+		return func(p model.AccessPolicy) (model.AccessPolicy, error) { p.Mode = args[1]; return p, nil }, nil
+	case "switch":
+		if len(args) != 2 || args[1] != "on" && args[1] != "off" {
+			return nil, fmt.Errorf("switch <on|off>")
+		}
+		return func(p model.AccessPolicy) (model.AccessPolicy, error) { p.Disabled = args[1] == "off"; return p, nil }, nil
+	case "clear":
+		if len(args) != 2 || args[1] != "white" && args[1] != "black" {
+			return nil, fmt.Errorf("clear <white|black>")
+		}
+		return func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.ClearList(args[1]) }, nil
+	case "add", "remove":
+		if len(args) < 3 || args[1] != "white" && args[1] != "black" {
+			return nil, fmt.Errorf("add/remove <white|black> <域名/IP/CIDR...>")
+		}
+		entries, err := model.ParseAccessEntries(strings.Join(args[2:], " "), exact)
+		if err != nil {
+			return nil, err
+		}
+		return func(p model.AccessPolicy) (model.AccessPolicy, error) {
+			list := &p.Whitelist
+			if args[1] == "black" {
+				list = &p.Blacklist
 			}
-			policy.Mode = args[1]
-		case "switch":
-			if len(args) != 2 || args[1] != "on" && args[1] != "off" {
-				return fmt.Errorf("switch <on|off>")
-			}
-			policy.Disabled = args[1] == "off"
-		case "clear":
-			if len(args) != 2 {
-				return fmt.Errorf("clear <white|black>")
-			}
-			policy, err = policy.ClearList(args[1])
-			if err != nil {
-				return err
-			}
-		case "add", "remove":
-			if len(args) < 3 {
-				return fmt.Errorf("add/remove <white|black> <域名/IP/CIDR...>")
-			}
-			entries, err := model.ParseAccessEntries(strings.Join(args[2:], " "), exact)
-			if err != nil {
-				return err
-			}
-			var list *[]model.AccessEntry
-			switch args[1] {
-			case "white":
-				list = &policy.Whitelist
-			case "black":
-				list = &policy.Blacklist
-			default:
-				return fmt.Errorf("名单类型无效")
-			}
-			for _, e := range entries {
+			for _, entry := range entries {
 				if args[0] == "add" {
-					*list = append(*list, e)
+					*list = append(*list, entry)
 				} else {
 					filtered := (*list)[:0]
-					for _, v := range *list {
-						if v != e {
-							filtered = append(filtered, v)
+					for _, value := range *list {
+						if value != entry {
+							filtered = append(filtered, value)
 						}
 					}
 					*list = filtered
 				}
 			}
-		default:
-			return fmt.Errorf("访问策略操作无效")
-		}
-		return m.SetPolicy(cmd.Context(), policy)
-	}}
-	cmd.Flags().BoolVar(&exact, "exact", false, "域名精确匹配")
-	return cmd
+			return p, nil
+		}, nil
+	default:
+		return nil, fmt.Errorf("访问策略操作无效")
+	}
 }
 func (m *Manager) landingCommand() *cobra.Command {
 	var security string
@@ -292,7 +295,7 @@ func (m *Manager) landingCommand() *cobra.Command {
 			if len(args) != 1 {
 				return fmt.Errorf("list 不接受名称")
 			}
-			s, _, err := m.managedConfig()
+			s, err := m.readManagedState(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -309,7 +312,7 @@ func (m *Manager) landingCommand() *cobra.Command {
 		case "add":
 			peer, err = m.AddLanding(cmd.Context(), args[1], security, port)
 		case "peer":
-			peer, err = m.Peer(args[1])
+			peer, err = m.peer(cmd.Context(), args[1])
 		case "enable", "disable", "remove":
 			return m.ChangeLink(cmd.Context(), "landing", args[1], args[0])
 		default:
@@ -337,7 +340,7 @@ func (m *Manager) relayCommand() *cobra.Command {
 			if len(args) != 1 {
 				return fmt.Errorf("list 不接受名称")
 			}
-			s, _, err := m.managedConfig()
+			s, err := m.readManagedState(cmd.Context())
 			if err != nil {
 				return err
 			}

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -118,6 +119,22 @@ func (m *Manager) managedConfig() (State, []byte, error) {
 		return s, nil, fmt.Errorf("配置与受管状态不一致；请重新生成配置或通过编辑入口恢复一致性")
 	}
 	return s, b, nil
+}
+
+func (m *Manager) readManagedState(ctx context.Context) (State, error) {
+	var state State
+	err := m.withLock(ctx, func() error {
+		if err := m.checkNoTransaction(); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
+			return err
+		}
+		var err error
+		state, _, err = m.managedConfig()
+		return err
+	})
+	return state, err
 }
 
 // Read-only operations must not recover a transaction or consume partial state.

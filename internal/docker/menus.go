@@ -1028,7 +1028,7 @@ func (m *Manager) printClient(ctx context.Context, u *ui, format, name string) e
 
 func (m *Manager) accessMenu(ctx context.Context, u *ui) error {
 	for {
-		s, _, err := m.managedConfig()
+		s, err := m.readManagedState(ctx)
 		if err != nil {
 			return err
 		}
@@ -1066,7 +1066,10 @@ func (m *Manager) accessMenu(ctx context.Context, u *ui) error {
 				message = "启用访问控制？按保存的模式和两份名单应用规则。"
 			}
 			if err = u.confirm(message); err == nil {
-				err = m.SetPolicy(ctx, next)
+				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) {
+					p.Disabled = next.Disabled
+					return p, nil
+				})
 			}
 		}
 		if errors.Is(err, errCancelled) {
@@ -1098,7 +1101,7 @@ func (m *Manager) printAccessCard(u *ui, policy model.AccessPolicy) {
 }
 
 func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
-	s, _, err := m.managedConfig()
+	s, err := m.readManagedState(ctx)
 	if err != nil {
 		return err
 	}
@@ -1132,7 +1135,10 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 	if err = u.confirm("将访问模式切换为" + accessModeLabel(policy.Mode) + "？"); err != nil {
 		return err
 	}
-	return m.SetPolicy(ctx, policy)
+	return m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) {
+		p.Mode = policy.Mode
+		return p, nil
+	})
 }
 
 func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) error {
@@ -1141,7 +1147,7 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 		name = "黑名单"
 	}
 	for {
-		s, _, err := m.managedConfig()
+		s, err := m.readManagedState(ctx)
 		if err != nil {
 			return err
 		}
@@ -1171,10 +1177,7 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 			err = m.removeAccessEntry(ctx, u, listName, entries)
 		case 3:
 			if err = u.confirm("清空" + name + "？"); err == nil {
-				policy, err = policy.ClearList(listName)
-				if err == nil {
-					err = m.SetPolicy(ctx, policy)
-				}
+				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.ClearList(listName) })
 			}
 		}
 		if errors.Is(err, errCancelled) {
@@ -1210,17 +1213,14 @@ func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) er
 			}
 		}
 	}
-	s, _, err := m.managedConfig()
-	if err != nil {
-		return err
-	}
-	policy := s.Node.AccessPolicy
-	if listName == "black" {
-		policy.Blacklist = append(policy.Blacklist, entry)
-	} else {
-		policy.Whitelist = append(policy.Whitelist, entry)
-	}
-	return m.SetPolicy(ctx, policy)
+	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
+		if listName == "black" {
+			policy.Blacklist = append(policy.Blacklist, entry)
+		} else {
+			policy.Whitelist = append(policy.Whitelist, entry)
+		}
+		return policy, nil
+	})
 }
 
 func (m *Manager) removeAccessEntry(ctx context.Context, u *ui, listName string, entries []model.AccessEntry) error {
@@ -1236,11 +1236,6 @@ func (m *Manager) removeAccessEntry(ctx context.Context, u *ui, listName string,
 	if err != nil {
 		return err
 	}
-	s, _, err := m.managedConfig()
-	if err != nil {
-		return err
-	}
-	policy := s.Node.AccessPolicy
 	target := entries[choice-1]
 	filter := func(list []model.AccessEntry) []model.AccessEntry {
 		filtered := make([]model.AccessEntry, 0, len(list))
@@ -1254,12 +1249,14 @@ func (m *Manager) removeAccessEntry(ctx context.Context, u *ui, listName string,
 		}
 		return filtered
 	}
-	if listName == "black" {
-		policy.Blacklist = filter(policy.Blacklist)
-	} else {
-		policy.Whitelist = filter(policy.Whitelist)
-	}
-	return m.SetPolicy(ctx, policy)
+	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
+		if listName == "black" {
+			policy.Blacklist = filter(policy.Blacklist)
+		} else {
+			policy.Whitelist = filter(policy.Whitelist)
+		}
+		return policy, nil
+	})
 }
 
 func (m *Manager) linkMenu(ctx context.Context, u *ui) error {
@@ -1448,7 +1445,7 @@ func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
 		return err
 	}
 	if selected == 1 {
-		peer, err := m.Peer(item.Name)
+		peer, err := m.peer(ctx, item.Name)
 		if err != nil {
 			return err
 		}
