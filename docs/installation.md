@@ -6,10 +6,11 @@
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | sudo bash
-sudo proxydock
 ```
 
 脚本默认选择 GitHub 最新正式 Release。仓库需要先发布包含当前架构二进制和 `SHA256SUMS` 的版本。没有可用 Release 时会报错，不会自动编译源码或下载其他项目的程序。
+
+安装完成后，需要进入管理菜单时再运行 `sudo proxydock`；已是 root 用户时直接运行 `proxydock`。
 
 也可以先下载脚本审阅后执行：
 

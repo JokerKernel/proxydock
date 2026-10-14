@@ -16,10 +16,11 @@ ProxyDock 是面向 Linux 的 Docker 代理管理工具，提供中文交互菜�
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | sudo bash
-sudo proxydock
 ```
 
 安装脚本从本仓库的 GitHub Release 获取 amd64/arm64 程序，校验 `SHA256SUMS` 和实际版本后原子安装到 `/usr/local/sbin/proxydock`。同版本跳过，默认不降级；安装或更新失败会保留或恢复原程序。Docker Engine 与 Compose 需提前安装。
+
+需要进入管理菜单时再运行 `sudo proxydock`；已是 root 用户时直接运行 `proxydock`。
 
 固定程序版本：
 
@@ -37,7 +38,6 @@ curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/
 ```bash
 ./scripts/build.sh
 sudo install -m 0755 proxydock /usr/local/sbin/proxydock
-sudo proxydock
 ```
 
 ## 常用命令
