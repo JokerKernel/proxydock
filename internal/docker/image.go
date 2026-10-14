@@ -65,8 +65,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 		channel = "prerelease"
 	}
 	tag := Repository + ":" + v
-	m.progress("拉取官方 Xray 镜像 %s", tag)
-	if err = m.dockerStream(ctx, m.out, m.errOut, "image", "pull", tag); err != nil {
+	if err = m.dockerStreamOp(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "拉取镜像"}, m.out, m.errOut, "image", "pull", tag); err != nil {
 		return Metadata{}, fmt.Errorf("拉取官方版本镜像失败: %w", err)
 	}
 	if err = m.pauseAfterOutput(); err != nil {
@@ -107,7 +106,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 		md.ImageRef, md.Channel = ref, channel
 		return md, nil
 	}
-	output, err := m.coreRun(ctx, image.ID, nil, "version")
+	output, err := m.coreRun(ctx, opLabel{}, image.ID, nil, "version")
 	if err != nil {
 		return Metadata{}, fmt.Errorf("镜像版本检测失败: %w", err)
 	}
@@ -151,7 +150,7 @@ func parseKeyPair(b []byte) (model.KeyPair, error) {
 	return pair, nil
 }
 func (m *Manager) keyPair(ctx context.Context, imageID string) (model.KeyPair, error) {
-	b, err := m.coreRun(ctx, imageID, nil, "x25519")
+	b, err := m.coreRun(ctx, opLabel{}, imageID, nil, "x25519")
 	if err != nil {
 		return model.KeyPair{}, fmt.Errorf("生成 REALITY 密钥失败: %w", err)
 	}

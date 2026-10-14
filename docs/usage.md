@@ -2,6 +2,8 @@
 
 ProxyDock 是从 ProxyForge 分离的独立 Docker 代理管理工具，目前管理一个自行创建的 Xray Compose 实例。运行 `sudo proxydock` 进入交互菜单，也可直接使用命令行。
 
+默认输出操作进度，完整 Docker 命令只在添加 `--debug` 时显示，例如 `sudo proxydock --debug`。启动后的稳定性检查每秒查询一次容器，并保留至少 5 秒的观察窗口。
+
 Docker 版不依赖宿主机安装的 Xray，也不要求存在 `xray.service`。使用官方镜像 `ghcr.io/xtls/xray-core`，镜像拉取成功后固定为 digest；普通启动和配置修改不会自动更新镜像。
 
 ## 环境要求

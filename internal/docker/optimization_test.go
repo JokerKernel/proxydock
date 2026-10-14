@@ -168,6 +168,8 @@ func TestUnchangedSettingsAndPolicyDoNotCallDocker(t *testing.T) {
 	}
 	unchanged := savedOperationFiles(t, m)
 	fake.calls = nil
+	var errOut bytes.Buffer
+	m.errOut = &errOut
 	if err := m.PatchSetting(ctx, "log", level); err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +178,10 @@ func TestUnchangedSettingsAndPolicyDoNotCallDocker(t *testing.T) {
 	}
 	if len(fake.calls) != 0 {
 		t.Fatalf("unchanged settings reached Docker: %v", fake.calls)
+	}
+	text := errOut.String()
+	if !strings.Contains(text, "配置未变化") || !strings.Contains(text, "访问策略未变化") || strings.Contains(text, "备份位置") || strings.Contains(text, "docker") {
+		t.Fatalf("unchanged operation log: %s", text)
 	}
 	unchanged()
 }
@@ -351,16 +357,25 @@ func TestHealthCheckLooksUpContainerOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.calls = nil
-	ctx, cancel := context.WithTimeout(context.Background(), 450*time.Millisecond)
+	var errOut bytes.Buffer
+	m.errOut = &errOut
+	ctx, cancel := context.WithTimeout(context.Background(), healthStabilityWindow+3*healthPollInterval)
 	defer cancel()
-	if err := m.waitHealthy(ctx, nil, md.ImageID); err == nil {
-		t.Fatal("health check skipped the five-second stability window")
+	started := time.Now()
+	if err := m.waitHealthy(ctx, nil, md.ImageID); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) < healthStabilityWindow {
+		t.Fatal("health check skipped the stability window")
 	}
 	if count := countDockerCalls(fake, func(c []string) bool { return c[0] == "container" && c[1] == "ls" }); count != 1 {
 		t.Fatalf("health check performed %d container lookups", count)
 	}
-	if count := countDockerCalls(fake, func(c []string) bool { return c[0] == "container" && c[1] == "inspect" }); count < 2 {
-		t.Fatal("health check did not continue observing the container")
+	if count := countDockerCalls(fake, func(c []string) bool { return c[0] == "container" && c[1] == "inspect" }); count < 2 || count > 7 {
+		t.Fatalf("unexpected health polling count: %d", count)
+	}
+	if strings.Count(errOut.String(), "观察窗口") != 1 || strings.Contains(errOut.String(), "命令详情") || strings.Count(errOut.String(), "\n") > 3 {
+		t.Fatalf("health log should be the observation line only:\n%s", errOut.String())
 	}
 }
 
@@ -473,7 +488,7 @@ func TestFailedTemporaryContainerStillCleansUp(t *testing.T) {
 	m.runner = runner
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := m.coreRun(ctx, md.ImageID, nil, "version"); !errors.Is(err, context.Canceled) {
+	if _, err := m.coreRun(ctx, opLabel{}, md.ImageID, nil, "version"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("did not preserve cancellation: %v", err)
 	}
 	if !runner.removed || fake.container == nil || !fake.container.State.Running {
@@ -566,5 +581,76 @@ func TestSNIProbeChecksSharedServerAndLocalAddresses(t *testing.T) {
 				t.Fatalf("SNI probe repeated shared lookups: %v", resolver.lookups)
 			}
 		})
+	}
+}
+
+func TestDockerCommandTraceRequiresDebugFlag(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "debug"}[debug], func(t *testing.T) {
+			m, fake := deployed(t)
+			var output bytes.Buffer
+			cmd := m.Command()
+			cmd.SetOut(&output)
+			cmd.SetErr(&output)
+			args := []string{"config", "set", "log", "info"}
+			if debug {
+				args = append([]string{"--debug"}, args...)
+			}
+			fake.calls = nil
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			text := output.String()
+			if len(fake.calls) == 0 || !strings.Contains(text, "校验结果") || !strings.Contains(text, "通过") || !strings.Contains(text, "配置已生效") {
+				t.Fatalf("operation or progress suppressed: %s", text)
+			}
+			if strings.Contains(text, "调用：") || strings.Contains(text, "命令详情") != debug || strings.Contains(text, "docker --host "+endpoint) != debug {
+				t.Fatalf("debug=%v trace output: %s", debug, text)
+			}
+			if !debug && !strings.Contains(text, "docker compose … restart xray") {
+				t.Fatalf("missing short command: %s", text)
+			}
+		})
+	}
+}
+
+type restartedHealthRunner struct {
+	*simulatedDocker
+	inspections int
+}
+
+func (r *restartedHealthRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	call := args[2:]
+	if call[0] == "container" && call[1] == "inspect" {
+		r.inspections++
+		if r.inspections == 2 {
+			r.container.RestartCount++
+		}
+	}
+	return r.simulatedDocker.Run(ctx, name, args...)
+}
+
+func TestSlowerHealthPollingStillDetectsRestart(t *testing.T) {
+	m, fake := deployed(t)
+	md, err := m.metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.runner = &restartedHealthRunner{simulatedDocker: fake}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*healthPollInterval)
+	defer cancel()
+	if err := m.waitHealthy(ctx, nil, md.ImageID); err == nil || !strings.Contains(err.Error(), "自动重启") {
+		t.Fatalf("missed restart with slower polling: %v", err)
+	}
+}
+
+func TestHealthCheckHonorsCancellationBeforeQuerying(t *testing.T) {
+	m, fake := deployed(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fake.calls = nil
+	if err := m.waitHealthy(ctx, nil, fake.container.Image); !errors.Is(err, context.Canceled) || len(fake.calls) != 0 {
+		t.Fatalf("canceled health check queried Docker: %v %v", err, fake.calls)
 	}
 }

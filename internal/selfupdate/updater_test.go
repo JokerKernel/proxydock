@@ -78,6 +78,23 @@ func TestUninstallRetainsConfirmationUnlessExplicitlySkipped(t *testing.T) {
 	}
 }
 
+func TestDebugIsForwardedForUpdateAndUninstall(t *testing.T) {
+	for _, uninstall := range []bool{false, true} {
+		runner := &runnerStub{}
+		if err := (Updater{Runner: runner}).Run(context.Background(), Options{Uninstall: uninstall, Debug: true}); err != nil {
+			t.Fatal(err)
+		}
+		action := "update"
+		if uninstall {
+			action = "uninstall"
+		}
+		want := []string{action, "--debug"}
+		if !reflect.DeepEqual(runner.args[1:], want) {
+			t.Fatalf("arguments=%v, want %v", runner.args[1:], want)
+		}
+	}
+}
+
 func TestFailureReportedAndTemporaryScriptRemoved(t *testing.T) {
 	want := errors.New("installer failed")
 	runner := &runnerStub{err: want}

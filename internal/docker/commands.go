@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"proxydock/internal/docker/model"
+	"proxydock/internal/terminal"
 )
 
 func (m *Manager) Command() *cobra.Command {
@@ -20,6 +21,7 @@ func (m *Manager) Command() *cobra.Command {
 		return m.rootCheck()
 	}, RunE: func(cmd *cobra.Command, _ []string) error { return m.Menu(cmd.Context(), cmd.InOrStdin()) }}
 	cmd.PersistentFlags().BoolVarP(&yes, "yes", "y", false, "确认配置覆盖、容器移除、残留清理及程序卸载")
+	cmd.PersistentFlags().BoolVar(&m.traceDocker, "debug", false, "显示完整命令参数")
 	for _, action := range []string{"prepare", "upgrade"} {
 		action := action
 		var version string
@@ -91,7 +93,7 @@ func (m *Manager) Command() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(m.errOut, "[Docker] 当前配置包含 UUID 和私钥，请妥善保管")
+		terminal.WriteOperation(m.errOut, terminal.LevelWarn, "配置内容", "包含 UUID 和私钥，请妥善保管")
 		fmt.Fprint(m.out, string(b))
 		return nil
 	}})

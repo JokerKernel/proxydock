@@ -20,6 +20,7 @@ type Options struct {
 	Repository     string
 	Force          bool
 	AllowDowngrade bool
+	Debug          bool
 }
 
 type Runner interface {
@@ -70,6 +71,9 @@ func (u Updater) Run(ctx context.Context, opts Options) error {
 	}
 	if opts.AllowDowngrade {
 		args = append(args, "--allow-downgrade")
+	}
+	if opts.Debug {
+		args = append(args, "--debug")
 	}
 	runner := u.Runner
 	if runner == nil {

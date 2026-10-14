@@ -281,11 +281,15 @@ func (m *Manager) Generate(ctx context.Context, opts model.GenerateOptions, star
 				return err
 			}
 		}
-		if err = m.applyConfig(ctx, md, in, n, b, start || !hasOld); err != nil {
+		securityLabel := n.Security
+		if securityLabel == "" {
+			securityLabel = "reality"
+		}
+		m.op(phaseCheck, levelInfo, "生成配置", fmt.Sprintf("%s，端口 %d", securityLabel, n.Port))
+		if err = m.applyConfig(ctx, md, in, n, b, start || !hasOld, fmt.Sprintf("已生成，端口 %d", n.Port)); err != nil {
 			return err
 		}
 		success = true
-		m.progress("Xray Docker 配置已生成，端口 %d", n.Port)
 		return nil
 	})
 }
@@ -320,7 +324,10 @@ func (m *Manager) freeHighPort(exclude int) (int, error) {
 	}
 	return 0, fmt.Errorf("找不到可用回落端口")
 }
-func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, n model.Node, b []byte, start bool) error {
+func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, n model.Node, b []byte, start bool, outcome string) error {
+	if outcome == "" {
+		outcome = "配置已生效"
+	}
 	if err := validateNode(n); err != nil {
 		return err
 	}
@@ -335,6 +342,7 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 			compare.ConfigSHA256 = digest(b)
 			compare.UpdatedAt = s.Node.UpdatedAt
 			if reflect.DeepEqual(compare, s.Node) {
+				m.op(phaseResult, levelResult, "更新结果", "配置未变化")
 				return nil
 			}
 		}
@@ -356,43 +364,45 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	changed := !slices.Equal(oldPorts, ports)
 	if running && changed {
 		if in != nil && in.State.Running {
-			m.progress("监听端口有变化，正在停止容器")
-			if _, err = m.compose(ctx, "stop", Service); err != nil {
+			detail := formatPorts(ports)
+			if len(oldPorts) > 0 {
+				detail = formatPorts(oldPorts) + " → " + detail
+			}
+			m.op(phaseApply, levelInfo, "端口变化", detail)
+			if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "stop", Service); err != nil {
 				return fail(err)
 			}
 		}
-		m.progress("正在确认端口 %s 可用", formatPorts(ports))
 		for _, p := range ports {
 			if err = m.portFree(p); err != nil {
 				return fail(err)
 			}
 		}
+		m.op(phaseApply, levelResult, "检查端口", "可用")
 	}
-	m.progress("正在写入服务端配置")
 	if err = atomicWrite(m.paths.Config(), b, 0600); err != nil {
 		return fail(err)
 	}
+	m.op(phaseApply, levelStep, "写入配置", m.paths.Config())
 	if err = m.phase(&j, "files-committed"); err != nil {
 		return fail(err)
 	}
 	if running && (configChanged || start) {
 		if in == nil {
-			m.progress("正在启动容器")
-			_, err = m.compose(ctx, "up", "-d", "--no-deps", "--pull", "never", Service)
+			_, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
 		} else {
-			m.progress("正在重启容器，使新配置生效")
-			_, err = m.compose(ctx, "restart", Service)
+			_, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重启容器"}, "restart", Service)
 		}
 		if err != nil {
 			return fail(err)
 		}
-		m.progress("正在检查容器是否稳定监听端口 %s", formatPorts(ports))
+		m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
 		if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 			return fail(err)
 		}
-		m.progress("容器已稳定监听")
+		m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
 	} else if !running {
-		m.progress("容器当前未运行，配置已写入，启动后生效")
+		m.op(phaseApply, levelInfo, "运行状态", "未运行，配置已写入，启动后生效")
 	}
 	if running {
 		md.DesiredState = "running"
@@ -402,12 +412,12 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	if err = m.phase(&j, "runtime-applied"); err != nil {
 		return fail(err)
 	}
-	m.progress("正在保存节点状态")
 	n.ConfigSHA256 = digest(b)
 	n.UpdatedAt = m.now().UTC()
 	if err = m.saveNode(n); err != nil {
 		return fail(err)
 	}
+	m.op(phaseApply, levelStep, "保存状态", m.paths.State())
 	md.UpdatedAt = m.now().UTC()
 	if err = saveJSON(m.paths.Metadata(), md); err != nil {
 		return fail(err)
@@ -415,13 +425,62 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	if err = m.commit(j); err != nil {
 		return fail(err)
 	}
-	m.progress("配置已生效")
+	m.op(phaseResult, levelResult, "更新结果", outcome)
 	return nil
 }
 
 type configurationValidationError struct{ error }
 
 func (e *configurationValidationError) Unwrap() error { return e.error }
+
+func accessPolicySummary(policy model.AccessPolicy) string {
+	if policy.Disabled {
+		return "已关闭，名单保留"
+	}
+	white := len(policy.Whitelist) > 0
+	black := len(policy.Blacklist) > 0
+	if policy.EffectiveMode() == model.AccessModeWhitelist {
+		if black {
+			return "白名单优先，黑名单继续拦截"
+		}
+		return "白名单优先，现有拦截规则兜底"
+	}
+	if white && !black {
+		return "白名单优先，现有拦截规则兜底"
+	}
+	if white && black {
+		return "白名单优先，黑名单继续拦截"
+	}
+	if black {
+		return "黑名单拦截，其余按现有规则放行"
+	}
+	return "未启用访问限制"
+}
+
+func accessPolicyOutcome(policy model.AccessPolicy) string {
+	if policy.Disabled {
+		return "访问策略已关闭"
+	}
+	if policy.EffectiveMode() == model.AccessModeWhitelist || (len(policy.Whitelist) > 0 && len(policy.Blacklist) == 0) {
+		return "白名单已更新"
+	}
+	return "访问策略已更新"
+}
+
+func settingSummary(setting, value string) string {
+	switch setting {
+	case "dns":
+		return "DNS " + value
+	case "log":
+		return "日志级别 " + value
+	case "outbound-ip":
+		return "出站 IP " + value
+	case "fallback-ip":
+		return "回落 IP " + value
+	default:
+		return setting + " " + value
+	}
+}
 
 func formatPorts(ports []int) string {
 	parts := make([]string, len(ports))
@@ -483,14 +542,15 @@ func (m *Manager) PatchSetting(ctx context.Context, setting, value string) error
 			}
 		}
 		if sameJSON(b, patched) {
-			m.progress("配置未变化")
+			m.op(phaseResult, levelResult, "更新结果", "配置未变化")
 			return nil
 		}
 		md, in, err := m.prepareOperation(ctx)
 		if err != nil {
 			return err
 		}
-		return m.applyConfig(ctx, md, in, s.Node, patched, false)
+		m.op(phaseCheck, levelInfo, "修改配置", settingSummary(setting, value))
+		return m.applyConfig(ctx, md, in, s.Node, patched, false, "配置已生效")
 	})
 }
 func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) error {
@@ -515,7 +575,7 @@ func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) erro
 			return err
 		}
 		if reflect.DeepEqual(current, normalized) {
-			m.progress("访问策略未变化")
+			m.op(phaseResult, levelResult, "更新结果", "访问策略未变化")
 			return nil
 		}
 		s.Node.AccessPolicy = normalized
@@ -533,7 +593,8 @@ func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) erro
 		if err != nil {
 			return err
 		}
-		return m.applyConfig(ctx, md, in, s.Node, patched, false)
+		m.op(phaseCheck, levelInfo, "应用访问策略", accessPolicySummary(normalized))
+		return m.applyConfig(ctx, md, in, s.Node, patched, false, accessPolicyOutcome(normalized))
 	})
 }
 func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
@@ -632,7 +693,7 @@ func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
 				return err
 			}
 		}
-		if err = m.applyConfig(ctx, md, in, n, patched, false); err != nil {
+		if err = m.applyConfig(ctx, md, in, n, patched, false, "配置已生效"); err != nil {
 			return err
 		}
 		success = true
@@ -688,7 +749,7 @@ func (m *Manager) applyEditedLocked(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
-	return m.applyConfig(ctx, md, in, s.Node, data, false)
+	return m.applyConfig(ctx, md, in, s.Node, data, false, "配置已生效")
 }
 
 func (m *Manager) prepareEditedConfig(data []byte, node model.Node) ([]byte, error) {

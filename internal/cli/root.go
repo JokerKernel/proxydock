@@ -60,6 +60,7 @@ func managementCommand(action string, update func(context.Context, selfupdate.Op
 		Use: action, Short: short, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			opts.AssumeYes, _ = cmd.Root().PersistentFlags().GetBool("yes")
+			opts.Debug, _ = cmd.Root().PersistentFlags().GetBool("debug")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return update(ctx, opts)

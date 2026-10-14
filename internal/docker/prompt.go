@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"proxydock/internal/docker/model"
+	"proxydock/internal/terminal"
 )
 
 const (
@@ -267,7 +268,7 @@ func (u *ui) discardBufferedInput() bool {
 }
 
 func (m *Manager) printMenuError(err error) {
-	fmt.Fprintf(m.errOut, "[错误] 操作失败：%v\n", err)
+	terminal.WriteOperation(m.errOut, terminal.LevelError, "操作失败", err.Error())
 }
 
 func splitMenuLabel(label string) (string, string) {

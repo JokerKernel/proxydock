@@ -133,7 +133,8 @@ func (m *Manager) Prepare(ctx context.Context, version string) error {
 		if err = atomicWrite(m.paths.Compose(), compose, 0600); err != nil {
 			return fail(err)
 		}
-		if _, err = m.compose(ctx, "config", "--quiet"); err != nil {
+		m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
 			return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
 		}
 		if err = saveJSON(m.paths.Metadata(), md); err != nil {
@@ -145,7 +146,7 @@ func (m *Manager) Prepare(ctx context.Context, version string) error {
 		if err = m.commit(j); err != nil {
 			return fail(err)
 		}
-		m.progress("镜像 %s 已准备；生成节点配置后才能启动", md.RequestedVersion)
+		m.op(phaseResult, levelResult, "准备结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
 		return nil
 	})
 }
@@ -242,7 +243,7 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 					return m.rollback(j, err)
 				}
 			}
-			m.progress("镜像未变化，无需重建容器")
+			m.op(phaseResult, levelResult, "升级结果", "镜像未变化，无需重建容器")
 			return nil
 		}
 		if err = m.probeCapabilities(ctx, md); err != nil {
@@ -276,7 +277,8 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 		if err = atomicWrite(m.paths.Compose(), compose, 0600); err != nil {
 			return fail(err)
 		}
-		if _, err = m.compose(ctx, "config", "--quiet"); err != nil {
+		m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
 			return fail(err)
 		}
 		if err = m.phase(&j, "files-committed"); err != nil {
@@ -290,16 +292,19 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 				args = append(args, "--no-start")
 			}
 			args = append(args, Service)
-			if _, err = m.compose(ctx, args...); err != nil {
+			if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, args...); err != nil {
 				return fail(err)
 			}
 			if in.State.Running {
 				if !hasNode {
 					return fail(fmt.Errorf("运行实例缺少节点状态"))
 				}
-				if err = m.healthCheck(ctx, nodePorts(state.Node), md.ImageID); err != nil {
+				ports := nodePorts(state.Node)
+				m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+				if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 					return fail(err)
 				}
+				m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
 			} else {
 				current, e := m.inspect(ctx)
 				if e != nil || current == nil || current.State.Running || current.Image != md.ImageID {
@@ -323,7 +328,7 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 		if err = m.commit(j); err != nil {
 			return fail(err)
 		}
-		m.progress("镜像升级完成：%s → %s", old.RequestedVersion, md.RequestedVersion)
+		m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("%s → %s", old.RequestedVersion, md.RequestedVersion))
 		return nil
 	})
 }
@@ -343,7 +348,7 @@ func (m *Manager) Remove(ctx context.Context) error {
 			return err
 		}
 		if in == nil {
-			m.progress("当前没有容器，配置和数据仍保留")
+			m.op(phaseResult, levelResult, "移除结果", "当前没有容器，配置和数据仍保留")
 			return nil
 		}
 		md, err := m.metadata()
@@ -353,8 +358,7 @@ func (m *Manager) Remove(ctx context.Context) error {
 		if err = m.checkCompose(md); err != nil {
 			return err
 		}
-		m.progress("正在停止并移除容器 %s", Container)
-		if _, err = m.compose(ctx, "down"); err != nil {
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "移除容器"}, "down"); err != nil {
 			return err
 		}
 		in, err = m.inspect(ctx)
@@ -364,13 +368,13 @@ func (m *Manager) Remove(ctx context.Context) error {
 		if in != nil {
 			return fmt.Errorf("移除后仍存在容器，数据已保留")
 		}
-		m.progress("正在记录已移除状态，配置和数据保留")
 		md.DesiredState = "stopped"
 		md.UpdatedAt = m.now().UTC()
 		if err = saveJSON(m.paths.Metadata(), md); err != nil {
 			return err
 		}
-		m.progress("容器已移除，配置、凭据和备份已保留")
+		m.op(phaseApply, levelInfo, "记录状态", "配置和数据保留")
+		m.op(phaseResult, levelResult, "移除结果", "容器已移除，配置、凭据和备份已保留")
 		return nil
 	})
 }
@@ -469,7 +473,8 @@ func (l *CleanupLease) Cleanup() error {
 	return l.manager.cleanupLocked(l.ctx)
 }
 func (m *Manager) cleanupLocked(ctx context.Context) error {
-	m.progress("正在确认容器已移除，且没有未完成事务")
+	m.breakOp()
+	m.op(phaseCheck, levelInfo, "检查清理", "容器已移除，没有未完成事务")
 	if err := m.CheckCleanup(ctx); err != nil {
 		return err
 	}
@@ -490,10 +495,9 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 			return err
 		}
 	}
-	m.progress("正在永久删除配置、凭据、证书和备份")
 	var errs []error
 	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
-		m.progress("正在删除 %s", path)
+		m.op(phaseApply, levelStep, "删除数据", path)
 		if err := os.RemoveAll(path); err != nil {
 			errs = append(errs, err)
 		}
@@ -507,7 +511,7 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 			return err
 		}
 	}
-	m.progress("Docker Xray 残留已清理，其他容器和镜像未改动")
+	m.op(phaseResult, levelResult, "清理结果", "其他容器和镜像未改动")
 	return nil
 }
 
@@ -551,7 +555,7 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 			return fmt.Errorf("容器已移除，请先启动")
 		}
 		if action == "stop" && (in == nil || !in.State.Running && !in.State.Restarting) && md.DesiredState == "stopped" {
-			m.progress("容器已停止")
+			m.op(phaseResult, levelResult, "服务结果", "容器已停止")
 			return nil
 		}
 		var state State
@@ -562,7 +566,7 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 				return err
 			}
 			if action == "start" && in != nil && in.State.Running && !in.State.Paused && !in.State.Restarting && in.State.Error == "" && md.DesiredState == "running" {
-				m.progress("容器已运行")
+				m.op(phaseResult, levelResult, "服务结果", "容器已运行")
 				return nil
 			}
 			if err = m.validateBytes(ctx, md.ImageID, b); err != nil {
@@ -576,21 +580,24 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 		fail := func(e error) error { return m.rollback(j, e) }
 		switch action {
 		case "start":
-			output, err = m.compose(ctx, "up", "-d", "--no-deps", "--pull", "never", Service)
+			output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
 		case "stop":
 			if in != nil {
-				output, err = m.compose(ctx, "stop", Service)
+				output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "stop", Service)
 			}
 		case "restart":
-			output, err = m.compose(ctx, "restart", Service)
+			output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重启容器"}, "restart", Service)
 		}
 		if err != nil {
 			return fail(err)
 		}
 		if action != "stop" {
-			if err = m.healthCheck(ctx, nodePorts(state.Node), md.ImageID); err != nil {
+			ports := nodePorts(state.Node)
+			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 				return fail(err)
 			}
+			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
 			md.DesiredState = "running"
 		} else {
 			current, e := m.inspect(ctx)
@@ -598,6 +605,7 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 				return fail(fmt.Errorf("停止容器后状态异常: %v", e))
 			}
 			md.DesiredState = "stopped"
+			m.op(phaseApply, levelResult, "运行状态", "已停止")
 		}
 		md.UpdatedAt = m.now().UTC()
 		if err = saveJSON(m.paths.Metadata(), md); err != nil {
@@ -606,6 +614,14 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 		if err = m.commit(j); err != nil {
 			return fail(err)
 		}
+		result := "已重启"
+		switch action {
+		case "start":
+			result = "已启动"
+		case "stop":
+			result = "已停止"
+		}
+		m.op(phaseResult, levelResult, "服务结果", result)
 		return nil
 	})
 	return output, err

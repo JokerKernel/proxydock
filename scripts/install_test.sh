@@ -27,7 +27,8 @@ test_automatic_mode_skips_when_already_current() (
   [[ "${output}" == *"╭─ ProxyDock"* ]] || fail "missing installer header"
   [[ "${output}" == *"当前版本：v1.2.3"* ]] || fail "missing current version summary"
   [[ "${output}" == *"目标版本：v1.2.3"* ]] || fail "missing target version summary"
-  [[ "${output}" == *"[结果] 当前已是最新正式版本，无需更新"* ]] || fail "missing up-to-date result"
+  [[ "${output}" == *"当前已是最新正式版本，无需更新"* ]] || fail "missing up-to-date result"
+  [[ "${output}" == *"更新结果"* ]] || fail "missing update result label"
   [[ "${output}" != *$'\033['* ]] || fail "redirected output contains ANSI controls"
   [[ "${output}" != *"SHA256SUMS"* ]] || fail "downloaded release files for current version"
 )
@@ -38,12 +39,13 @@ test_color_controls() (
   source "${script_dir}/install.sh"
 
   local output
-  output=$(info "彩色信息")
-  [[ "${output}" == *$'\033[34m[信息]\033[0m'* ]] || fail "blue information color was not applied"
+  output=$(op check info "彩色信息" "详情")
+  [[ "${output}" == *$'\033[34m彩色信息\033[0m'* ]] || fail "blue information color was not applied"
+  [[ "${output}" == *$'\033[0m'*' │ 详情' ]] || fail "padding was colored: ${output}"
   output=$(print_header)
   [[ "${output}" == *$'\033[1;38;5;208m╭─ ProxyDock\033[0m'* ]] || fail "orange title color was not applied"
-  output=$(step "彩色步骤")
-  [[ "${output}" == *$'\033[1;38;5;208m[步骤]\033[0m'* ]] || fail "orange step color was not applied"
+  output=$(op check step "彩色步骤" "详情")
+  [[ "${output}" == *$'\033[1;38;5;208m彩色步骤\033[0m'* ]] || fail "orange step color was not applied"
 
   installation_action=install
   resolved_version=v1.2.3
@@ -59,8 +61,8 @@ test_no_color_is_respected() (
   source "${script_dir}/install.sh"
 
   local output
-  output=$(result "纯文本结果")
-  [[ "${output}" == "[结果] 纯文本结果" ]] || fail "NO_COLOR output was decorated: ${output}"
+  output=$(op result result "纯文本结果" "详情")
+  [[ "${output}" != *$'\033['* && "${output}" == *"纯文本结果"* && "${output}" == *"│ 详情" && "$(operation_column "${output}")" == 17 ]] || fail "NO_COLOR output was decorated: ${output}"
 )
 
 test_version_comparison_and_classification() (
@@ -143,7 +145,7 @@ test_version_file_fallback() (
 
   local output
   output=$(main --yes)
-  [[ "${output}" == *"[警告] GitHub Releases API 不可用，改用 Release version 文件"* ]] || fail "missing API fallback status"
+  [[ "${output}" == *"警告"* && "${output}" == *"GitHub Releases API 不可用，改用 Release version 文件"* ]] || fail "missing API fallback status"
   [[ "${output}" == *"最新正式版本：v1.2.3（Release version 文件）"* ]] || fail "version fallback failed"
 )
 
@@ -166,6 +168,56 @@ test_api_failure_retries_without_proxy() (
   [[ "${output}" == *"尝试忽略代理直连"* ]] || fail "missing direct retry notice"
   [[ "${output}" == *"最新正式版本：v1.2.3（GitHub Releases API 直连）"* ]] || fail "direct API retry failed"
   [[ "${output}" != *"改用 Release version 文件"* ]] || fail "version fallback ran after successful direct retry"
+)
+
+operation_column() {
+  local plain
+  plain=$(printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g')
+  local prefix=${plain%%│*}
+  display_width "${prefix}"
+}
+
+test_operation_columns_and_debug_commands() (
+  source "${script_dir}/install.sh"
+  local name line column
+  for name in "校验 Xray 配置" "Check" "校验 Check"; do
+    line=$(op "" info "${name}" "详情")
+    column=$(operation_column "${line}")
+    [[ "${column}" == 17 ]] || fail "${name} column ${column}: ${line}"
+  done
+  local brief
+  brief=$(brief_command curl --silent --show-error --output /tmp/out https://example.test/file)
+  [[ "${brief}" == "curl … https://example.test/file" ]] || fail "curl brief: ${brief}"
+  brief=$(brief_command sha256sum --check --status -)
+  [[ "${brief}" == "sha256sum --check …" ]] || fail "checksum brief: ${brief}"
+  brief=$(brief_command cp -p -- /src /dst)
+  [[ "${brief}" == "cp … /src /dst" ]] || fail "cp brief: ${brief}"
+  brief=$(brief_command install -m 0755 /src /dst)
+  [[ "${brief}" == "install … /src /dst" ]] || fail "install brief: ${brief}"
+  debug=true
+  line=$(op "" info "命令详情" "$(quote_command curl --output /tmp/out https://example.test/file)")
+  [[ "${line}" == *"命令详情"* && "${line}" == *"curl"* && "${line}" == *"https://example.test/file"* ]] || fail "debug command: ${line}"
+  column=$(operation_column "${line}")
+  [[ "${column}" == 17 ]] || fail "debug column ${column}: ${line}"
+  local status=0 output
+  output=$(die "下载程序失败" 2>&1) || status=$?
+  [[ ${status} -eq 1 && "${output}" == *"操作失败"* && "${output}" == *"│"* && "${output}" == *"下载程序失败"* ]] || fail "download failure format: ${output}"
+  column=$(operation_column "${output}")
+  [[ "${column}" == 17 ]] || fail "failure column ${column}: ${output}"
+  parse_arguments --debug update --yes
+  [[ "${debug}" == true && "${requested_action}" == update && "${assume_yes}" == true ]] || fail "debug flag was not parsed"
+  [[ "$(print_help)" == *"--debug"* ]] || fail "help missing --debug"
+)
+
+test_colored_operation_keeps_separator_column() (
+  PROXYDOCK_COLOR=always
+  unset NO_COLOR
+  source "${script_dir}/install.sh"
+  local line plain
+  line=$(op check step "校验 Xray 配置" "通过")
+  plain=$(printf '%s' "${line}" | sed $'s/\033\\[[0-9;]*m//g')
+  [[ "$(operation_column "${plain}")" == 17 ]] || fail "colored column moved: ${line}"
+  [[ "${line}" == *$'\033[1;38;5;208m校验 Xray 配置\033[0m'* ]] || fail "label was not colored after padding: ${line}"
 )
 
 test_curl_direct_download_bypasses_all_proxies() (
@@ -194,5 +246,7 @@ test_uninstall_is_idempotent
 test_uninstall_aliases_are_equivalent
 test_api_failure_retries_without_proxy
 test_curl_direct_download_bypasses_all_proxies
+test_operation_columns_and_debug_commands
+test_colored_operation_keeps_separator_column
 test_version_file_fallback
 printf 'install_test: ok\n'

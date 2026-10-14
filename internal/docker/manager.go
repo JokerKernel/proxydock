@@ -11,8 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"proxydock/internal/docker/xray"
@@ -58,6 +56,8 @@ type Manager struct {
 	externalIP       func(context.Context) (string, error)
 	probeSNI         func(context.Context, []string, string, int) ([]sniCandidate, error)
 	quietDockerNotes bool
+	traceDocker      bool
+	opPhase          int
 	review           *ui
 }
 
@@ -103,41 +103,14 @@ func requireRoot() error {
 	}
 	return nil
 }
-func (m *Manager) progress(format string, args ...any) {
-	fmt.Fprintf(m.errOut, "[Docker] "+format+"\n", args...)
-}
 func (m *Manager) docker(ctx context.Context, args ...string) ([]byte, error) {
-	full := append([]string{"--host", endpoint}, args...)
-	m.noteDockerCall(full)
-	return m.runner.Run(ctx, "docker", full...)
+	return m.dockerOp(ctx, opLabel{}, args...)
 }
 func (m *Manager) dockerStream(ctx context.Context, out, errOut io.Writer, args ...string) error {
-	full := append([]string{"--host", endpoint}, args...)
-	m.noteDockerCall(full)
-	return m.runner.RunStreaming(ctx, out, errOut, "docker", full...)
-}
-func (m *Manager) noteDockerCall(args []string) {
-	if m.quietDockerNotes {
-		return
-	}
-	m.progress("调用：docker %s", formatCommandArgs(args))
-}
-func formatCommandArgs(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = quoteCommandArg(arg)
-	}
-	return strings.Join(quoted, " ")
-}
-func quoteCommandArg(arg string) string {
-	if arg == "" || strings.ContainsAny(arg, " \t\n\"'\\$`") {
-		return strconv.Quote(arg)
-	}
-	return arg
+	return m.dockerStreamOp(ctx, opLabel{}, out, errOut, args...)
 }
 func (m *Manager) compose(ctx context.Context, args ...string) ([]byte, error) {
-	prefix := []string{"compose", "--project-name", Project, "--project-directory", m.paths.Deploy(), "--file", m.paths.Compose()}
-	return m.docker(ctx, append(prefix, args...)...)
+	return m.composeOp(ctx, opLabel{}, args...)
 }
 
 type Paths struct{ Root string }

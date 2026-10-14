@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"proxydock/internal/terminal"
 )
 
 var errCancelled = errors.New("用户取消")
@@ -143,7 +145,7 @@ func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
 				return err
 			}
 			if string(edited) == string(b) {
-				m.progress("配置未变化")
+				m.op(phaseResult, levelResult, "更新结果", "配置未变化")
 				return nil
 			}
 			candidate, prepareErr := m.prepareEditedConfig(edited, state.Node)
@@ -158,7 +160,7 @@ func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
 				if in != nil && (in.Image != md.ImageID || in.State.Paused) {
 					return fmt.Errorf("编辑期间容器状态或镜像已改变")
 				}
-				err = m.applyConfig(ctx, md, in, state.Node, candidate, false)
+				err = m.applyConfig(ctx, md, in, state.Node, candidate, false, "配置已生效")
 				var validationErr *configurationValidationError
 				if err == nil || !errors.As(err, &validationErr) {
 					return err
@@ -167,7 +169,10 @@ func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			fmt.Fprintf(m.errOut, "校验失败：%v\n", err)
+			var validationErr *configurationValidationError
+			if !errors.As(err, &validationErr) {
+				terminal.WriteOperation(m.errOut, terminal.LevelError, "校验结果", err.Error())
+			}
 			if err = u.confirm("重新编辑？"); err != nil {
 				return err
 			}

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func (m *Manager) coreRun(ctx context.Context, imageID string, mounts []string, command ...string) (output []byte, runErr error) {
+func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mounts []string, command ...string) (output []byte, runErr error) {
 	if !validImageID(imageID) {
 		return nil, fmt.Errorf("无效的本机镜像 ID")
 	}
@@ -39,7 +39,7 @@ func (m *Manager) coreRun(ctx context.Context, imageID string, mounts []string, 
 			_, _ = m.docker(cleanupCtx, "container", "rm", "--force", "--volumes", ins[0].ID)
 		}
 	}()
-	return m.docker(ctx, args...)
+	return m.dockerOp(ctx, label, args...)
 }
 func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte) error {
 	if len(data) == 0 || len(data) > maxConfigSize || !json.Valid(data) {
@@ -74,11 +74,11 @@ func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte
 			return err
 		}
 	}
-	m.progress("正在用本机镜像启动临时容器，执行 xray run -test 校验配置")
-	_, err = m.coreRun(ctx, imageID, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxyforge/config.json,readonly", "--mount", "type=bind,src=" + m.paths.TLS() + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxyforge/config.json")
+	_, err = m.coreRun(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}, imageID, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxyforge/config.json,readonly", "--mount", "type=bind,src=" + m.paths.TLS() + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxyforge/config.json")
 	if err != nil {
+		m.op(phaseCheck, levelError, "校验结果", err.Error())
 		return fmt.Errorf("Docker Xray 配置校验失败: %w", err)
 	}
-	m.progress("配置校验通过")
+	m.op(phaseCheck, levelResult, "校验结果", "通过")
 	return nil
 }

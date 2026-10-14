@@ -28,6 +28,7 @@ func (m *Manager) withLock(ctx context.Context, work func() error) error {
 		return err
 	}
 	defer release()
+	m.breakOp()
 	return work()
 }
 func (m *Manager) acquireLock(ctx context.Context) (func(), error) {
@@ -98,6 +99,7 @@ func (m *Manager) begin(kind string, in *inspection) (journal, error) {
 	if err = saveJSON(m.paths.Journal(), j); err != nil {
 		return j, err
 	}
+	m.logBackup(dir, snapshots)
 	return j, nil
 }
 func (m *Manager) phase(j *journal, phase string) error {
@@ -132,7 +134,7 @@ func (m *Manager) rotateBackups() {
 	}
 }
 func (m *Manager) rollback(j journal, cause error) error {
-	m.progress("操作失败，恢复旧配置、状态与容器")
+	m.op(phaseResult, levelError, "操作失败", "恢复旧配置、状态与容器")
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	err := m.restoreTransaction(ctx, j)
@@ -145,7 +147,6 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 	if j.SchemaVersion != 1 || j.InstanceID != Instance || filepath.Dir(j.Backup) != m.paths.Backups() {
 		return fmt.Errorf("事务恢复记录标识/路径无效")
 	}
-	m.progress("正在读取事务快照")
 	var snaps []fileSnapshot
 	if err := loadSnapshot(filepath.Join(j.Backup, "snapshot.json"), &snaps); err != nil {
 		return err
@@ -163,23 +164,23 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 		}
 		delete(allowed, s.Path)
 	}
+	m.op(phaseBackup, levelInfo, "读取快照", filepath.Join(j.Backup, "snapshot.json"))
 	in, err := m.inspect(ctx)
 	if err != nil {
 		return err
 	}
 	if in != nil {
-		m.progress("正在停止当前容器")
-		if _, err = m.docker(ctx, "container", "stop", in.ID); err != nil {
+		if _, err = m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "container", "stop", in.ID); err != nil {
 			return err
 		}
 	}
 	// Files are restored before runtime recreation. Metadata is consequently old.
-	m.progress("正在恢复配置、状态和部署记录")
 	for _, s := range snaps {
 		if err = restore(s); err != nil {
 			return err
 		}
 	}
+	m.op(phaseApply, levelStep, "恢复文件", "配置、状态和部署记录")
 	if j.HadContainer {
 		md, err := m.metadata()
 		if err != nil {
@@ -189,15 +190,15 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 			return err
 		}
 		args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
+		name := "重建容器"
 		if j.OldRunning {
-			m.progress("正在按中断前的运行状态启动容器")
 			args = append(args, "-d")
+			name = "启动容器"
 		} else {
-			m.progress("正在重建容器并保持停止")
 			args = append(args, "--no-start")
 		}
 		args = append(args, Service)
-		if _, err = m.compose(ctx, args...); err != nil {
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: name}, args...); err != nil {
 			return err
 		}
 		if j.OldRunning {
@@ -205,23 +206,23 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 			if err != nil {
 				return err
 			}
-			m.progress("正在检查恢复后的容器是否稳定监听")
-			if err = m.healthCheck(ctx, nodePorts(s.Node), md.ImageID); err != nil {
+			ports := nodePorts(s.Node)
+			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 				return err
 			}
-			m.progress("容器已稳定监听")
+			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
 		}
 	} else if in != nil {
-		m.progress("中断前没有受管容器，正在删除当前容器")
-		if _, err = m.docker(ctx, "container", "rm", in.ID); err != nil {
+		if _, err = m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "删除容器"}, "container", "rm", in.ID); err != nil {
 			return err
 		}
 	}
-	m.progress("正在清除恢复记录")
 	if err = os.Remove(m.paths.Journal()); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	m.progress("事务恢复完成")
+	m.op(phaseApply, levelStep, "清除记录", m.paths.Journal())
+	m.op(phaseResult, levelResult, "恢复结果", "事务恢复完成")
 	return nil
 }
 func loadSnapshot(path string, v any) error {
@@ -252,14 +253,14 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		return err
 	}
 	if j.Phase == "committed" {
-		m.progress("事务已经完成，正在清除恢复记录")
 		if err = os.Remove(m.paths.Journal()); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		m.progress("恢复记录已清除")
+		m.op(phaseApply, levelStep, "清除记录", m.paths.Journal())
+		m.op(phaseResult, levelResult, "恢复结果", "恢复记录已清除")
 		return nil
 	}
-	m.progress("发现未完成的%s事务，正在继续恢复", transactionKindLabel(j.Kind))
+	m.op(phaseCheck, levelWarn, "发现事务", "未完成的"+transactionKindLabel(j.Kind))
 	if err = m.CheckReady(ctx); err != nil {
 		return err
 	}
@@ -283,7 +284,7 @@ func transactionKindLabel(kind string) string {
 func (m *Manager) Recover(ctx context.Context) error {
 	return m.withLock(ctx, func() error {
 		if _, err := os.Stat(m.paths.Journal()); os.IsNotExist(err) {
-			m.progress("没有未完成事务")
+			m.op(phaseResult, levelResult, "恢复结果", "没有未完成事务")
 			return nil
 		} else if err != nil {
 			return err

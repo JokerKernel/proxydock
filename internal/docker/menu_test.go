@@ -23,6 +23,12 @@ func (w *dockerTerminalOutput) Write(p []byte) (int, error) {
 	return w.Buffer.Write(p)
 }
 
+// WriteString must update the screen too. The embedded buffer's WriteString
+// would otherwise satisfy io.StringWriter and skip Write.
+func (w *dockerTerminalOutput) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
 // Deliver one answer at a time and capture what the user sees at each prompt.
 type dockerTerminalInput struct {
 	answers []string
@@ -169,10 +175,10 @@ func TestDockerMenuResultsWaitBeforeRedraw(t *testing.T) {
 			if !strings.Contains(result, "按 Enter 返回菜单") || strings.Contains(result, "生成/更新配置") {
 				t.Fatalf("result was not shown on its own page: %s", result)
 			}
-			if showConfig && !strings.Contains(result, "REALITY 私钥") || !showConfig && !strings.Contains(result, "[错误] 操作失败：") {
+			if showConfig && !strings.Contains(result, "REALITY 私钥") || !showConfig && !strings.Contains(result, "操作失败") {
 				t.Fatalf("result disappeared before pause: %s", result)
 			}
-			if !strings.Contains(in.screens[3], "›  服务端配置") || strings.Contains(in.screens[3], "按 Enter") || strings.Contains(in.screens[3], "[错误] 操作失败：") {
+			if !strings.Contains(in.screens[3], "›  服务端配置") || strings.Contains(in.screens[3], "按 Enter") || strings.Contains(in.screens[3], "操作失败") {
 				t.Fatalf("result remained after returning to menu: %s", in.screens[3])
 			}
 		})

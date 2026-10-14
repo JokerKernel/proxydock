@@ -329,7 +329,7 @@ func TestDependencyBoundary(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if strings.HasPrefix(value, "proxyforge/") || (strings.HasPrefix(value, "proxydock/internal/") && !strings.HasPrefix(value, "proxydock/internal/docker/")) {
+			if strings.HasPrefix(value, "proxyforge/") || (strings.HasPrefix(value, "proxydock/internal/") && !strings.HasPrefix(value, "proxydock/internal/docker/") && value != "proxydock/internal/terminal") {
 				return fmt.Errorf("Docker package %s imports native package %s", path, value)
 			}
 		}
@@ -405,6 +405,8 @@ func TestRestartFailureRestoresConfigStateAndRunningContainer(t *testing.T) {
 	oldConfig := readFile(t, m.paths.Config())
 	oldState := readFile(t, m.paths.State())
 	f.failRestart = 1
+	var errOut bytes.Buffer
+	m.errOut = &errOut
 	err := m.PatchSetting(context.Background(), "log", "debug")
 	if err == nil || !strings.Contains(err.Error(), "已恢复") {
 		t.Fatalf("expected recovered failure: %v", err)
@@ -418,15 +420,27 @@ func TestRestartFailureRestoresConfigStateAndRunningContainer(t *testing.T) {
 	if _, err = os.Stat(m.paths.Journal()); !os.IsNotExist(err) {
 		t.Fatal("successful rollback left journal")
 	}
+	text := errOut.String()
+	for _, want := range []string{"操作失败", "恢复旧配置、状态与容器", "读取快照", "恢复文件", "恢复结果", "事务恢复完成"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rollback log missing %q:\n%s", want, text)
+		}
+	}
 }
 func TestValidationFailsBeforeLiveMutation(t *testing.T) {
 	m, f := deployed(t)
 	before := readFile(t, m.paths.Config())
 	f.rejectValidation = true
 	f.calls = nil
+	var errOut bytes.Buffer
+	m.errOut = &errOut
 	err := m.PatchSetting(context.Background(), "log", "debug")
 	if err == nil {
 		t.Fatal("invalid candidate accepted")
+	}
+	text := errOut.String()
+	if !strings.Contains(text, "校验 Xray 配置") || !strings.Contains(text, "校验结果") || strings.Contains(text, "备份位置") || strings.Contains(text, "写入配置") {
+		t.Fatalf("validation log: %s", text)
 	}
 	if !bytes.Equal(before, readFile(t, m.paths.Config())) {
 		t.Fatal("invalid candidate overwrote live config")

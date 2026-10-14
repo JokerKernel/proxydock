@@ -32,6 +32,7 @@ func rootBytes(t *testing.T, r map[string]any) []byte {
 }
 func TestStatusDoesNotPrintDockerCalls(t *testing.T) {
 	m, fake := testManager(t)
+	m.traceDocker = true
 	var errOut bytes.Buffer
 	m.errOut = &errOut
 	if _, err := m.Status(context.Background()); err != nil {
@@ -40,23 +41,28 @@ func TestStatusDoesNotPrintDockerCalls(t *testing.T) {
 	if len(fake.calls) == 0 {
 		t.Fatal("status did not query docker")
 	}
-	if strings.Contains(errOut.String(), "调用：") {
+	if strings.Contains(errOut.String(), "调用：") || strings.Contains(errOut.String(), "命令详情") {
 		t.Fatalf("status probe was printed:\n%s", errOut.String())
 	}
 }
 
 func TestRemoveCleanupAndRecoverPrintEachStep(t *testing.T) {
 	m, f := deployed(t)
+	m.traceDocker = true
 	var errOut bytes.Buffer
 	m.errOut = &errOut
 	if err := m.Remove(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"正在停止并移除容器 " + Container,
-		"正在记录已移除状态，配置和数据保留",
+		"移除容器",
+		"docker compose … down",
+		"命令详情",
+		"docker --host " + endpoint + " compose --project-name " + Project + " --project-directory " + m.paths.Deploy() + " --file " + m.paths.Compose() + " down",
+		"记录状态",
+		"配置和数据保留",
+		"移除结果",
 		"容器已移除，配置、凭据和备份已保留",
-		"调用：docker --host " + endpoint + " compose --project-name " + Project + " --project-directory " + m.paths.Deploy() + " --file " + m.paths.Compose() + " down",
 	} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Fatalf("remove missing %q:\n%s", want, errOut.String())
@@ -67,11 +73,13 @@ func TestRemoveCleanupAndRecoverPrintEachStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"正在确认容器已移除，且没有未完成事务",
-		"正在永久删除配置、凭据、证书和备份",
-		"正在删除 " + m.paths.Deploy(),
-		"正在删除 " + m.paths.Data(),
-		"Docker Xray 残留已清理，其他容器和镜像未改动",
+		"检查清理",
+		"容器已移除，没有未完成事务",
+		"删除数据",
+		m.paths.Deploy(),
+		m.paths.Data(),
+		"清理结果",
+		"其他容器和镜像未改动",
 	} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Fatalf("cleanup missing %q:\n%s", want, errOut.String())
@@ -99,14 +107,18 @@ func TestRemoveCleanupAndRecoverPrintEachStep(t *testing.T) {
 		t.Fatal("recovery lost old config")
 	}
 	for _, want := range []string{
-		"发现未完成的配置事务，正在继续恢复",
-		"正在读取事务快照",
-		"正在停止当前容器",
-		"正在恢复配置、状态和部署记录",
-		"正在按中断前的运行状态启动容器",
-		"正在检查恢复后的容器是否稳定监听",
-		"容器已稳定监听",
-		"正在清除恢复记录",
+		"发现事务",
+		"未完成的配置",
+		"读取快照",
+		"停止容器",
+		"恢复文件",
+		"配置、状态和部署记录",
+		"启动容器",
+		"稳定检查",
+		"运行状态",
+		"运行中，监听端口正常",
+		"清除记录",
+		"恢复结果",
 		"事务恢复完成",
 	} {
 		if !strings.Contains(errOut.String(), want) {
@@ -125,6 +137,7 @@ func TestRemoveCleanupAndRecoverPrintEachStep(t *testing.T) {
 
 func TestApplyConfigPrintsEachStep(t *testing.T) {
 	m, _ := deployed(t)
+	m.traceDocker = true
 	var errOut bytes.Buffer
 	m.errOut = &errOut
 	s, err := m.LoadState()
@@ -141,21 +154,35 @@ func TestApplyConfigPrintsEachStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"正在用本机镜像启动临时容器，执行 xray run -test 校验配置",
-		"调用：docker --host " + endpoint,
-		"--pull never",
+		"应用访问策略",
+		"黑名单拦截，其余按现有规则放行",
+		"校验 Xray 配置",
+		"docker run … run -test -config …",
+		"命令详情",
+		"docker --host " + endpoint,
 		"run -test -config /run/proxyforge/config.json",
-		"配置校验通过",
-		"正在写入服务端配置",
-		"正在重启容器，使新配置生效",
-		"正在检查容器是否稳定监听端口",
-		"容器已稳定监听",
-		"正在保存节点状态",
-		"配置已生效",
+		"校验结果",
+		"通过",
+		"备份原配置",
+		"备份位置",
+		"写入配置",
+		m.paths.Config(),
+		"重启容器",
+		"docker compose … restart xray",
+		"稳定检查",
+		"运行状态",
+		"运行中，监听端口正常",
+		"保存状态",
+		m.paths.State(),
+		"更新结果",
+		"访问策略已更新",
 	} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Fatalf("missing %q:\n%s", want, errOut.String())
 		}
+	}
+	if strings.Contains(errOut.String(), "调用：") || strings.Contains(errOut.String(), "配置已生效") {
+		t.Fatalf("duplicate or stale operation text:\n%s", errOut.String())
 	}
 }
 

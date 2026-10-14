@@ -70,7 +70,7 @@ func (m *Manager) patchLinks(ctx context.Context, md Metadata, in *inspection, o
 			return err
 		}
 	}
-	return m.applyConfig(ctx, md, in, next, patched, false)
+	return m.applyConfig(ctx, md, in, next, patched, false, "线路已更新")
 }
 func (m *Manager) AddLanding(ctx context.Context, name, security string, port int) (model.LandingPeer, error) {
 	var peer model.LandingPeer

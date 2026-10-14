@@ -235,15 +235,30 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 	}
 	return s, nil
 }
+
+const (
+	healthPollInterval    = time.Second
+	healthStabilityWindow = 5 * time.Second
+)
+
 func (m *Manager) waitHealthy(ctx context.Context, ports []int, imageID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	var ticker *time.Ticker
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
 	var id, started string
 	var restarts int
 	var stableSince time.Time
 	lastWait := time.Now()
 	readyAnnounced := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("容器监听/稳定运行检查超时: %w", err)
+		}
 		var in *inspection
 		var err error
 		if id == "" {
@@ -265,6 +280,7 @@ func (m *Manager) waitHealthy(ctx context.Context, ports []int, imageID string) 
 			started = in.State.StartedAt
 			restarts = in.RestartCount
 			stableSince = time.Now()
+			ticker = time.NewTicker(healthPollInterval)
 		} else if id != in.ID || started != in.State.StartedAt || restarts != in.RestartCount {
 			return fmt.Errorf("容器启动后发生重建或自动重启")
 		}
@@ -278,23 +294,23 @@ func (m *Manager) waitHealthy(ctx context.Context, ports []int, imageID string) 
 			_ = conn.Close()
 		}
 		if ready && !readyAnnounced {
-			remaining := 5*time.Second - time.Since(stableSince)
+			remaining := healthStabilityWindow - time.Since(stableSince)
 			if remaining > 0 {
-				m.progress("端口已可连接，继续观察 %d 秒，确认容器没有重启", int(remaining.Round(time.Second)/time.Second))
+				m.op(phaseApply, levelInfo, "观察窗口", fmt.Sprintf("端口已可连接，继续观察 %d 秒，确认容器没有重启", int(remaining.Round(time.Second)/time.Second)))
 			}
 			readyAnnounced = true
 		}
 		if !ready && time.Since(lastWait) >= 2*time.Second {
-			m.progress("仍在等待容器监听端口")
+			m.op(phaseApply, levelInfo, "等待监听", "仍在等待容器监听端口")
 			lastWait = time.Now()
 		}
-		if ready && time.Since(stableSince) >= 5*time.Second {
+		if ready && time.Since(stableSince) >= healthStabilityWindow {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("容器监听/稳定运行检查超时: %w", ctx.Err())
-		case <-time.After(200 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 }

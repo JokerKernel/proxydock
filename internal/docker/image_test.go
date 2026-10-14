@@ -211,6 +211,7 @@ func TestStableAndPrereleaseUseOfficialTags(t *testing.T) {
 func TestPrepareWaitsForEnterAfterPull(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)
+	m.traceDocker = true
 	var out dockerTerminalOutput
 	m.out, m.errOut = &out, &out
 	in := &dockerTerminalInput{answers: []string{"\n"}, output: &out}

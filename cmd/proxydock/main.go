@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"proxydock/internal/cli"
@@ -11,7 +10,7 @@ import (
 
 func main() {
 	if err := cli.New(version.String()).Execute(); err != nil {
-		fmt.Fprintln(terminal.NewTerminalColorWriter(os.Stderr), "[错误] 操作失败：", err)
+		terminal.WriteOperation(terminal.NewTerminalColorWriter(os.Stderr), terminal.LevelError, "操作失败", err.Error())
 		os.Exit(1)
 	}
 }
