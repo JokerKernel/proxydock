@@ -13,9 +13,11 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,12 +133,8 @@ func (m *Manager) validateCertificate(a model.LandingAccess) error {
 	return nil
 }
 func (m *Manager) renderNode(n model.Node) (model.Node, error) {
-	b, err := jsonBytes(n)
+	rendered, err := cloneNode(n)
 	if err != nil {
-		return n, err
-	}
-	var rendered model.Node
-	if err = decodeNode(b, &rendered); err != nil {
 		return n, err
 	}
 	mapAccess := func(a *model.LandingAccess) error {
@@ -187,6 +185,39 @@ func validateNode(n model.Node) error {
 	}
 	if strings.TrimSpace(n.Target) == "" && !n.IsTLS() {
 		return fmt.Errorf("REALITY target 不能为空")
+	}
+	return nil
+}
+
+// Validate explicit values before Docker checks or automatic transaction recovery.
+func validateGenerateInput(opts model.GenerateOptions) error {
+	if opts.Security != "" {
+		security := model.NormalizeLandingSecurity(opts.Security)
+		if security != "reality" && security != "tls" {
+			return fmt.Errorf("协议必须是 reality 或 tls")
+		}
+	}
+	if opts.Server != "" && !validServer(opts.Server) {
+		return fmt.Errorf("服务器地址无效")
+	}
+	if opts.Port != 0 && (opts.Port < 1 || opts.Port > 65535) {
+		return fmt.Errorf("监听端口无效")
+	}
+	if opts.XrayFallbackPort != 0 && (opts.XrayFallbackPort < 1024 || opts.XrayFallbackPort > 65535) {
+		return fmt.Errorf("回落端口无效")
+	}
+	if opts.SNI != "" && !hostname(opts.SNI, true) {
+		return fmt.Errorf("SNI 必须为有效域名")
+	}
+	if opts.Target != "" {
+		host, value, err := net.SplitHostPort(opts.Target)
+		port, portErr := strconv.Atoi(value)
+		if err != nil || !validServer(host) || portErr != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("REALITY target 必须为有效 host:port")
+		}
+	}
+	if opts.UserName != "" && !namePattern.MatchString(opts.UserName) || opts.InboundTag != "" && !namePattern.MatchString(opts.InboundTag) {
+		return fmt.Errorf("用户名或入站标签无效")
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,7 +68,12 @@ func (m *Manager) saveNode(n model.Node) error {
 		if err != nil {
 			return err
 		}
-		if err := m.stateWrite(filepath.Join(m.paths.Data(), f.name), data, 0600); err != nil {
+		path := filepath.Join(m.paths.Data(), f.name)
+		// Retain the historical sidecar files without rewriting unchanged data.
+		if old, err := readPrivate(path); err == nil && bytes.Equal(old, data) {
+			continue
+		}
+		if err := m.stateWrite(path, data, 0600); err != nil {
 			return err
 		}
 	}
@@ -100,6 +106,19 @@ func (m *Manager) managedConfig() (State, []byte, error) {
 		return s, nil, fmt.Errorf("配置与受管状态不一致；请重新生成配置或通过编辑入口恢复一致性")
 	}
 	return s, b, nil
+}
+
+// Read-only operations must not recover a transaction or consume partial state.
+func (m *Manager) checkNoTransaction() error {
+	if err := safePath(m.paths.Journal()); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(m.paths.Journal()); err == nil {
+		return fmt.Errorf("存在未完成事务，请先执行 proxydock recover")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 func (m *Manager) hasData() bool {
 	for _, p := range []string{m.paths.Data(), m.paths.Deploy()} {

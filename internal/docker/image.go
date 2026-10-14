@@ -52,7 +52,7 @@ func checkPreparedVersion(md Metadata, version string) error {
 	return fmt.Errorf("镜像已准备为 %s（%s），请先通过升级入口切换版本", md.RequestedVersion, md.Channel)
 }
 
-func (m *Manager) prepareImage(ctx context.Context, version string) (Metadata, error) {
+func (m *Manager) prepareImage(ctx context.Context, version string, known *Metadata) (Metadata, error) {
 	v, err := normalizeImageSelection(version)
 	if err != nil {
 		return Metadata{}, err
@@ -99,6 +99,14 @@ func (m *Manager) prepareImage(ctx context.Context, version string) (Metadata, e
 	if ref == "" {
 		return Metadata{}, fmt.Errorf("镜像缺少官方仓库 digest")
 	}
+	if known != nil && image.ID == known.ImageID {
+		if channel == "pinned" && v != known.RequestedVersion {
+			return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
+		}
+		md := *known
+		md.ImageRef, md.Channel = ref, channel
+		return md, nil
+	}
 	output, err := m.coreRun(ctx, image.ID, nil, "version")
 	if err != nil {
 		return Metadata{}, fmt.Errorf("镜像版本检测失败: %w", err)
@@ -114,9 +122,6 @@ func (m *Manager) prepareImage(ctx context.Context, version string) (Metadata, e
 	}
 	if channel == "pinned" && actualVersion != v {
 		return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
-	}
-	if _, err = m.keyPair(ctx, image.ID); err != nil {
-		return Metadata{}, err
 	}
 	md := Metadata{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance, ImageRef: ref, ImageID: image.ID, Version: line, RequestedVersion: actualVersion, Channel: channel, DesiredState: "stopped", UpdatedAt: m.now().UTC()}
 	return md, nil

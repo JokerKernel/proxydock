@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func (m *Manager) coreRun(ctx context.Context, imageID string, mounts []string, command ...string) ([]byte, error) {
+func (m *Manager) coreRun(ctx context.Context, imageID string, mounts []string, command ...string) (output []byte, runErr error) {
 	if !validImageID(imageID) {
 		return nil, fmt.Errorf("无效的本机镜像 ID")
 	}
@@ -23,6 +23,11 @@ func (m *Manager) coreRun(ctx context.Context, imageID string, mounts []string, 
 	args = append(args, imageID)
 	args = append(args, command...)
 	defer func() {
+		// --rm removes a successfully completed container. Inspect only on failure,
+		// when cancellation or a daemon error might have left it running.
+		if runErr == nil {
+			return
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		b, err := m.docker(cleanupCtx, "container", "inspect", name)

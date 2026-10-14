@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"syscall"
 )
 
@@ -116,6 +117,30 @@ func loadJSON(path string, v any) error {
 func jsonBytes(v any) ([]byte, error) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	return append(b, '\n'), err
+}
+
+func sameJSON(a, b []byte) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	decode := func(data []byte) (any, error) {
+		d := json.NewDecoder(bytes.NewReader(data))
+		d.UseNumber()
+		var value, extra any
+		if err := d.Decode(&value); err != nil {
+			return nil, err
+		}
+		if err := d.Decode(&extra); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("JSON 包含多余内容")
+		}
+		return value, nil
+	}
+	left, err := decode(a)
+	if err != nil {
+		return false
+	}
+	right, err := decode(b)
+	return err == nil && reflect.DeepEqual(left, right)
 }
 func saveJSON(path string, v any) error {
 	b, err := jsonBytes(v)

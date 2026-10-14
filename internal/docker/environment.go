@@ -12,7 +12,8 @@ import (
 
 var composeVersionPattern = regexp.MustCompile(`^v?([0-9]+)\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 
-func (m *Manager) CheckReady(ctx context.Context) error {
+// Queries and temporary validation containers do not require Compose.
+func (m *Manager) checkDocker() error {
 	if err := m.rootCheck(); err != nil {
 		return err
 	}
@@ -21,6 +22,13 @@ func (m *Manager) CheckReady(ctx context.Context) error {
 	}
 	if _, err := m.lookPath("docker"); err != nil {
 		return fmt.Errorf("Docker 未安装: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) CheckReady(ctx context.Context) error {
+	if err := m.checkDocker(); err != nil {
+		return err
 	}
 	version, err := m.docker(ctx, "compose", "version", "--short")
 	if err != nil {

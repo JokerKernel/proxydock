@@ -35,25 +35,6 @@ func (m *Manager) Command() *cobra.Command {
 	deploy := m.generateCommand("deploy", &yes)
 	var version string
 	deploy.Flags().StringVar(&version, "version", "", "首次部署镜像：stable 或 latest（缺省）、pre-release 或具体版本号")
-	runGenerate := deploy.RunE
-	deploy.RunE = func(cmd *cobra.Command, args []string) error {
-		if _, err := m.metadata(); os.IsNotExist(err) {
-			if err = m.Prepare(cmd.Context(), version); err != nil {
-				return err
-			}
-		} else if err != nil {
-			return err
-		} else if version != "" {
-			md, err := m.metadata()
-			if err != nil {
-				return err
-			}
-			if err = checkPreparedVersion(md, version); err != nil {
-				return err
-			}
-		}
-		return runGenerate(cmd, args)
-	}
 	cmd.AddCommand(deploy)
 	cmd.AddCommand(&cobra.Command{Use: "status", Short: "查看 Docker 实例状态", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		s, err := m.Status(cmd.Context())
@@ -174,6 +155,15 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 	var opts model.GenerateOptions
 	var force bool
 	cmd := &cobra.Command{Use: use, Short: "生成 REALITY/TLS 配置，保留现有凭据与线路", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if err := validateGenerateInput(opts); err != nil {
+			return err
+		}
+		if use == "deploy" {
+			version, _ := cmd.Flags().GetString("version")
+			if err := m.prepareDeployment(cmd.Context(), version); err != nil {
+				return err
+			}
+		}
 		if _, err := os.Stat(m.paths.Config()); err == nil && !force {
 			if err = m.confirmInput(cmd.InOrStdin(), *yes, "完整生成会覆盖手动配置，确认继续？"); err != nil {
 				return err
@@ -320,7 +310,7 @@ func (m *Manager) landingCommand() *cobra.Command {
 		fmt.Fprint(m.out, string(b))
 		return nil
 	}}
-	cmd.Flags().StringVar(&security, "security", "reality", "reality 或 tls")
+	cmd.Flags().StringVar(&security, "security", "reality", "current（共享主节点端口）、reality 或 tls（独立端口）")
 	cmd.Flags().IntVar(&port, "port", 0, "独立 TLS 接入端口")
 	cmd.Flags().StringVar(&output, "output", "", "peer JSON 导出路径")
 	return cmd

@@ -33,7 +33,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 			return err
 		}
 		statusCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		s, _ := m.Status(statusCtx)
+		s, _ := m.menuStatus(statusCtx)
 		cancel()
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）")
@@ -44,7 +44,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		fmt.Fprintln(u.out)
 		u.menuChoice("4", "移除容器（删除容器，保留配置和数据）")
 		u.menuChoice("5", "清理卸载残留（永久删除配置、凭据、证书和备份）")
-		u.menuChoice("6", "恢复未完成事务（继续中断的配置或升级）")
+		u.menuChoice("6", "恢复未完成事务（回滚中断的配置或升级）")
 		maxChoice := 6
 		if m.programManagement != nil {
 			fmt.Fprintln(u.out)
@@ -284,7 +284,7 @@ func shownVersion(version string) string {
 }
 
 func (m *Manager) confirmRemove(ctx context.Context, u *ui) error {
-	u.confirmationPanel("危险操作确认：移除容器", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"停止并移除本实例容器"}}, confirmSection{title: "保留", items: []string{"服务端配置、凭据、证书和备份", "落地接入和中转线路"}}, confirmSection{title: "重要影响", items: []string{"代理会立即停止，直到重新部署"}})
+	u.confirmationPanel("危险操作确认：移除容器", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"停止并移除本实例容器"}}, confirmSection{title: "保留", items: []string{"服务端配置、凭据、证书和备份", "落地接入和中转线路"}}, confirmSection{title: "重要影响", items: []string{"代理会立即停止，再次启动可沿用保留的配置"}})
 	if err := u.confirm("移除本实例容器，保留配置和数据？"); err != nil {
 		return err
 	}
@@ -413,12 +413,15 @@ func (m *Manager) showServerConfig(u *ui) error {
 func (m *Manager) printConfigCard(u *ui) {
 	service := "无法读取"
 	statusCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if st, err := m.Status(statusCtx); err == nil || st.Label != "" {
+	if st, err := m.menuStatus(statusCtx); err == nil || st.Label != "" {
 		service = st.Label
 	}
 	cancel()
-	state, stateErr := m.LoadState()
 	s, cfg, cfgErr := m.managedConfig()
+	state, stateErr := s, cfgErr
+	if cfgErr != nil {
+		state, stateErr = m.LoadState()
+	}
 	node := state.Node
 	hasConfig := cfgErr == nil
 	if hasConfig {
@@ -852,7 +855,7 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 func (m *Manager) clientMenu(ctx context.Context, u *ui) (bool, error) {
 	u.pageHeader("Xray（Docker）", "客户端配置")
 	u.menuChoice("1", "普通节点 · Clash YAML（Mihomo/Clash Meta）")
-	u.menuChoice("2", "普通节点 · 原生 JSON（sing-box / Xray 客户端）")
+	u.menuChoice("2", "普通节点 · 原生 JSON（Xray 客户端）")
 	u.menuChoice("3", "中转节点客户端配置（选择线路与格式）")
 	u.menuChoice("0/q", "返回")
 	choice, err := u.chooseNumber("请选择", 0, 3, 1)
@@ -896,7 +899,7 @@ func (m *Manager) relayClientMenu(ctx context.Context, u *ui) (bool, error) {
 	selected := links[choice-1]
 	u.clearScreen()
 	u.pageHeader("Xray（Docker）", "客户端配置", "中转节点", selected.Name)
-	u.menuChoice("1", "原生 JSON（sing-box / Xray 客户端）")
+	u.menuChoice("1", "原生 JSON（Xray 客户端）")
 	u.menuChoice("2", "Clash YAML（Mihomo/Clash Meta）")
 	u.menuChoice("0/q", "返回")
 	formatChoice, err := u.chooseNumber("请选择客户端格式", 0, 2, 1)
@@ -1238,7 +1241,7 @@ func (m *Manager) addLandingInteractive(ctx context.Context, u *ui, node model.N
 	if err != nil {
 		return err
 	}
-	security := "reality"
+	security := model.LandingSecurityCurrent
 	port := 0
 	if choice == 2 {
 		security = "tls"

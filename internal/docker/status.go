@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,11 @@ type inspection struct {
 		RW          bool
 	}
 }
+
+type dockerQueryError struct{ error }
+
+func (e *dockerQueryError) Unwrap() error { return e.error }
+
 type Status struct {
 	Label        string `json:"label"`
 	Detail       string `json:"detail,omitempty"`
@@ -57,7 +63,7 @@ type Status struct {
 func (m *Manager) inspect(ctx context.Context) (*inspection, error) {
 	b, err := m.docker(ctx, "container", "ls", "--all", "--no-trunc", "--filter", "name=^/"+Container+"$", "--format", "{{.ID}}")
 	if err != nil {
-		return nil, fmt.Errorf("检查 Docker 容器失败: %w", err)
+		return nil, fmt.Errorf("检查 Docker 容器失败: %w", &dockerQueryError{err})
 	}
 	if strings.TrimSpace(string(b)) == "" {
 		return nil, nil
@@ -65,9 +71,13 @@ func (m *Manager) inspect(ctx context.Context) (*inspection, error) {
 	if len(strings.Fields(string(b))) != 1 {
 		return nil, fmt.Errorf("容器名称对应多个实例")
 	}
-	b, err = m.docker(ctx, "container", "inspect", Container)
+	return m.inspectContainer(ctx, strings.TrimSpace(string(b)))
+}
+
+func (m *Manager) inspectContainer(ctx context.Context, id string) (*inspection, error) {
+	b, err := m.docker(ctx, "container", "inspect", id)
 	if err != nil {
-		return nil, fmt.Errorf("读取容器详情失败: %w", err)
+		return nil, fmt.Errorf("读取容器详情失败: %w", &dockerQueryError{err})
 	}
 	var values []inspection
 	if err = json.Unmarshal(b, &values); err != nil || len(values) != 1 {
@@ -105,19 +115,27 @@ func (m *Manager) checkOwned(in *inspection) error {
 	return nil
 }
 func (m *Manager) Status(ctx context.Context) (Status, error) {
+	return m.status(ctx, true)
+}
+
+func (m *Manager) menuStatus(ctx context.Context) (Status, error) {
+	return m.status(ctx, false)
+}
+
+func (m *Manager) status(ctx context.Context, full bool) (Status, error) {
 	previous := m.quietDockerNotes
 	m.quietDockerNotes = true
 	defer func() { m.quietDockerNotes = previous }()
-	return m.collectStatus(ctx)
+	return m.collectStatus(ctx, full)
 }
-func (m *Manager) collectStatus(ctx context.Context) (Status, error) {
+func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) {
 	s := Status{Label: "未部署"}
 	if _, err := m.lookPath("docker"); err != nil {
 		s.Label = "Docker 未安装"
 		s.Detail = "请预先安装 Docker 和 Compose 插件"
 		return s, err
 	}
-	if err := m.CheckReady(ctx); err != nil {
+	if err := m.checkDocker(); err != nil {
 		s.Label = "Docker 不可用"
 		s.Detail = err.Error()
 		return s, err
@@ -125,6 +143,10 @@ func (m *Manager) collectStatus(ctx context.Context) (Status, error) {
 	in, err := m.inspect(ctx)
 	if err != nil {
 		s.Label = "异常"
+		var queryErr *dockerQueryError
+		if errors.As(err, &queryErr) {
+			s.Label = "Docker 不可用"
+		}
 		s.Detail = err.Error()
 		return s, err
 	}
@@ -164,7 +186,7 @@ func (m *Manager) collectStatus(ctx context.Context) (Status, error) {
 			return s, err
 		}
 	}
-	if metaErr == nil {
+	if metaErr == nil && full {
 		if _, _, stateErr := m.managedConfig(); stateErr != nil && !os.IsNotExist(stateErr) {
 			s.Label = "异常"
 			s.Detail = stateErr.Error()
@@ -222,7 +244,13 @@ func (m *Manager) waitHealthy(ctx context.Context, ports []int, imageID string) 
 	lastWait := time.Now()
 	readyAnnounced := false
 	for {
-		in, err := m.inspect(ctx)
+		var in *inspection
+		var err error
+		if id == "" {
+			in, err = m.inspect(ctx)
+		} else {
+			in, err = m.inspectContainer(ctx, id)
+		}
 		if err != nil {
 			return err
 		}

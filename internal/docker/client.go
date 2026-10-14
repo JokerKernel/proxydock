@@ -10,20 +10,24 @@ import (
 )
 
 func (m *Manager) Client(ctx context.Context, format, name string) ([]byte, error) {
+	switch format {
+	case "", "native", "json", "clash", "mihomo", "yaml":
+	default:
+		return nil, fmt.Errorf("客户端格式无效，可选 native 或 clash")
+	}
 	var output []byte
 	err := m.withLock(ctx, func() error {
-		md, _, err := m.readOperation(ctx)
-		if err != nil {
+		if err := m.checkNoTransaction(); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
 			return err
 		}
 		s, _, err := m.managedConfig()
 		if err != nil {
 			return err
 		}
-		n, err := cloneNode(s.Node)
-		if err != nil {
-			return err
-		}
+		n := s.Node
 		if name != "" {
 			found := false
 			for _, a := range n.LandingAccesses {
@@ -63,13 +67,8 @@ func (m *Manager) Client(ctx context.Context, format, name string) ([]byte, erro
 		switch format {
 		case "", "native", "json":
 			output, err = m.codec.RenderClient(n)
-			if err == nil {
-				err = m.validateBytes(ctx, md.ImageID, output)
-			}
 		case "clash", "mihomo", "yaml":
 			output, err = export.RenderClient(n)
-		default:
-			return fmt.Errorf("客户端格式无效，可选 native 或 clash")
 		}
 		return err
 	})

@@ -74,11 +74,19 @@ func (m *Manager) patchLinks(ctx context.Context, md Metadata, in *inspection, o
 }
 func (m *Manager) AddLanding(ctx context.Context, name, security string, port int) (model.LandingPeer, error) {
 	var peer model.LandingPeer
+	if err := linkName(name); err != nil {
+		return peer, err
+	}
+	security = model.NormalizeLandingSecurity(security)
+	sharePrimary := security == model.LandingSecurityCurrent
+	if security != "reality" && security != "tls" && !sharePrimary {
+		return peer, fmt.Errorf("落地协议必须为 current、reality 或 tls")
+	}
+	if port != 0 && (security != "tls" || port < 1024 || port > 65535) {
+		return peer, fmt.Errorf("TLS 落地端口无效")
+	}
 	err := m.withLock(ctx, func() error {
-		if err := linkName(name); err != nil {
-			return err
-		}
-		md, in, err := m.readOperation(ctx)
+		md, in, err := m.prepareOperation(ctx)
 		if err != nil {
 			return err
 		}
@@ -100,7 +108,9 @@ func (m *Manager) AddLanding(ctx context.Context, name, security string, port in
 				return fmt.Errorf("名称已被中转线路占用")
 			}
 		}
-		security = model.NormalizeLandingSecurity(security)
+		if sharePrimary {
+			security = model.NormalizeLandingSecurity(next.Security)
+		}
 		if security == "reality" && next.IsTLS() {
 			return fmt.Errorf("TLS 主节点不支持共享 REALITY 落地，请选择 tls")
 		}
@@ -118,7 +128,7 @@ func (m *Manager) AddLanding(ctx context.Context, name, security string, port in
 				}
 			}
 		}()
-		if security == "tls" {
+		if security == "tls" && !sharePrimary {
 			if port == 0 {
 				port, err = m.freeHighPort(next.Port)
 				if err != nil {
@@ -139,8 +149,6 @@ func (m *Manager) AddLanding(ctx context.Context, name, security string, port in
 			access.KeyFile = cert.KeyFile
 			access.CertificateSHA256 = cert.CertificateSHA256
 			access.CertificatePublicKeySHA256 = cert.CertificatePublicKeySHA256
-		} else if security != "reality" {
-			return fmt.Errorf("落地协议必须为 reality 或 tls")
 		}
 		next.LandingAccesses = append(next.LandingAccesses, access)
 		if err = m.patchLinks(ctx, md, in, s.Node, next, b); err != nil {
@@ -155,8 +163,16 @@ func (m *Manager) AddLanding(ctx context.Context, name, security string, port in
 func landingPeer(n model.Node, a model.LandingAccess) model.LandingPeer {
 	p := model.LandingPeer{Name: a.Name, Core: "xray", Security: model.NormalizeLandingSecurity(a.Security), Server: n.Server, Port: n.Port, SNI: n.SNI, UUID: a.UUID, Flow: model.VisionFlow}
 	if a.UsesPrimaryInbound() {
-		p.PublicKey = n.PublicKey
-		p.ShortID = n.ShortID
+		p.Security = model.NormalizeLandingSecurity(n.Security)
+		if n.IsTLS() {
+			if n.TLSCertificate != nil {
+				p.CertificateSHA256 = n.TLSCertificate.CertificateSHA256
+				p.CertificatePublicKeySHA256 = n.TLSCertificate.CertificatePublicKeySHA256
+			}
+		} else {
+			p.PublicKey = n.PublicKey
+			p.ShortID = n.ShortID
+		}
 	} else {
 		p.Port = a.Port
 		p.SNI = a.SNI
@@ -166,14 +182,14 @@ func landingPeer(n model.Node, a model.LandingAccess) model.LandingPeer {
 	return p
 }
 func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingPeer) error {
+	if err := linkName(name); err != nil {
+		return err
+	}
+	if err := validatePeer(peer); err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
-		if err := linkName(name); err != nil {
-			return err
-		}
-		if err := validatePeer(peer); err != nil {
-			return err
-		}
-		md, in, err := m.readOperation(ctx)
+		md, in, err := m.prepareOperation(ctx)
 		if err != nil {
 			return err
 		}
@@ -207,9 +223,20 @@ func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingP
 	})
 }
 func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) error {
+	if kind != "landing" && kind != "relay" {
+		return fmt.Errorf("线路类型无效")
+	}
+	if action != "remove" && action != "enable" && action != "disable" {
+		return fmt.Errorf("线路操作无效")
+	}
+	if err := linkName(name); err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
-		md, in, err := m.readOperation(ctx)
-		if err != nil {
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
 			return err
 		}
 		s, b, err := m.managedConfig()
@@ -221,14 +248,14 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 			return err
 		}
 		found := false
-		if action != "remove" && action != "enable" && action != "disable" {
-			return fmt.Errorf("线路操作无效")
-		}
 		switch kind {
 		case "landing":
 			for i, a := range next.LandingAccesses {
 				if a.Name == name {
 					found = true
+					if action != "remove" && a.Enabled == (action == "enable") {
+						return nil
+					}
 					if action == "remove" {
 						next.LandingAccesses = append(next.LandingAccesses[:i], next.LandingAccesses[i+1:]...)
 					} else {
@@ -242,6 +269,9 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 			for i, r := range next.RelayLinks {
 				if r.Name == name {
 					found = true
+					if action != "remove" && r.Enabled == (action == "enable") {
+						return nil
+					}
 					if action == "remove" {
 						next.RelayLinks = append(next.RelayLinks[:i], next.RelayLinks[i+1:]...)
 					} else {
@@ -256,6 +286,10 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 		}
 		if !found {
 			return fmt.Errorf("未找到线路 %s", name)
+		}
+		md, in, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
 		}
 		return m.patchLinks(ctx, md, in, s.Node, next, b)
 	})

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -75,6 +76,9 @@ func (m *Manager) checkProject(ctx context.Context) error {
 }
 func stringsFields(b []byte) []string { return strings.Fields(string(b)) }
 func (m *Manager) Prepare(ctx context.Context, version string) error {
+	if _, err := normalizeImageSelection(version); err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
 		if err := m.CheckReady(ctx); err != nil {
 			return err
@@ -109,7 +113,7 @@ func (m *Manager) Prepare(ctx context.Context, version string) error {
 		if err = m.ensureDirs(); err != nil {
 			return err
 		}
-		md, err := m.prepareImage(ctx, version)
+		md, err := m.prepareImage(ctx, version, nil)
 		if err != nil {
 			return err
 		}
@@ -146,10 +150,18 @@ func (m *Manager) Prepare(ctx context.Context, version string) error {
 	})
 }
 func (m *Manager) savePreferences(md Metadata) error {
-	return saveJSON(filepath.Join(m.paths.Data(), "preferences.json"), struct {
+	path := filepath.Join(m.paths.Data(), "preferences.json")
+	data, err := jsonBytes(struct {
 		Channel string `json:"channel"`
 		Version string `json:"version"`
 	}{md.Channel, md.RequestedVersion})
+	if err != nil {
+		return err
+	}
+	if old, err := readPrivate(path); err == nil && bytes.Equal(old, data) {
+		return nil
+	}
+	return atomicWrite(path, data, 0600)
 }
 func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	keys, err := m.keyPair(ctx, md.ImageID)
@@ -179,6 +191,9 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	return m.validateBytes(ctx, md.ImageID, client)
 }
 func (m *Manager) Upgrade(ctx context.Context, version string) error {
+	if _, err := normalizeImageSelection(version); err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
 		if err := m.CheckReady(ctx); err != nil {
 			return err
@@ -206,9 +221,29 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 		if _, err = m.docker(ctx, "image", "inspect", old.ImageID); err != nil {
 			return fmt.Errorf("回滚镜像不在本机，拒绝升级: %w", err)
 		}
-		md, err := m.prepareImage(ctx, version)
+		md, err := m.prepareImage(ctx, version, &old)
 		if err != nil {
 			return err
+		}
+		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {
+			if md.Channel != old.Channel {
+				j, err := m.begin("upgrade", in)
+				if err != nil {
+					return err
+				}
+				md.UpdatedAt = m.now().UTC()
+				if err = saveJSON(m.paths.Metadata(), md); err != nil {
+					return m.rollback(j, err)
+				}
+				if err = m.savePreferences(md); err != nil {
+					return m.rollback(j, err)
+				}
+				if err = m.commit(j); err != nil {
+					return m.rollback(j, err)
+				}
+			}
+			m.progress("镜像未变化，无需重建容器")
+			return nil
 		}
 		if err = m.probeCapabilities(ctx, md); err != nil {
 			return err
@@ -478,21 +513,17 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 
 // Bounded operations deliberately preserve user stop state.
 func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
+	switch action {
+	case "logs", "start", "stop", "restart":
+	default:
+		return nil, fmt.Errorf("服务操作无效")
+	}
 	if action == "logs" {
-		if err := m.CheckReady(ctx); err != nil {
-			return nil, err
-		}
-		md, err := m.metadata()
+		in, err := m.logContainer(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if err = m.checkCompose(md); err != nil {
-			return nil, err
-		}
-		if _, err = m.inspect(ctx); err != nil {
-			return nil, err
-		}
-		return m.compose(ctx, "logs", "--no-color", "--tail", "100", Service)
+		return m.docker(ctx, "logs", "--tail", "100", in.ID)
 	}
 	var output []byte
 	err := m.withLock(ctx, func() error {
@@ -516,14 +547,24 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		if action != "start" && action != "stop" && action != "restart" {
-			return fmt.Errorf("服务操作无效")
+		if action == "restart" && in == nil {
+			return fmt.Errorf("容器已移除，请先启动")
 		}
-		state, b, err := m.managedConfig()
-		if err != nil {
-			return err
+		if action == "stop" && (in == nil || !in.State.Running && !in.State.Restarting) && md.DesiredState == "stopped" {
+			m.progress("容器已停止")
+			return nil
 		}
+		var state State
 		if action != "stop" {
+			var b []byte
+			state, b, err = m.managedConfig()
+			if err != nil {
+				return err
+			}
+			if action == "start" && in != nil && in.State.Running && !in.State.Paused && !in.State.Restarting && in.State.Error == "" && md.DesiredState == "running" {
+				m.progress("容器已运行")
+				return nil
+			}
 			if err = m.validateBytes(ctx, md.ImageID, b); err != nil {
 				return err
 			}
@@ -541,9 +582,6 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 				output, err = m.compose(ctx, "stop", Service)
 			}
 		case "restart":
-			if in == nil {
-				return fail(fmt.Errorf("容器已移除，请先启动"))
-			}
 			output, err = m.compose(ctx, "restart", Service)
 		}
 		if err != nil {
@@ -573,18 +611,23 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 	return output, err
 }
 func (m *Manager) FollowLogs(ctx context.Context) error {
-	if err := m.CheckReady(ctx); err != nil {
-		return err
-	}
-	md, err := m.metadata()
+	in, err := m.logContainer(ctx)
 	if err != nil {
 		return err
 	}
-	if err = m.checkCompose(md); err != nil {
-		return err
+	return m.dockerStream(ctx, m.out, m.errOut, "logs", "--tail", "100", "--follow", in.ID)
+}
+
+func (m *Manager) logContainer(ctx context.Context) (*inspection, error) {
+	if err := m.checkDocker(); err != nil {
+		return nil, err
 	}
-	if _, err = m.inspect(ctx); err != nil {
-		return err
+	in, err := m.inspect(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return m.dockerStream(ctx, m.out, m.errOut, "compose", "--project-name", Project, "--project-directory", m.paths.Deploy(), "--file", m.paths.Compose(), "logs", "--no-color", "--tail", "100", "--follow", Service)
+	if in == nil {
+		return nil, fmt.Errorf("容器已移除，没有可查看的日志")
+	}
+	return in, nil
 }

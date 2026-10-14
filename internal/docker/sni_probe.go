@@ -34,6 +34,11 @@ type sniCandidate struct {
 	CDN             string
 }
 
+type sniResolver interface {
+	LookupIPAddr(context.Context, string) ([]net.IPAddr, error)
+	LookupCNAME(context.Context, string) (string, error)
+}
+
 func (m *Manager) probeSNICandidates(ctx context.Context, candidates []string, server string, limit int) ([]sniCandidate, error) {
 	if m.probeSNI != nil {
 		return m.probeSNI(ctx, candidates, server, limit)
@@ -49,6 +54,11 @@ func probeSNICandidates(ctx context.Context, candidates []string, server string,
 	if limit <= 0 {
 		limit = len(unique)
 	}
+	resolver := &net.Resolver{}
+	lookupCtx, cancel := context.WithTimeout(ctx, sniProbeTimeout)
+	serverIPs, _ := resolver.LookupIPAddr(lookupCtx, server)
+	cancel()
+	local := localIPs()
 	concurrency := sniProbeConcurrency
 	if concurrency > len(unique) {
 		concurrency = len(unique)
@@ -61,7 +71,7 @@ func probeSNICandidates(ctx context.Context, candidates []string, server string,
 		go func() {
 			defer workers.Done()
 			for domain := range jobs {
-				candidate, err := probeOneSNI(ctx, domain, server)
+				candidate, err := probeOneSNI(ctx, domain, resolver, serverIPs, local)
 				if err == nil {
 					candidate.Domain = domain
 					results <- candidate
@@ -100,20 +110,16 @@ func probeSNICandidates(ctx context.Context, candidates []string, server string,
 	return valid, nil
 }
 
-func probeOneSNI(ctx context.Context, domain, server string) (sniCandidate, error) {
+func probeOneSNI(ctx context.Context, domain string, resolver sniResolver, serverIPs []net.IPAddr, local []net.IP) (sniCandidate, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, sniProbeTimeout)
 	defer cancel()
 	if !hostname(domain, true) {
 		return sniCandidate{}, fmt.Errorf("SNI 必须为有效域名")
 	}
-	target := net.JoinHostPort(domain, "443")
-	resolver := net.Resolver{}
 	ips, err := resolver.LookupIPAddr(probeCtx, domain)
 	if err != nil || len(ips) == 0 {
 		return sniCandidate{}, fmt.Errorf("解析 REALITY target %s: %w", domain, err)
 	}
-	serverIPs, _ := resolver.LookupIPAddr(probeCtx, server)
-	local := localIPs()
 	for _, item := range ips {
 		ip := item.IP
 		addr, ok := netip.AddrFromSlice(ip)
@@ -143,14 +149,14 @@ func probeOneSNI(ctx context.Context, domain, server string) (sniCandidate, erro
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			v4.latency, v4.state, v4.err = probeTLSFamily(probeCtx, "tcp4", target, domain)
+			v4.latency, v4.state, v4.err = probeTLSFamily(probeCtx, "tcp4", ips, domain)
 		}()
 	}
 	if hasIPv6 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			v6.latency, v6.state, v6.err = probeTLSFamily(probeCtx, "tcp6", target, domain)
+			v6.latency, v6.state, v6.err = probeTLSFamily(probeCtx, "tcp6", ips, domain)
 		}()
 	}
 	wg.Wait()
@@ -185,22 +191,45 @@ func probeOneSNI(ctx context.Context, domain, server string) (sniCandidate, erro
 	return candidate, nil
 }
 
-func probeTLSFamily(ctx context.Context, network, target, sni string) (time.Duration, *tls.ConnectionState, error) {
+func probeTLSFamily(ctx context.Context, network string, ips []net.IPAddr, sni string) (time.Duration, *tls.ConnectionState, error) {
 	started := time.Now()
-	raw, err := (&net.Dialer{}).DialContext(ctx, network, target)
-	if err != nil {
-		return 0, nil, fmt.Errorf("REALITY target TCP 连接失败: %w", err)
+	var addresses []net.IP
+	for _, item := range ips {
+		if (network == "tcp4") == (item.IP.To4() != nil) {
+			addresses = append(addresses, item.IP)
+		}
 	}
-	conn := tls.Client(raw, &tls.Config{ServerName: sni, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}})
-	defer conn.Close()
-	if err = conn.HandshakeContext(ctx); err != nil {
-		return 0, nil, fmt.Errorf("REALITY target TLS/证书名称校验失败: %w", err)
+	if len(addresses) == 0 {
+		return 0, nil, fmt.Errorf("REALITY target 没有 %s 地址", network)
 	}
-	if err = conn.VerifyHostname(sni); err != nil {
-		return 0, nil, fmt.Errorf("REALITY target 证书不包含 SNI %s: %w", sni, err)
+	var lastErr error
+	for i, ip := range addresses {
+		// Dial the addresses already checked above, without another DNS lookup.
+		attemptCtx := ctx
+		cancel := func() {}
+		if deadline, ok := ctx.Deadline(); ok {
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(addresses)-i))
+		}
+		raw, err := (&net.Dialer{}).DialContext(attemptCtx, network, net.JoinHostPort(ip.String(), "443"))
+		if err == nil {
+			conn := tls.Client(raw, &tls.Config{ServerName: sni, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}})
+			err = conn.HandshakeContext(attemptCtx)
+			state := conn.ConnectionState()
+			latency := time.Since(started)
+			_ = conn.Close()
+			cancel()
+			if err == nil {
+				return latency, &state, nil
+			}
+		} else {
+			cancel()
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
 	}
-	state := conn.ConnectionState()
-	return time.Since(started), &state, nil
+	return 0, nil, fmt.Errorf("REALITY target TCP/TLS/证书名称校验失败: %w", lastErr)
 }
 
 func localIPs() []net.IP {

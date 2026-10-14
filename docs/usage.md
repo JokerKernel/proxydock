@@ -108,6 +108,8 @@ sudo proxydock config relay remove relay-one
 
 落地 `reality` 接入共享 REALITY 主入站；独立 TLS 接入使用自己的端口和证书。TLS 主节点新增落地接入时选择 `--security tls`。
 
+交互菜单中的“使用当前协议”或 CLI 的 `landing add --security current` 共享主节点端口；TLS 主节点也共享其证书。CLI 的 `landing add --security tls` 继续创建独立 TLS 入站，省略端口时自动选择随机高位端口。
+
 ## 客户端导出
 
 ```bash
@@ -118,6 +120,8 @@ sudo proxydock config landing peer upstream --output /root/upstream-peer.json
 ```
 
 导出支持主节点、启用的落地接入和中转线路；文件默认以 `0600` 权限创建，覆盖已有导出文件需要 `--force`。服务端配置、客户端和 peer 信息包含凭据，应妥善保存。
+
+客户端配置从本地受管配置生成，不调用 Docker；原生 JSON 为 Xray 格式。存在未完成事务时，客户端导出和服务端配置校验会提示先执行 `proxydock recover`，不会自动恢复或重建业务容器。
 
 ## 服务、升级与恢复
 
@@ -137,6 +141,10 @@ sudo proxydock recover
 升级先拉取镜像并校验当前配置，再重建容器，保留节点凭据、证书、名单和线路。运行中的实例重建后核验镜像、监听端口和持续运行情况；已停止实例升级后保持停止。
 
 配置或升级失败时恢复旧文件和原运行状态。回滚无法完成会保留恢复记录并显示错误；下次写操作会尝试恢复，也可显式执行 `recover`。不要手动删除 `transaction.json` 或它引用的备份。
+
+镜像更新仍会拉取选定标签确认 digest；镜像未变化时跳过能力探测和容器重建。重复设置相同策略、启动已运行实例或停止已停止实例时，会跳过不必要的校验和事务。日志直接从已核验归属的容器读取，不依赖 Compose 文件是否完整。
+
+历史状态旁路文件继续保留，内容未变化时不重复写入。
 
 ## 移除与清理
 

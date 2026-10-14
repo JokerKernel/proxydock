@@ -448,17 +448,26 @@ func TestStateWriteFailureRestoresAllSnapshots(t *testing.T) {
 	for _, path := range m.managedFiles() {
 		before[path] = readFile(t, path)
 	}
-	writes := 0
+	wrotePolicy := false
 	m.stateWrite = func(path string, data []byte, mode os.FileMode) error {
-		writes++
-		if writes == 3 {
+		if path == m.paths.State() {
 			return errors.New("simulated state disk failure")
+		}
+		if filepath.Base(path) == "access.json" {
+			wrotePolicy = true
 		}
 		return atomicWrite(path, data, mode)
 	}
-	err := m.PatchSetting(context.Background(), "log", "debug")
+	entry, err := model.ParseAccessEntry("example.org", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = m.SetPolicy(context.Background(), model.AccessPolicy{Whitelist: []model.AccessEntry{entry}})
 	if err == nil || !strings.Contains(err.Error(), "已恢复") {
 		t.Fatalf("state failure not recovered: %v", err)
+	}
+	if !wrotePolicy {
+		t.Fatal("test did not exercise partial sidecar writes")
 	}
 	for path, data := range before {
 		if !bytes.Equal(data, readFile(t, path)) {

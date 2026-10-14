@@ -89,11 +89,15 @@ func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
 		return fmt.Errorf("编辑配置需要交互终端")
 	}
 	return m.withLock(ctx, func() error {
-		md, _, err := m.readOperation(ctx)
+		md, _, err := m.prepareOperation(ctx)
 		if err != nil {
 			return err
 		}
 		b, err := readPrivate(m.paths.Config())
+		if err != nil {
+			return err
+		}
+		state, err := m.LoadState()
 		if err != nil {
 			return err
 		}
@@ -142,8 +146,26 @@ func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
 				m.progress("配置未变化")
 				return nil
 			}
-			if err = m.validateBytes(ctx, md.ImageID, edited); err == nil {
-				return m.applyEditedLocked(ctx, edited)
+			candidate, prepareErr := m.prepareEditedConfig(edited, state.Node)
+			err = prepareErr
+			if err == nil {
+				// Editing may take time: refresh the container before applying,
+				// without repeating environment checks or validating twice.
+				in, inspectErr := m.inspect(ctx)
+				if inspectErr != nil {
+					return inspectErr
+				}
+				if in != nil && (in.Image != md.ImageID || in.State.Paused) {
+					return fmt.Errorf("编辑期间容器状态或镜像已改变")
+				}
+				err = m.applyConfig(ctx, md, in, state.Node, candidate, false)
+				var validationErr *configurationValidationError
+				if err == nil || !errors.As(err, &validationErr) {
+					return err
+				}
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 			fmt.Fprintf(m.errOut, "校验失败：%v\n", err)
 			if err = u.confirm("重新编辑？"); err != nil {

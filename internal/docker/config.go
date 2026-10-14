@@ -37,7 +37,7 @@ func nodePorts(n model.Node) []int {
 	sort.Ints(ports)
 	return ports
 }
-func (m *Manager) readOperation(ctx context.Context) (Metadata, *inspection, error) {
+func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, error) {
 	if err := m.CheckReady(ctx); err != nil {
 		return Metadata{}, nil, err
 	}
@@ -67,26 +67,36 @@ func (m *Manager) readOperation(ctx context.Context) (Metadata, *inspection, err
 	return md, in, err
 }
 func (m *Manager) Deploy(ctx context.Context, version string, opts model.GenerateOptions) error {
-	if _, err := m.metadata(); os.IsNotExist(err) {
+	if err := validateGenerateInput(opts); err != nil {
+		return err
+	}
+	if err := m.prepareDeployment(ctx, version); err != nil {
+		return err
+	}
+	return m.Generate(ctx, opts, true)
+}
+
+func (m *Manager) prepareDeployment(ctx context.Context, version string) error {
+	md, err := m.metadata()
+	if os.IsNotExist(err) {
 		if err = m.Prepare(ctx, version); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
 	} else if version != "" {
-		md, err := m.metadata()
-		if err != nil {
-			return err
-		}
 		if err = checkPreparedVersion(md, version); err != nil {
 			return err
 		}
 	}
-	return m.Generate(ctx, opts, true)
+	return nil
 }
 func (m *Manager) Generate(ctx context.Context, opts model.GenerateOptions, start bool) error {
+	if err := validateGenerateInput(opts); err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
-		md, in, err := m.readOperation(ctx)
+		md, in, err := m.prepareOperation(ctx)
 		if err != nil {
 			return err
 		}
@@ -314,9 +324,6 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	if err := validateNode(n); err != nil {
 		return err
 	}
-	if err := m.validateBytes(ctx, md.ImageID, b); err != nil {
-		return err
-	}
 	old, readErr := readPrivate(m.paths.Config())
 	if readErr != nil && !os.IsNotExist(readErr) {
 		return readErr
@@ -331,6 +338,9 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 				return nil
 			}
 		}
+	}
+	if err := m.validateBytes(ctx, md.ImageID, b); err != nil {
+		return &configurationValidationError{err}
 	}
 	j, err := m.begin("config", in)
 	if err != nil {
@@ -409,6 +419,10 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	return nil
 }
 
+type configurationValidationError struct{ error }
+
+func (e *configurationValidationError) Unwrap() error { return e.error }
+
 func formatPorts(ports []int) string {
 	parts := make([]string, len(ports))
 	for i, port := range ports {
@@ -417,9 +431,26 @@ func formatPorts(ports []int) string {
 	return strings.Join(parts, "、")
 }
 func (m *Manager) PatchSetting(ctx context.Context, setting, value string) error {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var values []string
+	switch setting {
+	case "dns":
+		values = m.codec.DNSProfiles()
+	case "log":
+		values = m.codec.LogLevels()
+	case "outbound-ip", "fallback-ip":
+		values = m.codec.OutboundIPStrategies()
+	default:
+		return fmt.Errorf("设置类型无效")
+	}
+	if !slices.Contains(values, value) {
+		return fmt.Errorf("%s 设置值 %q 无效", setting, value)
+	}
 	return m.withLock(ctx, func() error {
-		md, in, err := m.readOperation(ctx)
-		if err != nil {
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
 			return err
 		}
 		s, b, err := m.managedConfig()
@@ -451,13 +482,27 @@ func (m *Manager) PatchSetting(ctx context.Context, setting, value string) error
 				return err
 			}
 		}
+		if sameJSON(b, patched) {
+			m.progress("配置未变化")
+			return nil
+		}
+		md, in, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
+		}
 		return m.applyConfig(ctx, md, in, s.Node, patched, false)
 	})
 }
 func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) error {
+	normalized, err := policy.Normalize()
+	if err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
-		md, in, err := m.readOperation(ctx)
-		if err != nil {
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
 			return err
 		}
 		s, b, err := m.managedConfig()
@@ -465,9 +510,13 @@ func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) erro
 			return err
 		}
 		old := s.Node
-		normalized, err := policy.Normalize()
+		current, err := old.AccessPolicy.Normalize()
 		if err != nil {
 			return err
+		}
+		if reflect.DeepEqual(current, normalized) {
+			m.progress("访问策略未变化")
+			return nil
 		}
 		s.Node.AccessPolicy = normalized
 		if !old.AccessPolicy.Active() && normalized.Active() {
@@ -480,12 +529,19 @@ func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) erro
 		if err != nil {
 			return err
 		}
+		md, in, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
+		}
 		return m.applyConfig(ctx, md, in, s.Node, patched, false)
 	})
 }
 func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
+	if err := validateGenerateInput(model.GenerateOptions{SNI: opts.SNI, Target: opts.Target}); err != nil {
+		return err
+	}
 	return m.withLock(ctx, func() error {
-		md, in, err := m.readOperation(ctx)
+		md, in, err := m.prepareOperation(ctx)
 		if err != nil {
 			return err
 		}
@@ -552,8 +608,10 @@ func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
 			if opts.Target != "" {
 				n.Target = opts.Target
 			}
-			if err = m.targetCheck(ctx, n.Target, n.SNI, n.Server); err != nil {
-				return err
+			if opts.SNI != "" || opts.Target != "" {
+				if err = m.targetCheck(ctx, n.Target, n.SNI, n.Server); err != nil {
+					return err
+				}
 			}
 		}
 		oldRender, err := m.renderNode(old)
@@ -589,7 +647,16 @@ func (m *Manager) ServerConfig() ([]byte, error) {
 }
 func (m *Manager) Validate(ctx context.Context) error {
 	return m.withLock(ctx, func() error {
-		md, _, err := m.readOperation(ctx)
+		if err := m.checkNoTransaction(); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
+			return err
+		}
+		if err := m.checkDocker(); err != nil {
+			return err
+		}
+		md, err := m.metadata()
 		if err != nil {
 			return err
 		}
@@ -601,12 +668,15 @@ func (m *Manager) Validate(ctx context.Context) error {
 	})
 }
 func (m *Manager) ApplyEdited(ctx context.Context, data []byte) error {
+	if len(data) == 0 || len(data) > maxConfigSize || !json.Valid(data) {
+		return fmt.Errorf("配置必须是大小合理的有效 JSON")
+	}
 	return m.withLock(ctx, func() error {
 		return m.applyEditedLocked(ctx, data)
 	})
 }
 func (m *Manager) applyEditedLocked(ctx context.Context, data []byte) error {
-	md, in, err := m.readOperation(ctx)
+	md, in, err := m.prepareOperation(ctx)
 	if err != nil {
 		return err
 	}
@@ -614,25 +684,33 @@ func (m *Manager) applyEditedLocked(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
-	original, err := m.renderNode(s.Node)
+	data, err = m.prepareEditedConfig(data, s.Node)
 	if err != nil {
 		return err
 	}
+	return m.applyConfig(ctx, md, in, s.Node, data, false)
+}
+
+func (m *Manager) prepareEditedConfig(data []byte, node model.Node) ([]byte, error) {
+	original, err := m.renderNode(node)
+	if err != nil {
+		return nil, err
+	}
 	// Retain explicit managed identity, allowing independent unknown JSON fields.
 	if _, err = m.codec.PatchServer(data, original, original, false); err != nil {
-		return fmt.Errorf("编辑破坏了受管节点身份: %w", err)
+		return nil, fmt.Errorf("编辑破坏了受管节点身份: %w", err)
 	}
-	if s.Node.AccessPolicy.Active() {
+	if node.AccessPolicy.Active() {
 		var e error
 		data, e = m.codec.PatchAccessPolicy(data, original, original)
 		if e != nil {
-			return e
+			return nil, e
 		}
 	}
 	if err = managedEndpointMatches(data, original); err != nil {
-		return err
+		return nil, err
 	}
-	return m.applyConfig(ctx, md, in, s.Node, data, false)
+	return data, nil
 }
 func managedEndpointMatches(data []byte, n model.Node) error {
 	var root struct {

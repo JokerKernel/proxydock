@@ -176,6 +176,8 @@ func (f *simulatedDocker) Run(_ context.Context, name string, args ...string) ([
 			}
 			return nil, nil
 		}
+	case "logs":
+		return []byte("example log\n"), nil
 	case "compose":
 		at := 0
 		for i, v := range a {

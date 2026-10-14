@@ -322,16 +322,20 @@ detect_architecture() {
 }
 
 download() {
-  local url=$1 output=$2 show_progress=${3:-false} limit=${4:-${max_binary_size}}
+  local url=$1 output=$2 show_progress=${3:-false} limit=${4:-${max_binary_size}} direct=${5:-false}
   if command -v curl >/dev/null 2>&1; then
     local presentation=(--silent --show-error)
+    local proxy_options=()
+    if [[ "${direct}" == true ]]; then proxy_options=(--noproxy '*'); fi
     if [[ "${show_progress}" == true && -t 2 ]]; then presentation=(--show-error --progress-bar); fi
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
       "${presentation[@]}" --connect-timeout 15 --max-time 180 --retry 3 --retry-max-time 300 \
-      --max-filesize "${limit}" --output "${output}" "${url}" || return $?
+      --max-filesize "${limit}" "${proxy_options[@]}" --output "${output}" "${url}" || return $?
   elif command -v wget >/dev/null 2>&1; then
+    local proxy_options=()
+    if [[ "${direct}" == true ]]; then proxy_options=(--no-proxy); fi
     wget --https-only --secure-protocol=TLSv1_2 --quiet --timeout=30 --tries=3 \
-      --output-document="${output}" "${url}" || return $?
+      "${proxy_options[@]}" --output-document="${output}" "${url}" || return $?
   else
     die "需要 curl 或 wget 才能下载发布文件"
   fi
@@ -339,20 +343,7 @@ download() {
 }
 
 download_direct() {
-  local url=$1 output=$2 show_progress=${3:-false} limit=${4:-${max_binary_size}}
-  if command -v curl >/dev/null 2>&1; then
-    local presentation=(--silent --show-error)
-    if [[ "${show_progress}" == true && -t 2 ]]; then presentation=(--show-error --progress-bar); fi
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
-      "${presentation[@]}" --connect-timeout 15 --max-time 180 --retry 3 --retry-max-time 300 \
-      --max-filesize "${limit}" --noproxy '*' --output "${output}" "${url}" || return $?
-  elif command -v wget >/dev/null 2>&1; then
-    wget --https-only --secure-protocol=TLSv1_2 --quiet --timeout=30 --tries=3 --no-proxy \
-      --output-document="${output}" "${url}" || return $?
-  else
-    die "需要 curl 或 wget 才能下载发布文件"
-  fi
-  [[ $(wc -c < "${output}") -le ${limit} ]] || { warn "下载文件超过大小限制"; return 1; }
+  download "$1" "$2" "${3:-false}" "${4:-${max_binary_size}}" true
 }
 
 read_api_version() {
@@ -598,7 +589,7 @@ main() {
   staged_path=""
   verify_binary "${install_path}" || die "安装后验证失败，正在恢复原程序"
   replacement_pending=false
-  "${install_path}" --version
+  printf 'proxydock %s\n' "${resolved_version}"
   print_completion
   info "运行 sudo ${install_path} 管理 Docker 代理；Xray 镜像升级使用 proxydock upgrade。"
 }
