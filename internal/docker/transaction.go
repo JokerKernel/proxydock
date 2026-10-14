@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -66,7 +64,7 @@ func (m *Manager) acquireLock(ctx context.Context) (func(), error) {
 	}
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 }
-func (m *Manager) begin(kind string, in *inspection) (journal, error) {
+func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr error) {
 	if _, err := os.Stat(m.paths.Journal()); err == nil {
 		return journal{}, fmt.Errorf("存在未完成事务，请先恢复")
 	} else if !os.IsNotExist(err) {
@@ -80,6 +78,14 @@ func (m *Manager) begin(kind string, in *inspection) (journal, error) {
 	if err = privateDir(dir); err != nil {
 		return journal{}, err
 	}
+	defer func() {
+		if beginErr != nil {
+			// A failed directory sync may still have published the journal.
+			if _, err := os.Lstat(m.paths.Journal()); os.IsNotExist(err) {
+				beginErr = errors.Join(beginErr, os.RemoveAll(dir))
+			}
+		}
+	}()
 	var snapshots []fileSnapshot
 	for _, p := range m.managedFiles() {
 		s, err := snapshot(p)
@@ -110,28 +116,11 @@ func (m *Manager) commit(j journal) error {
 	if err := m.phase(&j, "committed"); err != nil {
 		return err
 	}
-	if err := os.Remove(m.paths.Journal()); err != nil {
+	if err := removePrivateFile(m.paths.Journal()); err != nil {
 		return err
 	}
-	m.rotateBackups()
+	m.maintainFiles()
 	return nil
-}
-func (m *Manager) rotateBackups() {
-	entries, err := os.ReadDir(m.paths.Backups())
-	if err != nil {
-		return
-	}
-	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() && strings.Contains(e.Name(), "T") {
-			dirs = append(dirs, e.Name())
-		}
-	}
-	sort.Strings(dirs)
-	for len(dirs) > 3 {
-		_ = os.RemoveAll(filepath.Join(m.paths.Backups(), dirs[0]))
-		dirs = dirs[1:]
-	}
 }
 func (m *Manager) rollback(j journal, cause error) error {
 	m.op(phaseResult, levelError, "操作失败", "恢复旧配置、状态与容器")
@@ -227,10 +216,16 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 			return err
 		}
 	}
-	if err = os.Remove(m.paths.Journal()); err != nil && !os.IsNotExist(err) {
+	if !j.HadContainer {
+		if err = m.removeManagedNetwork(ctx); err != nil {
+			return err
+		}
+	}
+	if err = removePrivateFile(m.paths.Journal()); err != nil {
 		return err
 	}
 	m.op(phaseApply, levelStep, "清除记录", m.paths.Journal())
+	m.maintainFiles()
 	m.op(phaseResult, levelResult, "恢复结果", "事务恢复完成")
 	return nil
 }
@@ -253,19 +248,26 @@ func loadSnapshot(path string, v any) error {
 	return decodeStrict(b, v)
 }
 func (m *Manager) recoverLocked(ctx context.Context) error {
+	if pending, err := m.cleanupPending(); err != nil {
+		return err
+	} else if pending {
+		return fmt.Errorf("数据清理尚未完成，请执行 proxydock cleanup --yes")
+	}
 	var j journal
 	err := loadJSON(m.paths.Journal(), &j)
 	if os.IsNotExist(err) {
+		m.maintainFiles()
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	if j.Phase == "committed" {
-		if err = os.Remove(m.paths.Journal()); err != nil && !os.IsNotExist(err) {
+		if err = removePrivateFile(m.paths.Journal()); err != nil {
 			return err
 		}
 		m.op(phaseApply, levelStep, "清除记录", m.paths.Journal())
+		m.maintainFiles()
 		m.op(phaseResult, levelResult, "恢复结果", "恢复记录已清除")
 		return nil
 	}
@@ -292,12 +294,24 @@ func transactionKindLabel(kind string) string {
 }
 func (m *Manager) Recover(ctx context.Context) error {
 	return m.withLock(ctx, func() error {
-		if _, err := os.Stat(m.paths.Journal()); os.IsNotExist(err) {
-			m.op(phaseResult, levelResult, "恢复结果", "没有未完成事务")
-			return nil
-		} else if err != nil {
+		_, statErr := os.Stat(m.paths.Journal())
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return statErr
+		}
+		if err := m.recoverLocked(ctx); err != nil {
 			return err
 		}
-		return m.recoverLocked(ctx)
+		if _, err := m.lookPath("docker"); err == nil {
+			if err = m.checkDocker(); err != nil {
+				return err
+			}
+			if err = m.reapValidators(ctx); err != nil {
+				return err
+			}
+		}
+		if os.IsNotExist(statErr) {
+			m.op(phaseResult, levelResult, "恢复结果", "没有未完成事务")
+		}
+		return nil
 	})
 }

@@ -230,8 +230,13 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 		s.Label, s.Detail = "异常", err.Error()
 		return s, err
 	}
+	cleaning, err := m.cleanupPending()
+	if err != nil {
+		s.Label, s.Detail = "异常", err.Error()
+		return s, err
+	}
 	check := m.checkOwned
-	if pending {
+	if pending || cleaning {
 		// A transaction can leave new Compose files beside the old container.
 		check = m.checkOwnedIdentity
 	}
@@ -244,6 +249,11 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 		}
 		s.Detail = err.Error()
 		return s, err
+	}
+	if cleaning {
+		s.Label = "清理未完成"
+		s.Detail = "请执行 proxydock cleanup --yes 继续清理"
+		return s, nil
 	}
 	if pending {
 		s.Label = "需恢复"

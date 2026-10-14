@@ -150,7 +150,7 @@ func (m *Manager) checkNoTransaction() error {
 	return nil
 }
 func (m *Manager) hasData() bool {
-	for _, p := range []string{m.paths.Data(), m.paths.Deploy()} {
+	for _, p := range []string{m.paths.Data(), m.paths.Deploy(), m.paths.CleanupRecord()} {
 		if _, err := os.Lstat(p); !os.IsNotExist(err) {
 			return true
 		}

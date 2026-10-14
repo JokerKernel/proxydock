@@ -150,6 +150,24 @@ func saveJSON(path string, v any) error {
 	return atomicWrite(path, b, 0600)
 }
 
+func removePrivateFile(path string) error {
+	if err := safePath(path); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 func decodeStrict(b []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()

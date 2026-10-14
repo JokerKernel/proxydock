@@ -97,6 +97,9 @@ func (m *Manager) newCertificate(name string) (model.LandingAccess, error) {
 			_ = os.RemoveAll(dir)
 		}
 	}()
+	if err = saveJSON(filepath.Join(dir, ".proxydock-certificate.json"), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+		return model.LandingAccess{}, err
+	}
 	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
 	if err = atomicWrite(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600); err != nil {
 		return model.LandingAccess{}, err

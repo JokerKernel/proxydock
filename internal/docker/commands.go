@@ -172,13 +172,6 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 		if err := validateGenerateInput(opts); err != nil {
 			return err
 		}
-		if use == "deploy" {
-			version, _ := cmd.Flags().GetString("version")
-			network, _ := cmd.Flags().GetString("network")
-			if err := m.prepareDeployment(cmd.Context(), version, network); err != nil {
-				return err
-			}
-		}
 		if _, err := os.Stat(m.paths.Config()); err == nil && !force {
 			if err = m.confirmInput(cmd.InOrStdin(), *yes, "完整生成会覆盖手动配置，确认继续？"); err != nil {
 				return err
@@ -188,6 +181,13 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 			var err error
 			opts, err = m.askGenerate(cmd.InOrStdin(), opts)
 			if err != nil {
+				return err
+			}
+		}
+		if use == "deploy" {
+			version, _ := cmd.Flags().GetString("version")
+			network, _ := cmd.Flags().GetString("network")
+			if err := m.prepareDeployment(cmd.Context(), version, network); err != nil {
 				return err
 			}
 		}

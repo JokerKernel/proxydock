@@ -132,7 +132,10 @@ func (p Paths) Owner() string    { return filepath.Join(p.Data(), "owner.json") 
 func (p Paths) Journal() string  { return filepath.Join(p.Data(), "transaction.json") }
 func (p Paths) Backups() string  { return filepath.Join(p.Data(), "backups") }
 func (p Paths) Staging() string  { return filepath.Join(p.Data(), "staging") }
-func (p Paths) Lock() string     { return p.resolve("/run/proxyforge/xray-docker.lock") }
+func (p Paths) CleanupRecord() string {
+	return filepath.Join(filepath.Dir(p.Data()), "xray-cleanup.json")
+}
+func (p Paths) Lock() string { return p.resolve("/run/proxyforge/xray-docker.lock") }
 
 func checkPortFree(port int) error {
 	if port < 1 || port > 65535 {

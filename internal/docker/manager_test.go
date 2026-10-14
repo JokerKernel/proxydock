@@ -120,6 +120,9 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 	case "container":
 		switch a[1] {
 		case "ls":
+			if contains(a, "label=io.proxyforge.role=validator") {
+				return nil, nil
+			}
 			joined := strings.Join(a, " ")
 			if strings.Contains(joined, "label=com.docker.compose.project=") {
 				if f.foreignProject {
@@ -148,6 +151,10 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 			return nil, nil
 		case "rm":
 			f.container = nil
+			return nil, nil
+		}
+	case "network":
+		if a[1] == "ls" {
 			return nil, nil
 		}
 	case "run":

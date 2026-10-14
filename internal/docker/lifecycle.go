@@ -487,6 +487,9 @@ func (m *Manager) Remove(ctx context.Context) error {
 		if err := m.recoverLocked(ctx); err != nil {
 			return err
 		}
+		if err := m.reapValidators(ctx); err != nil {
+			return err
+		}
 		if err := m.checkProject(ctx); err != nil {
 			return err
 		}
@@ -495,6 +498,9 @@ func (m *Manager) Remove(ctx context.Context) error {
 			return err
 		}
 		if in == nil {
+			if err := m.removeManagedNetwork(ctx); err != nil {
+				return err
+			}
 			m.op(phaseResult, levelResult, "移除结果", "当前没有容器，配置和数据仍保留")
 			return nil
 		}
@@ -514,6 +520,9 @@ func (m *Manager) Remove(ctx context.Context) error {
 		}
 		if in != nil {
 			return fmt.Errorf("移除后仍存在容器，数据已保留")
+		}
+		if err = m.removeManagedNetwork(ctx); err != nil {
+			return err
 		}
 		md.DesiredState = "stopped"
 		md.UpdatedAt = m.now().UTC()
@@ -565,7 +574,11 @@ func (m *Manager) CheckCleanup(ctx context.Context) error {
 			return err
 		}
 	}
-	if m.hasData() {
+	pending, err := m.cleanupPending()
+	if err != nil {
+		return err
+	}
+	if m.hasData() && !pending {
 		if err := m.checkOwner(); err != nil {
 			return fmt.Errorf("缺少有效归属记录，拒绝清理: %w", err)
 		}
@@ -601,6 +614,15 @@ func (m *Manager) BeginCleanup(ctx context.Context) (*CleanupLease, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := m.lookPath("docker"); err == nil {
+		if err = m.checkDocker(); err == nil {
+			err = m.reapValidators(ctx)
+		}
+		if err != nil {
+			release()
+			return nil, err
+		}
+	}
 	if err = m.CheckCleanup(ctx); err != nil {
 		release()
 		return nil, err
@@ -630,27 +652,24 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 			return err
 		}
 	}
-	if m.hasData() {
-		if err := m.checkOwner(); err != nil {
-			return fmt.Errorf("缺少有效归属记录，拒绝清理: %w", err)
-		}
-		if md, err := m.metadata(); err == nil {
-			if err = m.checkCompose(md); err != nil {
-				return err
-			}
-		} else if !os.IsNotExist(err) {
+	if _, err := m.lookPath("docker"); err == nil {
+		if err = m.removeManagedNetwork(ctx); err != nil {
 			return err
 		}
 	}
-	var errs []error
+	if m.hasData() {
+		if err := saveJSON(m.paths.CleanupRecord(), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+			return err
+		}
+	}
 	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
 		m.op(phaseApply, levelStep, "删除数据", path)
 		if err := os.RemoveAll(path); err != nil {
-			errs = append(errs, err)
+			return err
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	if err := removePrivateFile(m.paths.CleanupRecord()); err != nil {
+		return err
 	}
 	for _, path := range []string{filepath.Dir(m.paths.Data()), m.paths.resolve("/var/lib/proxyforge")} {
 		err := os.Remove(path)
