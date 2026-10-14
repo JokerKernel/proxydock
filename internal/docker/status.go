@@ -63,6 +63,10 @@ type Status struct {
 }
 
 func (m *Manager) inspect(ctx context.Context) (*inspection, error) {
+	return m.inspectWithCheck(ctx, m.checkOwned)
+}
+
+func (m *Manager) inspectWithCheck(ctx context.Context, check func(*inspection) error) (*inspection, error) {
 	b, err := m.docker(ctx, "container", "ls", "--all", "--no-trunc", "--filter", "name=^/"+Container+"$", "--format", "{{.ID}}")
 	if err != nil {
 		return nil, fmt.Errorf("检查 Docker 容器失败: %w", &dockerQueryError{err})
@@ -73,10 +77,14 @@ func (m *Manager) inspect(ctx context.Context) (*inspection, error) {
 	if len(strings.Fields(string(b))) != 1 {
 		return nil, fmt.Errorf("容器名称对应多个实例")
 	}
-	return m.inspectContainer(ctx, strings.TrimSpace(string(b)))
+	return m.inspectContainerWithCheck(ctx, strings.TrimSpace(string(b)), check)
 }
 
 func (m *Manager) inspectContainer(ctx context.Context, id string) (*inspection, error) {
+	return m.inspectContainerWithCheck(ctx, id, m.checkOwned)
+}
+
+func (m *Manager) inspectContainerWithCheck(ctx context.Context, id string, check func(*inspection) error) (*inspection, error) {
 	b, err := m.docker(ctx, "container", "inspect", id)
 	if err != nil {
 		return nil, fmt.Errorf("读取容器详情失败: %w", &dockerQueryError{err})
@@ -86,21 +94,25 @@ func (m *Manager) inspectContainer(ctx context.Context, id string) (*inspection,
 		return nil, fmt.Errorf("容器详情格式无效")
 	}
 	in := values[0]
-	if err = m.checkOwned(&in); err != nil {
+	if err = check(&in); err != nil {
 		return nil, err
 	}
 	return &in, nil
 }
 func (m *Manager) checkOwned(in *inspection) error {
+	if err := m.checkOwnedIdentity(in); err != nil {
+		return err
+	}
+	return m.checkContainerNetwork(in)
+}
+
+func (m *Manager) checkOwnedIdentity(in *inspection) error {
 	labels := in.Config.Labels
 	if labels["io.proxyforge.managed"] != "true" || labels["io.proxyforge.instance"] != Instance || labels["io.proxyforge.core"] != "xray" || labels["com.docker.compose.project"] != Project || labels["com.docker.compose.service"] != Service || labels["com.docker.compose.oneoff"] == "True" {
 		return fmt.Errorf("同名容器不属于 ProxyDock 的受管 Xray 实例，拒绝操作")
 	}
 	if !in.HostConfig.ReadonlyRootfs || in.Config.User != "0:0" || !reflect.DeepEqual(in.Config.Cmd, []string{"run", "-config", "/usr/local/etc/xray/config.json"}) || !reflect.DeepEqual(in.Config.Entrypoint, []string{"/usr/local/bin/xray"}) {
 		return fmt.Errorf("受管容器运行定义已改变，拒绝操作")
-	}
-	if err := m.checkContainerNetwork(in); err != nil {
-		return err
 	}
 	want := map[string]string{"/usr/local/etc/xray": filepath.Join(m.paths.Deploy(), "config"), "/etc/xray/tls": m.paths.TLS()}
 	found := 0

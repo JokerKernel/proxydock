@@ -10,7 +10,7 @@ Docker 版不依赖宿主机安装的 Xray，也不要求存在 `xray.service`�
 
 - Linux amd64 或 arm64，root 权限。
 - 本机 rootful Docker Engine 和 Docker Compose v2 或更高版本插件（含 v5），daemon 已运行。
-- 默认使用宿主机网络。也可以选择端口映射：监听端口按相同端口号发布，REALITY 回落端口只绑定 `127.0.0.1`。
+- 默认使用宿主机网络。也可以选择端口映射：监听端口按相同端口号发布，REALITY 回落仅容器内使用。
 - 不支持远程 Docker、rootless/userns-remap、Docker Desktop、自定义桥接网络、多实例和接管任意已有容器。
 
 ProxyDock 只检测 Docker/Compose 是否可用，不会自动安装 Docker，也不会执行 Docker 安装脚本。Docker 版不使用原生 app/system/provider/domain 业务代码。
@@ -46,7 +46,7 @@ sudo proxydock deploy --version latest \
   --security tls --server YOUR_SERVER_IP --port 8443
 ```
 
-默认 `host` 网络与宿主机共享端口，因此原生内核、Docker 实例和其他服务必须使用不同的监听端口。`--network publish` 改为端口映射，监听端口仍使用同一个端口号，回落端口只在本机 `127.0.0.1` 上发布。已部署实例可以用 `proxydock config set network host` 或 `publish` 切换，切换时会重建容器并保持原来的运行或停止状态。
+默认 `host` 网络与宿主机共享端口，因此原生内核、Docker 实例和其他服务必须使用不同的监听端口。`--network publish` 改为端口映射，监听端口仍使用同一个端口号，REALITY 回落仅容器内使用。已部署实例可以用 `proxydock config set network host` 或 `publish` 切换，切换时会重建容器并保持原来的运行或停止状态。旧版 publish 配置可再次执行 `proxydock config set network publish`，通过事务移除旧的回落端口映射；只读操作不会改写配置。
 
 REALITY 默认启用专用回落防护；`--standard-config` 可选择普通配置，`--fallback-port` 可指定内部回落端口。
 

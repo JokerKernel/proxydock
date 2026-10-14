@@ -89,10 +89,21 @@ func (m *Manager) checkCompose(md Metadata) error {
 	if err != nil {
 		return err
 	}
-	if digest(b) != md.ComposeSHA256 || string(b) != string(expected) {
-		return fmt.Errorf("Compose 文件已被外部修改，拒绝按未知定义操作容器")
+	if digest(b) == md.ComposeSHA256 {
+		if bytes.Equal(b, expected) {
+			return nil
+		}
+		if canonicalNetwork(md.Network) == networkPublish {
+			legacy, err := m.composeDefinition(md, nil, true)
+			if err != nil {
+				return err
+			}
+			if bytes.Equal(b, legacy) {
+				return nil
+			}
+		}
 	}
-	return nil
+	return fmt.Errorf("Compose 文件已被外部修改，拒绝按未知定义操作容器")
 }
 func (m *Manager) managedConfig() (State, []byte, error) {
 	s, err := m.LoadState()

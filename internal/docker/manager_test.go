@@ -31,6 +31,8 @@ type simulatedDocker struct {
 	selected          Metadata
 	rejectValidation  bool
 	failRestart       int
+	failComposeConfig int
+	failComposeUp     int
 	foreignProject    bool
 	unavailable       bool
 	healthFailures    int
@@ -214,8 +216,16 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 		action := a[at]
 		switch action {
 		case "config":
+			if f.failComposeConfig > 0 {
+				f.failComposeConfig--
+				return nil, errors.New("compose config failed")
+			}
 			return nil, nil
 		case "up":
+			if f.failComposeUp > 0 {
+				f.failComposeUp--
+				return nil, errors.New("compose up failed")
+			}
 			b, err := os.ReadFile(f.manager.paths.Compose())
 			if err != nil {
 				return nil, err

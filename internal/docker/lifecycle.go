@@ -343,7 +343,7 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 				if !hasNode {
 					return fail(fmt.Errorf("运行实例缺少节点状态"))
 				}
-				ports := nodePorts(state.Node)
+				ports := hostPorts(state.Node, md.Network)
 				m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
 				if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 					return fail(err)
@@ -419,12 +419,20 @@ func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspectio
 			return fail(err)
 		}
 		if running {
-			ports := nodePorts(*node)
+			ports := hostPorts(*node, md.Network)
 			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
 			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 				return fail(err)
 			}
 			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+		} else {
+			current, err := m.inspect(ctx)
+			if err != nil {
+				return fail(err)
+			}
+			if current == nil || current.State.Running || current.Image != md.ImageID {
+				return fail(fmt.Errorf("停止实例重建后状态或镜像异常"))
+			}
 		}
 	}
 	md.UpdatedAt = m.now().UTC()
@@ -448,8 +456,18 @@ func (m *Manager) SetNetwork(ctx context.Context, network string) error {
 			return err
 		}
 		if canonicalNetwork(md.Network) == mode {
-			m.op(phaseResult, levelResult, "网络方式", "未变化")
-			return nil
+			next, err := m.composeFor(md, nil)
+			if err != nil {
+				return err
+			}
+			current, err := readPrivate(m.paths.Compose())
+			if err != nil {
+				return err
+			}
+			if string(current) == string(next) {
+				m.op(phaseResult, levelResult, "网络方式", "未变化")
+				return nil
+			}
 		}
 		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
 		md.Network = storedNetwork(mode)
@@ -721,7 +739,7 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 			return fail(err)
 		}
 		if action != "stop" {
-			ports := nodePorts(state.Node)
+			ports := hostPorts(state.Node, md.Network)
 			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
 			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 				return fail(err)

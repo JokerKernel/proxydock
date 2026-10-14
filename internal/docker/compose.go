@@ -116,6 +116,15 @@ func renderCompose(image, network string, ports []publishedPort) ([]byte, error)
 }
 
 func publishedPorts(n model.Node) []publishedPort {
+	return composePorts(n, false)
+}
+
+// legacyPublishedPorts is used only to recognize previously generated files.
+func legacyPublishedPorts(n model.Node) []publishedPort {
+	return composePorts(n, true)
+}
+
+func composePorts(n model.Node, legacy bool) []publishedPort {
 	var ports []publishedPort
 	seen := map[int]bool{}
 	add := func(port int, hostIP string) {
@@ -131,7 +140,7 @@ func publishedPorts(n model.Node) []publishedPort {
 			add(access.Port, "")
 		}
 	}
-	if n.XrayFallbackGuard {
+	if legacy && n.XrayFallbackGuard {
 		add(n.XrayFallbackPort, "127.0.0.1")
 	}
 	sort.Slice(ports, func(i, j int) bool {
@@ -207,6 +216,10 @@ func parsePortSpec(spec string) (publishedPort, error) {
 }
 
 func (m *Manager) composeFor(md Metadata, n *model.Node) ([]byte, error) {
+	return m.composeDefinition(md, n, false)
+}
+
+func (m *Manager) composeDefinition(md Metadata, n *model.Node, legacy bool) ([]byte, error) {
 	mode := canonicalNetwork(md.Network)
 	if mode == "" {
 		return nil, fmt.Errorf("网络方式无效，请使用 host 或 publish")
@@ -223,6 +236,9 @@ func (m *Manager) composeFor(md Metadata, n *model.Node) ([]byte, error) {
 		}
 		if n != nil {
 			ports = publishedPorts(*n)
+			if legacy {
+				ports = legacyPublishedPorts(*n)
+			}
 		}
 	}
 	return renderCompose(md.ImageRef, mode, ports)

@@ -165,7 +165,9 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 		delete(allowed, s.Path)
 	}
 	m.op(phaseBackup, levelInfo, "读取快照", filepath.Join(j.Backup, "snapshot.json"))
-	in, err := m.inspect(ctx)
+	// The on-disk Compose may already describe the new network while the
+	// container still uses the old one. Verify ownership before restoring it.
+	in, err := m.inspectWithCheck(ctx, m.checkOwnedIdentity)
 	if err != nil {
 		return err
 	}
@@ -201,12 +203,19 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: name}, args...); err != nil {
 			return err
 		}
+		current, err := m.inspect(ctx)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Image != md.ImageID || current.State.Running != j.OldRunning {
+			return fmt.Errorf("恢复后容器状态或镜像异常")
+		}
 		if j.OldRunning {
 			s, err := m.LoadState()
 			if err != nil {
 				return err
 			}
-			ports := nodePorts(s.Node)
+			ports := hostPorts(s.Node, md.Network)
 			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
 			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
 				return err

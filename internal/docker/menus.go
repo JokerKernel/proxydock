@@ -229,7 +229,7 @@ func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
 	u.clearScreen()
 	u.pageHeader("Xray（Docker）", "部署/升级", "网络方式")
 	u.menuChoice("1", "宿主机网络（容器直接使用宿主机网络栈）")
-	u.menuChoice("2", "端口映射（发布监听端口，回落端口只绑定本机）")
+	u.menuChoice("2", "端口映射（发布监听端口，回落仅容器内使用）")
 	u.menuChoice("0/q", "返回")
 	current := selection
 	if current == "" {
@@ -252,7 +252,7 @@ func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
 func (m *Manager) confirmSetNetwork(ctx context.Context, u *ui, network string) error {
 	items := []string{"重写 Compose 文件", "重建容器并保持当前运行状态", "容器改为使用宿主机网络"}
 	if canonicalNetwork(network) == networkPublish {
-		items[2] = "监听端口按相同端口发布，回落端口只绑定 127.0.0.1"
+		items[2] = "监听端口按相同端口发布，回落仅容器内使用"
 	}
 	u.confirmationPanel("操作确认：切换网络方式", []string{"目标实例：" + Container, "网络方式：" + networkLabel(network)}, confirmSection{title: "将执行", items: items})
 	if err := u.confirm("切换 Docker 网络方式？"); err != nil {

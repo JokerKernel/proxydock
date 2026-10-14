@@ -37,6 +37,18 @@ func nodePorts(n model.Node) []int {
 	sort.Ints(ports)
 	return ports
 }
+
+// hostPorts excludes listeners that are confined to the container loopback.
+func hostPorts(n model.Node, network string) []int {
+	if canonicalNetwork(network) == networkHost {
+		return nodePorts(n)
+	}
+	var ports []int
+	for _, p := range publishedPorts(n) {
+		ports = append(ports, p.Host)
+	}
+	return ports
+}
 func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, error) {
 	if err := m.CheckReady(ctx); err != nil {
 		return Metadata{}, nil, err
@@ -387,9 +399,9 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	running := start || in != nil && in.State.Running
 	var oldPorts []int
 	if s, e := m.LoadState(); e == nil {
-		oldPorts = nodePorts(s.Node)
+		oldPorts = hostPorts(s.Node, md.Network)
 	}
-	ports := nodePorts(n)
+	ports := hostPorts(n, md.Network)
 	changed := !slices.Equal(oldPorts, ports)
 	if running && changed {
 		if in != nil && in.State.Running {
