@@ -22,19 +22,28 @@ func (m *Manager) Command() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&m.traceDocker, "debug", false, "显示完整命令参数")
 	for _, action := range []string{"prepare", "upgrade"} {
 		action := action
-		var version string
+		var version, network string
 		sub := &cobra.Command{Use: action, Short: map[string]string{"prepare": "准备官方镜像和 Compose，不启动代理", "upgrade": "升级镜像，保留凭据并支持回滚"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			if action == "prepare" {
-				return m.Prepare(cmd.Context(), version)
+				if strings.TrimSpace(network) == "" {
+					network = networkHost
+				}
+				return m.prepareWithNetwork(cmd.Context(), version, network)
 			}
-			return m.Upgrade(cmd.Context(), version)
+			return m.upgrade(cmd.Context(), version, network)
 		}}
 		sub.Flags().StringVar(&version, "version", "", "stable 或 latest（缺省，官方 latest 标签）、pre-release 或具体版本号")
+		networkHelp := "网络方式：host 或 publish，缺省保持当前"
+		if action == "prepare" {
+			networkHelp = "网络方式：host（缺省，宿主机网络）或 publish（端口映射）"
+		}
+		sub.Flags().StringVar(&network, "network", "", networkHelp)
 		cmd.AddCommand(sub)
 	}
 	deploy := m.generateCommand("deploy", &yes)
-	var version string
+	var version, network string
 	deploy.Flags().StringVar(&version, "version", "", "首次部署镜像：stable 或 latest（缺省）、pre-release 或具体版本号")
+	deploy.Flags().StringVar(&network, "network", "", "网络方式：host（缺省，宿主机网络）或 publish（端口映射）")
 	cmd.AddCommand(deploy)
 	cmd.AddCommand(&cobra.Command{Use: "status", Short: "查看 Docker 实例状态", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		s, err := m.Status(cmd.Context())
@@ -97,7 +106,12 @@ func (m *Manager) Command() *cobra.Command {
 	}})
 	config.AddCommand(&cobra.Command{Use: "validate", Short: "使用固定镜像校验正式配置", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return m.Validate(cmd.Context()) }})
 	config.AddCommand(&cobra.Command{Use: "edit", Short: "编辑配置副本并事务应用", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return m.Edit(cmd.Context(), cmd.InOrStdin()) }})
-	settings := &cobra.Command{Use: "set <dns|log|outbound-ip|fallback-ip> <value>", Short: "修改 DNS、日志或地址族策略", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error { return m.PatchSetting(cmd.Context(), args[0], args[1]) }}
+	settings := &cobra.Command{Use: "set <dns|log|outbound-ip|fallback-ip|network> <value>", Short: "修改 DNS、日志、地址族或网络方式", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		if args[0] == "network" {
+			return m.SetNetwork(cmd.Context(), args[1])
+		}
+		return m.PatchSetting(cmd.Context(), args[0], args[1])
+	}}
 	config.AddCommand(settings)
 	var reset model.ResetOptions
 	resetCmd := &cobra.Command{Use: "reset", Short: "轮换主节点凭据，按需轮换 TLS 证书", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
@@ -160,7 +174,8 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 		}
 		if use == "deploy" {
 			version, _ := cmd.Flags().GetString("version")
-			if err := m.prepareDeployment(cmd.Context(), version); err != nil {
+			network, _ := cmd.Flags().GetString("network")
+			if err := m.prepareDeployment(cmd.Context(), version, network); err != nil {
 				return err
 			}
 		}

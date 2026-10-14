@@ -281,6 +281,15 @@ func (f *simulatedDocker) newContainer(image string) {
 	in.Config.Labels = map[string]string{"io.proxyforge.managed": "true", "io.proxyforge.instance": Instance, "io.proxyforge.core": "xray", "com.docker.compose.project": Project, "com.docker.compose.service": Service}
 	in.HostConfig.NetworkMode = "host"
 	in.HostConfig.ReadonlyRootfs = true
+	if b, err := os.ReadFile(f.manager.paths.Compose()); err == nil {
+		if mode, ports, err := parseComposeNetwork(b); err == nil && mode == networkPublish {
+			in.HostConfig.NetworkMode = Project + "_default"
+			in.HostConfig.PortBindings = map[string][]hostPortBinding{}
+			for _, port := range ports {
+				in.HostConfig.PortBindings[strconv.Itoa(port.Container)+"/tcp"] = []hostPortBinding{{HostIp: port.HostIP, HostPort: strconv.Itoa(port.Host)}}
+			}
+		}
+	}
 	for dest, source := range map[string]string{"/usr/local/etc/xray": filepath.Dir(f.manager.paths.Config()), "/etc/xray/tls": f.manager.paths.TLS()} {
 		in.Mounts = append(in.Mounts, struct {
 			Type        string

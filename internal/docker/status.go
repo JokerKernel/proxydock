@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,6 +36,7 @@ type inspection struct {
 	HostConfig struct {
 		NetworkMode    string
 		ReadonlyRootfs bool
+		PortBindings   map[string][]hostPortBinding
 	}
 	Mounts []struct {
 		Type        string
@@ -94,8 +96,11 @@ func (m *Manager) checkOwned(in *inspection) error {
 	if labels["io.proxyforge.managed"] != "true" || labels["io.proxyforge.instance"] != Instance || labels["io.proxyforge.core"] != "xray" || labels["com.docker.compose.project"] != Project || labels["com.docker.compose.service"] != Service || labels["com.docker.compose.oneoff"] == "True" {
 		return fmt.Errorf("同名容器不属于 ProxyDock 的受管 Xray 实例，拒绝操作")
 	}
-	if in.HostConfig.NetworkMode != "host" || !in.HostConfig.ReadonlyRootfs || in.Config.User != "0:0" || !reflect.DeepEqual(in.Config.Cmd, []string{"run", "-config", "/usr/local/etc/xray/config.json"}) || !reflect.DeepEqual(in.Config.Entrypoint, []string{"/usr/local/bin/xray"}) {
+	if !in.HostConfig.ReadonlyRootfs || in.Config.User != "0:0" || !reflect.DeepEqual(in.Config.Cmd, []string{"run", "-config", "/usr/local/etc/xray/config.json"}) || !reflect.DeepEqual(in.Config.Entrypoint, []string{"/usr/local/bin/xray"}) {
 		return fmt.Errorf("受管容器运行定义已改变，拒绝操作")
+	}
+	if err := m.checkContainerNetwork(in); err != nil {
+		return err
 	}
 	want := map[string]string{"/usr/local/etc/xray": filepath.Join(m.paths.Deploy(), "config"), "/etc/xray/tls": m.paths.TLS()}
 	found := 0
@@ -111,6 +116,68 @@ func (m *Manager) checkOwned(in *inspection) error {
 	}
 	if found != len(want) {
 		return fmt.Errorf("容器缺少受管配置/证书挂载")
+	}
+	return nil
+}
+
+type hostPortBinding struct {
+	HostIp   string
+	HostPort string
+}
+
+func (m *Manager) checkContainerNetwork(in *inspection) error {
+	b, err := readPrivate(m.paths.Compose())
+	if err != nil {
+		return nil
+	}
+	mode, ports, ok := managedComposeNetwork(b)
+	if !ok {
+		return nil
+	}
+	if mode == networkHost {
+		if in.HostConfig.NetworkMode != networkHost {
+			return fmt.Errorf("受管容器运行定义已改变，拒绝操作")
+		}
+		return nil
+	}
+	if in.HostConfig.NetworkMode == networkHost || in.HostConfig.NetworkMode == "" {
+		return fmt.Errorf("受管容器运行定义已改变，拒绝操作")
+	}
+	return bindingsMatch(in.HostConfig.PortBindings, ports)
+}
+
+func bindingsMatch(got map[string][]hostPortBinding, want []publishedPort) error {
+	if len(got) != len(want) {
+		return fmt.Errorf("容器端口映射与编排不一致")
+	}
+	for _, port := range want {
+		bindings := got[fmt.Sprintf("%d/tcp", port.Container)]
+		if len(bindings) == 0 {
+			return fmt.Errorf("容器端口映射与编排不一致")
+		}
+		matched := false
+		for _, binding := range bindings {
+			if binding.HostPort != strconv.Itoa(port.Host) {
+				return fmt.Errorf("容器端口映射与编排不一致")
+			}
+			if port.HostIP == "127.0.0.1" {
+				if binding.HostIp != "127.0.0.1" {
+					return fmt.Errorf("容器端口映射与编排不一致")
+				}
+				matched = true
+				continue
+			}
+			switch binding.HostIp {
+			case "", "0.0.0.0":
+				matched = true
+			case "::":
+			default:
+				return fmt.Errorf("容器端口映射与编排不一致")
+			}
+		}
+		if !matched {
+			return fmt.Errorf("容器端口映射与编排不一致")
+		}
 	}
 	return nil
 }

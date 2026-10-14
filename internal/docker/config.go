@@ -70,21 +70,50 @@ func (m *Manager) Deploy(ctx context.Context, version string, opts model.Generat
 	if err := validateGenerateInput(opts); err != nil {
 		return err
 	}
-	if err := m.prepareDeployment(ctx, version); err != nil {
+	if err := m.prepareDeployment(ctx, version, ""); err != nil {
 		return err
 	}
 	return m.Generate(ctx, opts, true)
 }
 
-func (m *Manager) prepareDeployment(ctx context.Context, version string) error {
+func (m *Manager) prepareDeployment(ctx context.Context, version, network string) error {
 	md, err := m.metadata()
 	if os.IsNotExist(err) {
-		if err = m.Prepare(ctx, version); err != nil {
+		if strings.TrimSpace(network) == "" {
+			network = networkHost
+		}
+		return m.prepareWithNetwork(ctx, version, network)
+	}
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(network) != "" {
+		mode, err := normalizeNetwork(network)
+		if err != nil {
 			return err
 		}
-	} else if err != nil {
-		return err
-	} else if version != "" {
+		if mode != canonicalNetwork(md.Network) {
+			keep := version
+			if keep == "" {
+				switch md.Channel {
+				case "latest":
+					keep = "latest"
+				case "prerelease":
+					keep = "pre-release"
+				default:
+					keep = md.RequestedVersion
+				}
+			}
+			if err = m.upgrade(ctx, keep, mode); err != nil {
+				return err
+			}
+			md, err = m.metadata()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if version != "" {
 		if err = checkPreparedVersion(md, version); err != nil {
 			return err
 		}
@@ -384,10 +413,37 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 		return fail(err)
 	}
 	m.op(phaseApply, levelStep, "写入配置", m.paths.Config())
+	composeChanged, err := m.writeManagedCompose(&md, &n)
+	if err != nil {
+		return fail(err)
+	}
+	if composeChanged {
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
+			return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
+		}
+	}
 	if err = m.phase(&j, "files-committed"); err != nil {
 		return fail(err)
 	}
-	if running && (configChanged || start) {
+	if composeChanged && in != nil {
+		args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
+		if running {
+			args = append(args, "-d")
+		} else {
+			args = append(args, "--no-start")
+		}
+		args = append(args, Service)
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, args...); err != nil {
+			return fail(err)
+		}
+		if running {
+			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+				return fail(err)
+			}
+			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+		}
+	} else if running && (configChanged || start) {
 		if in == nil {
 			_, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
 		} else {

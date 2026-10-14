@@ -76,7 +76,15 @@ func (m *Manager) checkProject(ctx context.Context) error {
 }
 func stringsFields(b []byte) []string { return strings.Fields(string(b)) }
 func (m *Manager) Prepare(ctx context.Context, version string) error {
-	if _, err := normalizeImageSelection(version); err != nil {
+	return m.prepareWithNetwork(ctx, version, networkHost)
+}
+
+func (m *Manager) prepareWithNetwork(ctx context.Context, version, network string) error {
+	mode, err := normalizeNetwork(network)
+	if err != nil {
+		return err
+	}
+	if _, err = normalizeImageSelection(version); err != nil {
 		return err
 	}
 	return m.withLock(ctx, func() error {
@@ -117,10 +125,11 @@ func (m *Manager) Prepare(ctx context.Context, version string) error {
 		if err != nil {
 			return err
 		}
+		md.Network = storedNetwork(mode)
 		if err = m.probeCapabilities(ctx, md); err != nil {
 			return err
 		}
-		compose, err := renderCompose(md.ImageRef)
+		compose, err := m.composeFor(md, nil)
 		if err != nil {
 			return err
 		}
@@ -133,6 +142,7 @@ func (m *Manager) Prepare(ctx context.Context, version string) error {
 		if err = atomicWrite(m.paths.Compose(), compose, 0600); err != nil {
 			return fail(err)
 		}
+		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
 		m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
 		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
 			return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
@@ -192,6 +202,18 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	return m.validateBytes(ctx, md.ImageID, client)
 }
 func (m *Manager) Upgrade(ctx context.Context, version string) error {
+	return m.upgrade(ctx, version, "")
+}
+
+func (m *Manager) upgrade(ctx context.Context, version, network string) error {
+	requested := ""
+	if strings.TrimSpace(network) != "" {
+		mode, err := normalizeNetwork(network)
+		if err != nil {
+			return err
+		}
+		requested = mode
+	}
 	if _, err := normalizeImageSelection(version); err != nil {
 		return err
 	}
@@ -226,7 +248,29 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 		if err != nil {
 			return err
 		}
+		if requested == networkHost {
+			md.Network = ""
+		} else if requested == networkPublish {
+			md.Network = networkPublish
+		} else {
+			md.Network = old.Network
+		}
 		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {
+			next, composeErr := m.composeFor(md, nil)
+			if composeErr != nil {
+				return composeErr
+			}
+			current, composeErr := readPrivate(m.paths.Compose())
+			if composeErr != nil {
+				return composeErr
+			}
+			if string(current) != string(next) {
+				if err = m.refreshCompose(ctx, md, in); err != nil {
+					return err
+				}
+				m.op(phaseResult, levelResult, "网络方式", networkLabel(md.Network))
+				return nil
+			}
 			if md.Channel != old.Channel {
 				j, err := m.begin("upgrade", in)
 				if err != nil {
@@ -260,7 +304,7 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 		} else if !os.IsNotExist(e) {
 			return e
 		}
-		compose, err := renderCompose(md.ImageRef)
+		compose, err := m.composeFor(md, nil)
 		if err != nil {
 			return err
 		}
@@ -332,6 +376,91 @@ func (m *Manager) Upgrade(ctx context.Context, version string) error {
 		return nil
 	})
 }
+
+func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspection) error {
+	var node *model.Node
+	if s, err := m.LoadState(); err == nil {
+		node = &s.Node
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	running := in != nil && in.State.Running
+	if running && node == nil {
+		return fmt.Errorf("运行实例缺少节点状态")
+	}
+	if running {
+		md.DesiredState = "running"
+	} else if in != nil {
+		md.DesiredState = "stopped"
+	}
+	j, err := m.begin("upgrade", in)
+	if err != nil {
+		return err
+	}
+	fail := func(e error) error { return m.rollback(j, e) }
+	if _, err = m.writeManagedCompose(&md, node); err != nil {
+		return fail(err)
+	}
+	if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
+		return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
+	}
+	if err = m.phase(&j, "files-committed"); err != nil {
+		return fail(err)
+	}
+	if in != nil {
+		args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
+		if running {
+			args = append(args, "-d")
+		} else {
+			args = append(args, "--no-start")
+		}
+		args = append(args, Service)
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, args...); err != nil {
+			return fail(err)
+		}
+		if running {
+			ports := nodePorts(*node)
+			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+				return fail(err)
+			}
+			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+		}
+	}
+	md.UpdatedAt = m.now().UTC()
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		return fail(err)
+	}
+	if err = m.savePreferences(md); err != nil {
+		return fail(err)
+	}
+	return m.commit(j)
+}
+
+func (m *Manager) SetNetwork(ctx context.Context, network string) error {
+	mode, err := normalizeNetwork(network)
+	if err != nil {
+		return err
+	}
+	return m.withLock(ctx, func() error {
+		md, in, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
+		}
+		if canonicalNetwork(md.Network) == mode {
+			m.op(phaseResult, levelResult, "网络方式", "未变化")
+			return nil
+		}
+		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
+		md.Network = storedNetwork(mode)
+		if err = m.refreshCompose(ctx, md, in); err != nil {
+			return err
+		}
+		m.op(phaseResult, levelResult, "更新结果", "已切换为"+networkLabel(mode))
+		return nil
+	})
+}
+
 func (m *Manager) Remove(ctx context.Context) error {
 	return m.withLock(ctx, func() error {
 		if err := m.CheckReady(ctx); err != nil {

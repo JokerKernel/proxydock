@@ -129,18 +129,20 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 
 func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 	selection := ""
+	network := ""
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）", "部署/升级")
-		u.labeledCard("当前内核", m.deployCardRows(selection))
+		u.labeledCard("当前内核", m.deployCardRows(selection, network))
 		u.menuChoice("1", "部署/更新")
 		u.menuChoice("2", "选择版本")
 		u.menuChoice("3", "指定版本")
+		u.menuChoice("4", "网络方式（宿主机网络或端口映射）")
 		u.menuChoice("0/q", "返回")
-		choice, err := u.chooseNumber("请选择", 0, 3, -1)
+		choice, err := u.chooseNumber("请选择", 0, 4, -1)
 		if err != nil {
 			return err
 		}
@@ -148,7 +150,7 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 		case 0:
 			return errBack
 		case 1:
-			return m.confirmDeploy(ctx, u, selection)
+			return m.confirmDeploy(ctx, u, selection, network)
 		case 2:
 			next, chooseErr := m.chooseDeployChannel(u, selection)
 			if errors.Is(chooseErr, errCancelled) {
@@ -167,11 +169,27 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 				return askErr
 			}
 			selection = version
+		case 4:
+			next, chooseErr := m.chooseDeployNetwork(u, network)
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			if _, metaErr := m.metadata(); metaErr == nil && canonicalNetwork(next) != canonicalNetwork(m.savedNetwork()) {
+				if err = m.confirmSetNetwork(ctx, u, next); errors.Is(err, errCancelled) {
+					continue
+				} else if err != nil {
+					return err
+				}
+			}
+			network = next
 		}
 	}
 }
 
-func (m *Manager) deployCardRows(selection string) [][2]string {
+func (m *Manager) deployCardRows(selection, network string) [][2]string {
 	version := "尚未部署"
 	if md, err := m.metadata(); err == nil {
 		switch {
@@ -192,7 +210,55 @@ func (m *Manager) deployCardRows(selection string) [][2]string {
 			target = "指定版本 " + selection
 		}
 	}
-	return [][2]string{{"内核", "Xray（Docker）"}, {"版本号", version}, {"安装渠道", target}}
+	mode := network
+	if mode == "" {
+		mode = m.savedNetwork()
+	}
+	return [][2]string{{"内核", "Xray（Docker）"}, {"版本号", version}, {"安装渠道", target}, {"网络方式", networkLabel(mode)}}
+}
+
+func (m *Manager) savedNetwork() string {
+	md, err := m.metadata()
+	if err != nil {
+		return networkHost
+	}
+	return canonicalNetwork(md.Network)
+}
+
+func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "部署/升级", "网络方式")
+	u.menuChoice("1", "宿主机网络（容器直接使用宿主机网络栈）")
+	u.menuChoice("2", "端口映射（发布监听端口，回落端口只绑定本机）")
+	u.menuChoice("0/q", "返回")
+	current := selection
+	if current == "" {
+		current = m.savedNetwork()
+	}
+	def := 1
+	if canonicalNetwork(current) == networkPublish {
+		def = 2
+	}
+	choice, err := u.chooseNumberCancelable("请选择网络方式", 1, 2, def)
+	if err != nil {
+		return "", err
+	}
+	if choice == 2 {
+		return networkPublish, nil
+	}
+	return networkHost, nil
+}
+
+func (m *Manager) confirmSetNetwork(ctx context.Context, u *ui, network string) error {
+	items := []string{"重写 Compose 文件", "重建容器并保持当前运行状态", "容器改为使用宿主机网络"}
+	if canonicalNetwork(network) == networkPublish {
+		items[2] = "监听端口按相同端口发布，回落端口只绑定 127.0.0.1"
+	}
+	u.confirmationPanel("操作确认：切换网络方式", []string{"目标实例：" + Container, "网络方式：" + networkLabel(network)}, confirmSection{title: "将执行", items: items})
+	if err := u.confirm("切换 Docker 网络方式？"); err != nil {
+		return err
+	}
+	return m.SetNetwork(ctx, network)
 }
 
 func (m *Manager) chooseDeployChannel(u *ui, selection string) (string, error) {
@@ -236,13 +302,17 @@ func (m *Manager) askDeployVersion(u *ui) (string, error) {
 	}
 }
 
-func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version string) error {
+func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network string) error {
+	mode := network
+	if mode == "" {
+		mode = m.savedNetwork()
+	}
 	if _, e := m.metadata(); e == nil {
-		u.confirmationPanel("操作确认：升级镜像", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
+		u.confirmationPanel("操作确认：升级镜像", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
 		if err := u.confirm("升级 Xray Docker 镜像？"); err != nil {
 			return err
 		}
-		if err := m.Upgrade(ctx, version); err != nil {
+		if err := m.upgrade(ctx, version, network); err != nil {
 			return err
 		}
 		if _, stateErr := m.LoadState(); os.IsNotExist(stateErr) {
@@ -256,11 +326,14 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version string) erro
 	} else if !os.IsNotExist(e) {
 		return e
 	}
-	u.confirmationPanel("操作确认：部署实例", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version)}, confirmSection{title: "将执行", items: []string{"准备官方镜像和 Compose 文件", "生成 REALITY 或 TLS 节点配置", "启动容器并检查运行状态"}})
+	u.confirmationPanel("操作确认：部署实例", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode)}, confirmSection{title: "将执行", items: []string{"准备官方镜像和 Compose 文件", "生成 REALITY 或 TLS 节点配置", "启动容器并检查运行状态"}})
 	if err := u.confirm("准备官方镜像并部署 Docker Xray？"); err != nil {
 		return err
 	}
-	if err := m.Prepare(ctx, version); err != nil {
+	if strings.TrimSpace(network) == "" {
+		network = networkHost
+	}
+	if err := m.prepareWithNetwork(ctx, version, network); err != nil {
 		return err
 	}
 	opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
@@ -306,7 +379,7 @@ func (m *Manager) instanceRows() [][2]string {
 			port = "无法读取"
 		}
 	}
-	rows := [][2]string{{"监听端口", port}, {"运行用户", "0:0"}}
+	rows := [][2]string{{"监听端口", port}, {"网络方式", networkLabel(m.savedNetwork())}, {"运行用户", "0:0"}}
 	if md, err := m.metadata(); err == nil {
 		rows = append(rows, [2]string{"更新渠道", "[" + channelLabel(md.Channel) + "]"})
 	}

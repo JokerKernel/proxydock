@@ -2,11 +2,10 @@ name: proxyforge-xray
 
 services:
   xray:
-    image: "{{ . }}"
+    image: "{{ .Image }}"
     container_name: proxyforge-xray
     restart: unless-stopped
-    network_mode: host
-    command: ["run", "-config", "/usr/local/etc/xray/config.json"]
+{{ .Network }}    command: ["run", "-config", "/usr/local/etc/xray/config.json"]
     user: "0:0"
     read_only: true
     cap_drop: ["ALL"]

@@ -19,6 +19,7 @@ type Metadata struct {
 	Version          string    `json:"version"`
 	RequestedVersion string    `json:"requested_version"`
 	Channel          string    `json:"channel"`
+	Network          string    `json:"network,omitempty"`
 	ComposeSHA256    string    `json:"compose_sha256"`
 	DesiredState     string    `json:"desired_state"`
 	UpdatedAt        time.Time `json:"updated_at"`
@@ -36,7 +37,7 @@ func (m *Manager) metadata() (Metadata, error) {
 	if err != nil {
 		return md, err
 	}
-	if md.SchemaVersion != 1 || md.ManagedBy != "proxyforge" || md.InstanceID != Instance || !validImageRef(md.ImageRef) || !validImageID(md.ImageID) || (md.DesiredState != "stopped" && md.DesiredState != "running") || (md.Channel != "stable" && md.Channel != "pinned" && md.Channel != "latest" && md.Channel != "prerelease") {
+	if md.SchemaVersion != 1 || md.ManagedBy != "proxyforge" || md.InstanceID != Instance || !validImageRef(md.ImageRef) || !validImageID(md.ImageID) || (md.DesiredState != "stopped" && md.DesiredState != "running") || (md.Channel != "stable" && md.Channel != "pinned" && md.Channel != "latest" && md.Channel != "prerelease") || !validNetwork(md.Network) {
 		return md, fmt.Errorf("Docker 部署记录标识或镜像无效")
 	}
 	return md, nil
@@ -84,7 +85,7 @@ func (m *Manager) checkCompose(md Metadata) error {
 	if err != nil {
 		return err
 	}
-	expected, err := renderCompose(md.ImageRef)
+	expected, err := m.composeFor(md, nil)
 	if err != nil {
 		return err
 	}
