@@ -758,7 +758,7 @@ func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
 				}
 			}
 		}
-		oldRender, err := m.renderNode(old)
+		oldRender, err := m.renderNodeReferences(old)
 		if err != nil {
 			return err
 		}

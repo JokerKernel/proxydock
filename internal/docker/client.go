@@ -88,8 +88,13 @@ func (m *Manager) WriteExport(path string, b []byte, force bool) error {
 	if err := safePath(path); err != nil {
 		return err
 	}
+	dir, err := openSecureDir(filepath.Dir(path), false)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
 	if !force {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		f, err := dir.openFile(filepath.Base(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return err
 		}
@@ -100,14 +105,18 @@ func (m *Manager) WriteExport(path string, b []byte, force bool) error {
 		if e := f.Close(); err == nil {
 			err = e
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return dir.Sync()
 	}
 	// Export destinations may be user-owned directories; do not chmod their parent.
-	f, err := os.CreateTemp(filepath.Dir(path), ".docker-export-")
+	f, err := dir.createTemp(".docker-export-")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	tmp := filepath.Base(f.Name())
+	defer dir.unlink(tmp)
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(b)
 	}
@@ -120,5 +129,8 @@ func (m *Manager) WriteExport(path string, b []byte, force bool) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	if err := dir.rename(tmp, filepath.Base(path)); err != nil {
+		return err
+	}
+	return dir.Sync()
 }

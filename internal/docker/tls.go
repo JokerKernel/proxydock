@@ -111,22 +111,32 @@ func (m *Manager) newCertificate(name string) (model.LandingAccess, error) {
 	ok = true
 	return model.LandingAccess{Name: name, Security: "tls", SNI: sni, CertificateFile: certFile, KeyFile: keyFile, CertificateSHA256: digest(der), CertificatePublicKeySHA256: base64.StdEncoding.EncodeToString(pubHash[:]), UpdatedAt: now, Enabled: true}, nil
 }
-func (m *Manager) validateCertificate(a model.LandingAccess) error {
+func (m *Manager) certificateDirectory(a model.LandingAccess) (string, error) {
 	name := filepath.Base(filepath.Dir(a.CertificateFile))
 	validName := name == a.Name
 	if suffix, ok := strings.CutPrefix(name, a.Name+"-"); ok && len(suffix) == 24 {
 		decoded, err := hex.DecodeString(suffix)
 		validName = err == nil && len(decoded) == 12 && strings.ToLower(suffix) == suffix
 	}
-	if !namePattern.MatchString(a.Name) || !validName || filepath.Clean(a.CertificateFile) != filepath.Join(m.paths.TLS(), name, "cert.pem") || filepath.Clean(a.KeyFile) != filepath.Join(m.paths.TLS(), name, "key.pem") {
-		return fmt.Errorf("证书不属于 Docker 模块")
+	if !namePattern.MatchString(a.Name) || !validName || a.CertificateFile != filepath.Join(m.paths.TLS(), name, "cert.pem") || a.KeyFile != filepath.Join(m.paths.TLS(), name, "key.pem") {
+		return "", fmt.Errorf("证书不属于 Docker 模块")
 	}
-	for _, p := range []string{a.CertificateFile, a.KeyFile} {
-		if _, err := readPrivate(p); err != nil {
-			return err
-		}
+	return name, nil
+}
+
+func (m *Manager) validateCertificate(a model.LandingAccess) error {
+	if _, err := m.certificateDirectory(a); err != nil {
+		return err
 	}
-	pair, err := tls.LoadX509KeyPair(a.CertificateFile, a.KeyFile)
+	cert, err := readPrivate(a.CertificateFile)
+	if err != nil {
+		return err
+	}
+	key, err := readPrivate(a.KeyFile)
+	if err != nil {
+		return err
+	}
+	pair, err := tls.X509KeyPair(cert, key)
 	if err != nil {
 		return err
 	}
@@ -152,15 +162,30 @@ func (m *Manager) validateCertificate(a model.LandingAccess) error {
 	return nil
 }
 func (m *Manager) renderNode(n model.Node) (model.Node, error) {
+	return m.renderNodeCertificates(n, true)
+}
+
+// Old configuration references are used for identity matching, not activation.
+// They must stay within the owned directory but need not still be usable.
+func (m *Manager) renderNodeReferences(n model.Node) (model.Node, error) {
+	return m.renderNodeCertificates(n, false)
+}
+
+func (m *Manager) renderNodeCertificates(n model.Node, validate bool) (model.Node, error) {
 	rendered, err := cloneNode(n)
 	if err != nil {
 		return n, err
 	}
 	mapAccess := func(a *model.LandingAccess) error {
-		if err := m.validateCertificate(*a); err != nil {
+		name, err := m.certificateDirectory(*a)
+		if err != nil {
 			return err
 		}
-		name := filepath.Base(filepath.Dir(a.CertificateFile))
+		if validate {
+			if err := m.validateCertificate(*a); err != nil {
+				return err
+			}
+		}
 		a.CertificateFile = "/etc/xray/tls/" + name + "/cert.pem"
 		a.KeyFile = "/etc/xray/tls/" + name + "/key.pem"
 		return nil
@@ -172,7 +197,7 @@ func (m *Manager) renderNode(n model.Node) (model.Node, error) {
 	}
 	for i := range rendered.LandingAccesses {
 		a := &rendered.LandingAccesses[i]
-		if a.CertificateFile != "" {
+		if a.Enabled && a.CertificateFile != "" {
 			if err = mapAccess(a); err != nil {
 				return rendered, err
 			}

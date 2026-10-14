@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -231,21 +232,20 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 }
 func loadSnapshot(path string, v any) error {
 	// Snapshots contain multiple configuration files, so their bound is larger.
-	if err := safePath(path); err != nil {
-		return err
-	}
-	info, err := os.Stat(path)
+	const limit = 64 << 20
+	f, err := openPrivateFile(path, limit)
 	if err != nil {
 		return err
 	}
-	if info.Mode().Perm()&0077 != 0 || info.Size() > 64<<20 {
-		return fmt.Errorf("事务快照权限或大小无效")
+	defer f.Close()
+	// Decode directly from the verified descriptor instead of also retaining
+	// the whole encoded snapshot. The extra byte detects concurrent growth.
+	r := &io.LimitedReader{R: f, N: limit + 1}
+	err = decodeStrictReader(r, v)
+	if r.N == 0 {
+		return fmt.Errorf("文件超过大小限制: %s", path)
 	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	return decodeStrict(b, v)
+	return err
 }
 func (m *Manager) recoverLocked(ctx context.Context) error {
 	if pending, err := m.cleanupPending(); err != nil {
@@ -256,7 +256,6 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 	var j journal
 	err := loadJSON(m.paths.Journal(), &j)
 	if os.IsNotExist(err) {
-		m.maintainFiles()
 		return nil
 	}
 	if err != nil {
@@ -300,6 +299,9 @@ func (m *Manager) Recover(ctx context.Context) error {
 		}
 		if err := m.recoverLocked(ctx); err != nil {
 			return err
+		}
+		if os.IsNotExist(statErr) {
+			m.maintainFiles()
 		}
 		if _, err := m.lookPath("docker"); err == nil {
 			if err = m.checkDocker(); err != nil {

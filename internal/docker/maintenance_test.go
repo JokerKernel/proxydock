@@ -170,7 +170,7 @@ func TestMaintenanceReclaimsFailedCertificateAfterRecovery(t *testing.T) {
 
 func TestMaintenanceReclaimsStaleTemporaryFiles(t *testing.T) {
 	m, _ := deployed(t)
-	paths := []string{filepath.Join(m.paths.Staging(), "candidate-crashed.json"), filepath.Join(m.paths.Staging(), "edit-crashed.json"), filepath.Join(filepath.Dir(m.paths.Config()), ".docker-write-crashed")}
+	paths := []string{filepath.Join(m.paths.Staging(), "candidate-123456.json"), filepath.Join(m.paths.Staging(), "edit-654321.json"), filepath.Join(filepath.Dir(m.paths.Config()), ".docker-write-123456")}
 	for _, path := range paths {
 		if err := atomicWrite(path, []byte("stale secret"), 0600); err != nil {
 			t.Fatal(err)
@@ -401,7 +401,7 @@ func TestMaintenancePreservesPendingTransactionArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmp := filepath.Join(m.paths.Staging(), "candidate-pending.json")
+	tmp := filepath.Join(m.paths.Staging(), "candidate-998877.json")
 	if err = atomicWrite(tmp, []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +496,7 @@ func TestMaintenanceReclaimsInterruptedCertificateCreation(t *testing.T) {
 	if err := saveJSON(filepath.Join(dir, ".proxydock-certificate.json"), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(filepath.Join(dir, ".docker-write-interrupted"), []byte("partial key"), 0600); err != nil {
+	if err := atomicWrite(filepath.Join(dir, ".docker-write-998877"), []byte("partial key"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Recover(context.Background()); err != nil {

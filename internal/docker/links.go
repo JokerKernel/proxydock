@@ -52,7 +52,7 @@ func validatePeer(p model.LandingPeer) error {
 	return nil
 }
 func (m *Manager) patchLinks(ctx context.Context, md Metadata, in *inspection, old, next model.Node, b []byte) error {
-	oldRender, err := m.renderNode(old)
+	oldRender, err := m.renderNodeReferences(old)
 	if err != nil {
 		return err
 	}

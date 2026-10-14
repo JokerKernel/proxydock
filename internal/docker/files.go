@@ -21,7 +21,7 @@ func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(
 // Reject symlinked managed paths, including symlinked parents before creating or
 // deleting anything. This also prevents a relocated mount escaping ownership.
 func safePath(path string) error {
-	if !filepath.IsAbs(path) || filepath.Clean(path) == "/" {
+	if !filepath.IsAbs(path) || filepath.Clean(path) == "/" || filepath.Clean(path) != path {
 		return fmt.Errorf("不安全路径: %q", path)
 	}
 	for p := filepath.Clean(path); p != "/"; p = filepath.Dir(p) {
@@ -42,10 +42,12 @@ func privateDir(path string) error {
 	if err := safePath(path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(path, 0700); err != nil {
+	dir, err := openSecureDir(path, true)
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, 0700)
+	defer dir.Close()
+	return dir.Chmod(0700)
 }
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := safePath(path); err != nil {
@@ -54,12 +56,17 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := privateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".docker-write-")
+	dir, err := openSecureDir(filepath.Dir(path), false)
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer dir.Close()
+	f, err := dir.createTemp(".docker-write-")
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Base(f.Name())
+	defer dir.unlink(tmp)
 	if err = f.Chmod(mode); err == nil {
 		_, err = f.Write(data)
 	}
@@ -72,31 +79,83 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if err = os.Rename(tmp, path); err != nil {
+	if err = dir.rename(tmp, filepath.Base(path)); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
 	return dir.Sync()
 }
 func readPrivate(path string) ([]byte, error) {
-	if err := safePath(path); err != nil {
-		return nil, err
-	}
-	info, err := os.Stat(path)
+	return readPrivateLimit(path, maxConfigSize)
+}
+
+func readPrivateLimit(path string, limit int64) ([]byte, error) {
+	f, err := openPrivateFile(path, limit)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return nil, fmt.Errorf("受管文件需要普通文件及 0600 权限: %s", path)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	if info.Size() > maxConfigSize {
+	if info.Size() > limit {
 		return nil, fmt.Errorf("文件超过大小限制: %s", path)
 	}
-	return os.ReadFile(path)
+	// Allocate once for ordinary stable files. Still enforce the bound if the
+	// file is concurrently extended after fstat.
+	data := make([]byte, info.Size())
+	n, err := io.ReadFull(f, data)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return data[:n], nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var extra [1]byte
+	if _, err = io.ReadFull(f, extra[:]); err == io.EOF {
+		return data, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rest, err := io.ReadAll(io.LimitReader(f, limit-int64(len(data))))
+	if err != nil {
+		return nil, err
+	}
+	data = append(append(data, extra[0]), rest...)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("文件超过大小限制: %s", path)
+	}
+	return data, nil
+}
+
+func openPrivateFile(path string, limit int64) (*os.File, error) {
+	if err := safePath(path); err != nil {
+		return nil, err
+	}
+	dir, err := openSecureDir(filepath.Dir(path), false)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	f, err := dir.openFile(filepath.Base(path), os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		f.Close()
+		return nil, fmt.Errorf("受管文件需要普通文件及 0600 权限: %s", path)
+	}
+	if info.Size() > limit {
+		f.Close()
+		return nil, fmt.Errorf("文件超过大小限制: %s", path)
+	}
+	return f, nil
 }
 func loadJSON(path string, v any) error {
 	b, err := readPrivate(path)
@@ -154,10 +213,7 @@ func removePrivateFile(path string) error {
 	if err := safePath(path); err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	dir, err := os.Open(filepath.Dir(path))
+	dir, err := openSecureDir(filepath.Dir(path), false)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -165,11 +221,18 @@ func removePrivateFile(path string) error {
 		return err
 	}
 	defer dir.Close()
+	if err := dir.unlink(filepath.Base(path)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return dir.Sync()
 }
 
 func decodeStrict(b []byte, v any) error {
-	d := json.NewDecoder(bytes.NewReader(b))
+	return decodeStrictReader(bytes.NewReader(b), v)
+}
+
+func decodeStrictReader(r io.Reader, v any) error {
+	d := json.NewDecoder(r)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
 		return err

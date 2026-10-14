@@ -15,6 +15,12 @@ import (
 
 var backupNamePattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[a-f0-9]{12}$`)
 var validatorNamePattern = regexp.MustCompile(`^/?` + Container + `-check-[a-f0-9]{24}$`)
+var temporaryNamePatterns = map[string]*regexp.Regexp{
+	".docker-write-": regexp.MustCompile("^\\.docker-write-(?:[0-9]+|[a-f0-9]{24})$"),
+	"candidate-":     regexp.MustCompile("^candidate-[0-9]+\\.json$"),
+	"edit-":          regexp.MustCompile("^edit-[0-9]+\\.json$"),
+	".edit-":         regexp.MustCompile("^\\.edit-[0-9]+\\.json\\.sw[opx]$"),
+}
 var certificateSNIPattern = regexp.MustCompile(`^pf-[a-f0-9]{24}\.invalid$`)
 
 func (m *Manager) cleanupPending() (bool, error) {
@@ -69,18 +75,12 @@ func (m *Manager) maintainFilesLocked() error {
 	if err := removeTemporaryFiles(m.paths.Staging(), "candidate-", "edit-", ".edit-", ".docker-write-"); err != nil {
 		return err
 	}
-	backups, err := m.pruneBackups()
+	backupRefs, err := m.pruneBackups()
 	if err != nil {
 		return err
 	}
-	for _, snapshots := range backups {
-		for _, snap := range snapshots {
-			if snap.Exists && (snap.Path == m.paths.State() || snap.Path == m.paths.Config()) {
-				if err := m.certificateReferences(snap.Data, refs); err != nil {
-					return err
-				}
-			}
-		}
+	for name := range backupRefs {
+		refs[name] = true
 	}
 	entries, err := os.ReadDir(m.paths.TLS())
 	if os.IsNotExist(err) {
@@ -115,10 +115,15 @@ func removeTemporaryFiles(dir string, prefixes ...string) error {
 	if err := safePath(dir); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(dir)
+	opened, err := openSecureDir(dir, false)
 	if os.IsNotExist(err) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	entries, err := opened.ReadDir(-1)
 	if err != nil {
 		return err
 	}
@@ -128,25 +133,34 @@ func removeTemporaryFiles(dir string, prefixes ...string) error {
 		}
 		matched := false
 		for _, prefix := range prefixes {
-			matched = matched || strings.HasPrefix(entry.Name(), prefix)
+			pattern := temporaryNamePatterns[prefix]
+			matched = matched || pattern != nil && pattern.MatchString(entry.Name())
 		}
 		if !matched {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		if _, err := readPrivate(path); err != nil {
+		f, err := opened.openFile(entry.Name(), os.O_RDONLY, 0)
+		if err != nil {
 			return err
 		}
-		if err := os.Remove(path); err != nil {
+		info, statErr := f.Stat()
+		f.Close()
+		if statErr != nil {
+			return statErr
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			continue
+		}
+		if err := opened.unlink(entry.Name()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Only generated backup directories are pruned; imported backups still protect
-// their certificate references. Invalid snapshots stop certificate collection.
-func (m *Manager) pruneBackups() ([][]fileSnapshot, error) {
+// Validate snapshots one at a time and retain only certificate names, never the
+// full contents of all historical backups. Imported snapshots are not pruned.
+func (m *Manager) pruneBackups() (map[string]bool, error) {
 	if err := safePath(m.paths.Backups()); err != nil {
 		return nil, err
 	}
@@ -157,8 +171,7 @@ func (m *Manager) pruneBackups() ([][]fileSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	known := map[string][]fileSnapshot{}
-	var generated []string
+	var backups, generated []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -170,12 +183,11 @@ func (m *Manager) pruneBackups() ([][]fileSnapshot, error) {
 				return nil, err
 			}
 		}
-		var snapshots []fileSnapshot
-		err := loadSnapshot(filepath.Join(dir, "snapshot.json"), &snapshots)
+		info, err := os.Lstat(filepath.Join(dir, "snapshot.json"))
 		if os.IsNotExist(err) {
-			contents, readErr := os.ReadDir(dir)
-			if readErr != nil {
-				return nil, readErr
+			contents, err := os.ReadDir(dir)
+			if err != nil {
+				return nil, err
 			}
 			if isGenerated && len(contents) == 0 {
 				if err := os.Remove(dir); err != nil {
@@ -187,6 +199,27 @@ func (m *Manager) pruneBackups() ([][]fileSnapshot, error) {
 		if err != nil {
 			return nil, err
 		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("备份快照不是普通文件: %s", dir)
+		}
+		backups = append(backups, entry.Name())
+		if isGenerated {
+			generated = append(generated, entry.Name())
+		}
+	}
+	sort.Strings(generated)
+	keep := map[string]bool{}
+	for _, name := range generated[max(0, len(generated)-3):] {
+		keep[name] = true
+	}
+	refs := map[string]bool{}
+	var obsolete []string
+	for _, name := range backups {
+		dir := filepath.Join(m.paths.Backups(), name)
+		var snapshots []fileSnapshot
+		if err := loadSnapshot(filepath.Join(dir, "snapshot.json"), &snapshots); err != nil {
+			return nil, err
+		}
 		allowed := map[string]bool{}
 		for _, path := range m.managedFiles() {
 			allowed[path] = true
@@ -194,26 +227,29 @@ func (m *Manager) pruneBackups() ([][]fileSnapshot, error) {
 		if len(snapshots) != len(allowed) {
 			return nil, fmt.Errorf("备份快照文件集合无效: %s", dir)
 		}
+		retained := keep[name] || !backupNamePattern.MatchString(name)
 		for _, snap := range snapshots {
 			if !allowed[snap.Path] {
 				return nil, fmt.Errorf("备份引用非受管路径: %s", dir)
 			}
 			delete(allowed, snap.Path)
-		}
-		// Validate JSON before pruning any backup or collecting certificates.
-		for _, snap := range snapshots {
-			if snap.Exists && (snap.Path == m.paths.State() || snap.Path == m.paths.Config()) && !json.Valid(snap.Data) {
-				return nil, fmt.Errorf("备份配置损坏，保留证书: %s", dir)
+			if snap.Exists && (snap.Path == m.paths.State() || snap.Path == m.paths.Config()) {
+				if !json.Valid(snap.Data) {
+					return nil, fmt.Errorf("备份配置损坏，保留证书: %s", dir)
+				}
+				if retained {
+					if err := m.certificateReferences(snap.Data, refs); err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
-		known[entry.Name()] = snapshots
-		if isGenerated {
-			generated = append(generated, entry.Name())
+		if !retained {
+			obsolete = append(obsolete, name)
 		}
 	}
-	sort.Strings(generated)
-	for len(generated) > 3 {
-		name := generated[0]
+	// Do not delete anything if any snapshot above failed validation.
+	for _, name := range obsolete {
 		dir := filepath.Join(m.paths.Backups(), name)
 		if err := safePath(dir); err != nil {
 			return nil, err
@@ -221,14 +257,8 @@ func (m *Manager) pruneBackups() ([][]fileSnapshot, error) {
 		if err := os.RemoveAll(dir); err != nil {
 			return nil, err
 		}
-		delete(known, name)
-		generated = generated[1:]
 	}
-	var retained [][]fileSnapshot
-	for _, snapshots := range known {
-		retained = append(retained, snapshots)
-	}
-	return retained, nil
+	return refs, nil
 }
 
 func (m *Manager) certificateReferences(data []byte, refs map[string]bool) error {
@@ -276,7 +306,7 @@ func managedCertificateDirectory(dir string) bool {
 		return false
 	}
 	for _, entry := range entries {
-		if (entry.Name() != "cert.pem" && entry.Name() != "key.pem" && entry.Name() != ".proxydock-certificate.json" && !strings.HasPrefix(entry.Name(), ".docker-write-")) || !entry.Type().IsRegular() {
+		if (entry.Name() != "cert.pem" && entry.Name() != "key.pem" && entry.Name() != ".proxydock-certificate.json" && !temporaryNamePatterns[".docker-write-"].MatchString(entry.Name())) || !entry.Type().IsRegular() {
 			return false
 		}
 		if _, err := readPrivate(filepath.Join(dir, entry.Name())); err != nil {
@@ -286,7 +316,15 @@ func managedCertificateDirectory(dir string) bool {
 	if marked {
 		return true
 	}
-	pair, err := tls.LoadX509KeyPair(filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"))
+	cert, err := readPrivate(filepath.Join(dir, "cert.pem"))
+	if err != nil {
+		return false
+	}
+	key, err := readPrivate(filepath.Join(dir, "key.pem"))
+	if err != nil {
+		return false
+	}
+	pair, err := tls.X509KeyPair(cert, key)
 	if err != nil || len(pair.Certificate) != 1 {
 		return false
 	}
