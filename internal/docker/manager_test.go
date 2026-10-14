@@ -35,6 +35,8 @@ type simulatedDocker struct {
 	unavailable       bool
 	healthFailures    int
 	failPull          bool
+	blockFollow       bool
+	signalOnFollow    bool
 	latestVersion     string
 	latestImageID     string
 	prereleaseVersion string
@@ -49,7 +51,7 @@ func (f *simulatedDocker) RunStreaming(ctx context.Context, out, errOut io.Write
 	}
 	return err
 }
-func (f *simulatedDocker) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	f.t.Helper()
 	if name != "docker" {
 		f.t.Fatalf("unexpected executable %s", name)
@@ -177,6 +179,23 @@ func (f *simulatedDocker) Run(_ context.Context, name string, args ...string) ([
 			return nil, nil
 		}
 	case "logs":
+		if f.blockFollow && contains(a, "--follow") {
+			if f.signalOnFollow {
+				process, err := os.FindProcess(os.Getpid())
+				if err != nil {
+					return nil, err
+				}
+				if err = process.Signal(os.Interrupt); err != nil {
+					return nil, err
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("follow was not interrupted")
+			}
+		}
 		return []byte("example log\n"), nil
 	case "compose":
 		at := 0

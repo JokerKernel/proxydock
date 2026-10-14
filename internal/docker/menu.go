@@ -17,6 +17,7 @@ var errBack = errors.New("返回菜单")
 
 type ui struct {
 	reader      *bufio.Reader
+	raw         io.Reader
 	out         io.Writer
 	interactive bool
 }
@@ -41,7 +42,7 @@ func newUI(input io.Reader, out io.Writer) *ui {
 		info, err := f.Stat()
 		interactiveOutput = err == nil && info.Mode()&os.ModeCharDevice != 0
 	}
-	return &ui{reader: r, out: out, interactive: interactiveInput && interactiveOutput && os.Getenv("TERM") != "dumb"}
+	return &ui{reader: r, raw: input, out: out, interactive: interactiveInput && interactiveOutput && os.Getenv("TERM") != "dumb"}
 }
 func (u *ui) clearScreen() {
 	if u.interactive {

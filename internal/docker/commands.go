@@ -3,10 +3,8 @@ package docker
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"proxydock/internal/docker/model"
@@ -146,7 +144,7 @@ func bindCancellation(cmd *cobra.Command) {
 	run := cmd.RunE
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		parent := cmd.Context()
-		ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+		ctx, stop := notifyCommand(parent)
 		defer stop()
 		defer cmd.SetContext(parent)
 		cmd.SetContext(ctx)

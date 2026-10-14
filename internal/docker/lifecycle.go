@@ -626,6 +626,21 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 	})
 	return output, err
 }
+func (m *Manager) followLogs(ctx context.Context, u *ui) error {
+	followCtx, stop := borrowInterrupt(ctx)
+	err := m.FollowLogs(followCtx)
+	// The log process can exit on the terminal's SIGINT before followCtx records it.
+	interrupted := ctx.Err() == nil && (followCtx.Err() != nil || exitedOnInterrupt(err))
+	stop()
+	if u != nil {
+		u.discardPendingInput()
+	}
+	if interrupted {
+		return nil
+	}
+	return err
+}
+
 func (m *Manager) FollowLogs(ctx context.Context) error {
 	in, err := m.logContainer(ctx)
 	if err != nil {

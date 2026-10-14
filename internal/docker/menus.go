@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -94,8 +93,14 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 				fmt.Fprintln(m.out, "已取消。")
 			}
 			err = nil
-		} else if err != nil {
+		} else if err != nil && ctx.Err() == nil {
 			m.printMenuError(err)
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
 		}
 		if shouldPause || cancelled || err != nil {
 			if err := u.pause(); err != nil {
@@ -349,8 +354,14 @@ func (m *Manager) configMenu(ctx context.Context, u *ui) error {
 		if errors.Is(err, errCancelled) {
 			continue
 		}
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			m.printMenuError(err)
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
 		}
 		if shouldPause || err != nil {
 			if err := u.pause(); err != nil {
@@ -792,17 +803,18 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 		u.clearScreen()
 		if choice == 6 {
 			u.pageHeader("Xray（Docker）", "服务端配置", "服务管理", "实时日志")
-			followCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
-			err = m.FollowLogs(followCtx)
-			if followCtx.Err() != nil && ctx.Err() == nil {
-				err = nil
-			}
-			stop()
-			if err != nil {
+			err = m.followLogs(ctx, u)
+			if err != nil && ctx.Err() == nil {
 				m.printMenuError(err)
 				if err := u.pause(); err != nil {
 					return err
 				}
+			}
+			if ctx.Err() != nil {
+				if err != nil {
+					return err
+				}
+				return ctx.Err()
 			}
 			continue
 		}
@@ -819,11 +831,17 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 			}
 			err = e
 		}
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			m.printMenuError(err)
 		}
 		if errors.Is(err, io.EOF) {
 			return err
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
 		}
 		if err := u.pause(); err != nil {
 			return err
