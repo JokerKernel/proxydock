@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Match release builds and keep local/cross binaries independent of libc.
+export CGO_ENABLED=${CGO_ENABLED:-0}
+
 VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
 COMMIT=${COMMIT:-$(git rev-parse --verify HEAD 2>/dev/null || echo unknown)}
 BUILD_DATE=${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}

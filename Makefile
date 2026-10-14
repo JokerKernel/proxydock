@@ -1,4 +1,4 @@
-.PHONY: build test vet cross version
+.PHONY: build test vet check cross version
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --verify HEAD 2>/dev/null || echo unknown)
@@ -13,6 +13,13 @@ test:
 
 vet:
 	go vet ./...
+
+check:
+	go test -race ./...
+	go vet ./...
+	bash -n scripts/build.sh scripts/install.sh scripts/install_test.sh scripts/install_flow_test.sh
+	bash scripts/install_test.sh
+	bash scripts/install_flow_test.sh
 
 cross:
 	mkdir -p dist

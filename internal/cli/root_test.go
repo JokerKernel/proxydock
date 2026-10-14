@@ -11,13 +11,13 @@ import (
 
 func TestStandaloneCommandTree(t *testing.T) {
 	root := New("test")
-	for _, args := range [][]string{{"prepare"}, {"deploy"}, {"upgrade"}, {"status"}, {"recover"}, {"remove"}, {"cleanup"}, {"config", "generate"}, {"config", "client"}, {"config", "access"}, {"config", "landing"}, {"config", "relay"}, {"service"}} {
+	for _, args := range [][]string{{"prepare"}, {"deploy"}, {"upgrade"}, {"status"}, {"recover"}, {"remove"}, {"cleanup"}, {"config", "generate"}, {"config", "client"}, {"config", "access"}, {"config", "landing"}, {"config", "relay"}, {"service"}, {"update"}, {"uninstall"}} {
 		cmd, remaining, err := root.Find(args)
 		if err != nil || len(remaining) != 0 || cmd.Name() != args[len(args)-1] {
 			t.Fatalf("find %v: command=%v remaining=%v error=%v", args, cmd, remaining, err)
 		}
 	}
-	for _, removed := range []string{"docker", "install", "update", "uninstall"} {
+	for _, removed := range []string{"docker", "install"} {
 		if _, remaining, err := root.Find([]string{removed}); err == nil && len(remaining) == 0 {
 			t.Fatalf("unexpected inherited command %q", removed)
 		}
@@ -25,7 +25,7 @@ func TestStandaloneCommandTree(t *testing.T) {
 }
 
 func TestHelpAndVersionDoNotRequireRootOrDocker(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"deploy", "--help"}, {"config", "--help"}, {"--version"}, {"-v"}} {
+	for _, args := range [][]string{{"--help"}, {"deploy", "--help"}, {"config", "--help"}, {"update", "--help"}, {"uninstall", "--help"}, {"--version"}, {"-v"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var out bytes.Buffer
 			root := newCommand("v1.2.3\ncommit: source", docker.Options{
@@ -50,7 +50,7 @@ func TestHelpAndVersionDoNotRequireRootOrDocker(t *testing.T) {
 
 func TestOperationsRequireRootBeforeCheckingDocker(t *testing.T) {
 	want := errors.New("root required")
-	for _, args := range [][]string{nil, {"status"}, {"deploy"}, {"service", "start"}, {"config", "client"}, {"cleanup", "--yes"}} {
+	for _, args := range [][]string{nil, {"status"}, {"deploy"}, {"service", "start"}, {"config", "client"}, {"cleanup", "--yes"}, {"update"}, {"uninstall", "--yes"}} {
 		root := newCommand("test", docker.Options{
 			RootCheck: func() error { return want },
 			LookPath:  func(string) (string, error) { t.Fatal("Docker check before root"); return "", nil },

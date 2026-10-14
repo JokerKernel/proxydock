@@ -50,9 +50,29 @@ jobs:
           printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
           printf 'build_date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
 
+  validate:
+    name: Validate release source
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run checks
+        run: make check
+
   build:
     name: Build linux/${{ matrix.arch }}
-    needs: metadata
+    needs: [metadata, validate]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -89,7 +109,9 @@ jobs:
 
       - name: Verify embedded version
         if: matrix.arch == 'amd64'
-        run: dist/proxydock_linux_${{ matrix.arch }}_${VERSION} --version
+        run: |
+          version_output=$(dist/proxydock_linux_${{ matrix.arch }}_${VERSION} --version)
+          [[ "${version_output%%$'\n'*}" == "proxydock ${VERSION}" ]]
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
@@ -123,7 +145,8 @@ jobs:
         working-directory: dist
         run: |
           printf '%s\n' "${RELEASE_TAG}" > version
-          sha256sum proxydock_linux_*_"${RELEASE_TAG}" version > SHA256SUMS
+          cp ../scripts/install.sh install.sh
+          sha256sum proxydock_linux_*_"${RELEASE_TAG}" version install.sh > SHA256SUMS
 
       - name: Generate direct commit notes
         id: release_notes
@@ -165,7 +188,7 @@ jobs:
           NOTES_FILE: ${{ steps.release_notes.outputs.notes_file }}
         run: |
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" dist/proxydock_linux_*_"${RELEASE_TAG}" dist/version dist/SHA256SUMS --clobber
+            gh release upload "${RELEASE_TAG}" dist/proxydock_linux_*_"${RELEASE_TAG}" dist/version dist/install.sh dist/SHA256SUMS --clobber
           else
             release_args=(
               --verify-tag
@@ -176,7 +199,10 @@ jobs:
             if [[ -n "${PREVIOUS_TAG}" ]]; then
               release_args+=(--notes-start-tag "${PREVIOUS_TAG}")
             fi
+            if [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+              release_args+=(--prerelease)
+            fi
             gh release create "${RELEASE_TAG}" \
-              dist/proxydock_linux_*_"${RELEASE_TAG}" dist/version dist/SHA256SUMS \
+              dist/proxydock_linux_*_"${RELEASE_TAG}" dist/version dist/install.sh dist/SHA256SUMS \
               "${release_args[@]}"
           fi

@@ -45,8 +45,15 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.menuChoice("4", "移除容器（删除容器，保留配置和数据）")
 		u.menuChoice("5", "清理卸载残留（永久删除配置、凭据、证书和备份）")
 		u.menuChoice("6", "恢复未完成事务（继续中断的配置或升级）")
+		maxChoice := 6
+		if m.programManagement != nil {
+			fmt.Fprintln(u.out)
+			u.menuChoice("7", "更新 ProxyDock（更新管理程序）")
+			u.menuChoice("8", "卸载 ProxyDock（保留容器、镜像和节点数据）")
+			maxChoice = 8
+		}
 		u.menuChoice("0/q", "退出")
-		choice, err := u.chooseNumber("请选择", 0, 6, -1)
+		choice, err := u.chooseNumber("请选择", 0, maxChoice, -1)
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -74,6 +81,20 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 			err = m.confirmCleanup(ctx, u)
 		case 6:
 			err = m.Recover(ctx)
+		case 7, 8:
+			action, question := "update", "更新 ProxyDock 管理程序？"
+			if choice == 8 {
+				action, question = "uninstall", "只卸载 ProxyDock 程序，保留容器、镜像和节点数据，确认继续？"
+			}
+			if err = u.confirm(question); err == nil {
+				err = m.programManagement(ctx, action)
+				if err == nil {
+					if choice == 7 {
+						fmt.Fprintln(m.out, "更新流程已完成，请重新运行 proxydock。")
+					}
+					return nil
+				}
+			}
 		}
 		if errors.Is(err, io.EOF) {
 			return nil

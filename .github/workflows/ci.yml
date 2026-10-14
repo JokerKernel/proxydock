@@ -37,8 +37,9 @@ jobs:
 
       - name: Validate shell scripts and installer behavior
         run: |
-          bash -n scripts/install.sh scripts/install_test.sh
+          bash -n scripts/build.sh scripts/install.sh scripts/install_test.sh scripts/install_flow_test.sh
           bash scripts/install_test.sh
+          bash scripts/install_flow_test.sh
 
           bash_path=$(command -v bash)
           set +e

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly test_root=$(mktemp -d /tmp/proxydock-installer-tests.XXXXXX)
+trap 'rm -rf -- "${test_root}"' EXIT
+export PROXYDOCK_INSTALL_DIR="${test_root}/bin"
+
 readonly script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 fail() {
@@ -45,8 +49,8 @@ test_color_controls() (
   resolved_version=v1.2.3
   output=$(print_completion)
   [[ "${output}" == *$'\033[38;5;208m│ 版本：v1.2.3\033[0m'* ]] || fail "completion version line was not fully orange"
-  [[ "${output}" == *$'\033[38;5;208m│ 位置：/usr/local/sbin/proxydock\033[0m'* ]] || fail "completion location line was not fully orange"
-  [[ "${output}" == *$'\033[38;5;208m│ 运行命令：sudo /usr/local/sbin/proxydock\033[0m'* ]] || fail "run command was not included in the orange completion card"
+  [[ "${output}" == *$'\033[38;5;208m│ 位置：'"${install_path}"$'\033[0m'* ]] || fail "completion location line was not fully orange"
+  [[ "${output}" == *$'\033[38;5;208m│ 运行命令：sudo '"${install_path}"$'\033[0m'* ]] || fail "run command was not included in the orange completion card"
 )
 
 test_no_color_is_respected() (
@@ -75,17 +79,10 @@ test_version_comparison_and_classification() (
   [[ "${installation_action}" == "upgrade" ]] || fail "older installation was not classified as upgrade"
 )
 
-test_update_argument_is_removed() (
+test_update_argument_is_supported() (
   source "${script_dir}/install.sh"
-  require_root() { return; }
-
-  local output status
-  set +e
-  output=$(main --update 2>&1)
-  status=$?
-  set -e
-  [[ ${status} -ne 0 ]] || fail "removed --update argument was still accepted"
-  [[ "${output}" == *"未知参数：--update"* ]] || fail "missing removed argument error"
+  parse_arguments --update --yes --version v1.2.3
+  [[ "${requested_action}" == update && "${requested_version}" == v1.2.3 && "${assume_yes}" == true ]] || fail "update arguments not parsed"
 )
 
 test_uninstall_removes_only_proxydock_binary() (
@@ -96,7 +93,7 @@ test_uninstall_removes_only_proxydock_binary() (
   remove_proxydock_binary() { installed=false; }
 
   local output
-  output=$(main uninstall)
+  output=$(main uninstall --yes)
   [[ "${output}" == *"自身卸载"* ]] || fail "missing uninstall header"
   [[ "${output}" == *"ProxyDock 自身已卸载"* ]] || fail "missing uninstall result"
   [[ "${output}" == *"Docker 容器、镜像、节点配置和管理数据均已保留"* ]] || fail "missing retained data notice"
@@ -119,8 +116,8 @@ test_uninstall_aliases_are_equivalent() (
   proxydock_binary_exists() { return 1; }
 
   local positional_output flag_output
-  positional_output=$(main uninstall)
-  flag_output=$(main --uninstall)
+  positional_output=$(main uninstall --yes)
+  flag_output=$(main --uninstall --yes)
   [[ "${positional_output}" == "${flag_output}" ]] || fail "uninstall aliases produced different output"
 )
 
@@ -174,9 +171,9 @@ test_api_failure_retries_without_proxy() (
 test_curl_direct_download_bypasses_all_proxies() (
   source "${script_dir}/install.sh"
   local captured=()
-  curl() { captured=("$@"); }
+  curl() { captured=("$@"); printf '{}\n' > "${test_root}/api"; }
 
-  download_direct "${latest_release_api}" /tmp/proxydock-install-test-api
+  download_direct "${latest_release_api}" "${test_root}/api"
   local index found=false
   for ((index = 0; index + 1 < ${#captured[@]}; index++)); do
     if [[ "${captured[index]}" == "--noproxy" && "${captured[index + 1]}" == "*" ]]; then
@@ -191,7 +188,7 @@ test_automatic_mode_skips_when_already_current
 test_color_controls
 test_no_color_is_respected
 test_version_comparison_and_classification
-test_update_argument_is_removed
+test_update_argument_is_supported
 test_uninstall_removes_only_proxydock_binary
 test_uninstall_is_idempotent
 test_uninstall_aliases_are_equivalent

@@ -20,6 +20,6 @@ ProxyForge 不再提供 Docker 入口；其菜单第 3 项恢复为原生卸载�
 
 历史路径和 `managed_by=proxyforge` 是持久化兼容标识，不是源码依赖。现有 Compose 文件的摘要仍有效。不要同时通过旧版 ProxyForge 与 ProxyDock 修改同一实例。测试根目录使用 `PROXYDOCK_ROOT`，替代原入口的 `PROXYFORGE_ROOT`。
 
-升级 ProxyDock 程序不会升级 Xray 镜像；使用 `proxydock upgrade` 主动升级镜像。卸载 ProxyDock 程序保留容器、配置、镜像和数据；移除实例与删除数据分别使用 `remove` 和 `cleanup`。
+`proxydock update` 更新 ProxyDock 程序；`proxydock upgrade` 主动升级 Xray 镜像。`proxydock uninstall --yes` 只卸载程序，保留容器、配置、镜像和数据；移除实例与删除数据分别使用 `remove` 和 `cleanup`。
 
-新仓库只初始化本地 Git，不自动创建 GitHub 仓库或发布。安装脚本默认发布来源为 `JokerKernel/proxydock`；实际托管位置可用 `PROXYDOCK_REPOSITORY` 指定。首次使用建议从源码构建并本地安装。
+独立仓库为 [JokerKernel/proxydock](https://github.com/JokerKernel/proxydock)。一键安装和程序更新使用该仓库的 Release；源码构建安装仍受支持。详见[安装与更新指南](installation.md)。

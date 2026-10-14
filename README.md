@@ -10,6 +10,26 @@ ProxyDock 是面向 Linux 的 Docker 代理管理工具，提供中文交互菜�
 - 已安装并启动的本机 rootful Docker Engine，以及 Compose v2 或更高版本插件。
 - host 网络，端口须与原生代理及其他服务错开。
 
+## 一键安装
+
+安装或更新最新正式版：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | sudo bash
+sudo proxydock
+```
+
+安装脚本从本仓库的 GitHub Release 获取 amd64/arm64 程序，校验 `SHA256SUMS` 和实际版本后原子安装到 `/usr/local/sbin/proxydock`。同版本跳过，默认不降级；安装或更新失败会保留或恢复原程序。Docker Engine 与 Compose 需提前安装。
+
+固定程序版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | \
+  sudo bash -s -- --version v1.0.0
+```
+
+版本号应替换为本仓库已发布的版本。完整参数和自定义安装目录见[安装与更新指南](docs/installation.md)。
+
 ## 从源码安装
 
 需要 Go 1.23 或更高版本，在仓库根目录运行：
@@ -20,13 +40,15 @@ sudo install -m 0755 proxydock /usr/local/sbin/proxydock
 sudo proxydock
 ```
 
-发布仓库建立并有 Release 后，也可使用 `sudo bash scripts/install.sh` 安装或更新程序。默认发布来源为 `JokerKernel/proxydock`，可通过 `PROXYDOCK_REPOSITORY=OWNER/REPO` 指定；固定程序版本使用 `PROXYDOCK_VERSION=v1.0.0`。本次分离只创建本地仓库。
-
 ## 常用命令
 
 ```bash
 proxydock --help
 proxydock --version
+
+# 更新管理程序；卸载程序保留容器、镜像和节点数据
+sudo proxydock update
+sudo proxydock uninstall --yes
 
 # TLS 示例：替换对外地址；使用官方 latest 标签，拉取后固定 digest
 sudo proxydock deploy --security tls --server YOUR_SERVER_IP --port 8443
@@ -42,11 +64,12 @@ sudo proxydock remove --yes
 sudo proxydock cleanup --yes
 ```
 
-`upgrade` 升级 Xray 镜像；程序自身更新通过构建安装或安装脚本完成。`sudo bash scripts/install.sh uninstall` 只卸载程序，保留容器、镜像和数据。
+`update` 更新 ProxyDock 程序，`upgrade` 升级 Xray 镜像。交互菜单第 7 项更新程序，第 8 项卸载程序；成功后退出当前进程。程序更新使用随二进制内置的安装脚本，安装、校验与回滚行为与一键安装一致。脚本也支持 `sudo bash scripts/install.sh update` 和 `sudo bash scripts/install.sh uninstall --yes`。
 
 ## 文档
 
 - [使用指南](docs/usage.md)：部署、配置、服务、升级回滚及文件位置。
+- [安装与更新指南](docs/installation.md)：一键安装、固定版本、程序更新与卸载。
 - [迁移说明](docs/migration.md)：旧命令映射和现有实例兼容。
 - [开发指南](docs/development.md)：模块边界、测试、构建和发布。
 
@@ -55,9 +78,7 @@ sudo proxydock cleanup --yes
 ## 验证
 
 ```bash
-go test -race ./...
-go vet ./...
-bash scripts/install_test.sh
+make check
 make cross
 ```
 

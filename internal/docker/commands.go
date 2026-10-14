@@ -19,7 +19,7 @@ func (m *Manager) Command() *cobra.Command {
 		m.errOut = cmd.ErrOrStderr()
 		return m.rootCheck()
 	}, RunE: func(cmd *cobra.Command, _ []string) error { return m.Menu(cmd.Context(), cmd.InOrStdin()) }}
-	cmd.PersistentFlags().BoolVarP(&yes, "yes", "y", false, "确认 Docker 配置覆盖、容器移除和残留清理")
+	cmd.PersistentFlags().BoolVarP(&yes, "yes", "y", false, "确认配置覆盖、容器移除、残留清理及程序卸载")
 	for _, action := range []string{"prepare", "upgrade"} {
 		action := action
 		var version string
