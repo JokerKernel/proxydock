@@ -15,6 +15,7 @@ import (
 var errCancelled = errors.New("用户取消")
 var errBack = errors.New("返回菜单")
 var errInterrupted = errors.New("已取消")
+var errQuit = errors.New("退出")
 
 type ui struct {
 	reader      *bufio.Reader
@@ -58,7 +59,11 @@ func (u *ui) pause() error {
 	}
 	fmt.Fprint(u.out, "\n按 Enter 返回菜单……")
 	_, err := u.readLine()
-	if errors.Is(err, errInterrupted) || errors.Is(err, io.EOF) {
+	if errors.Is(err, errInterrupted) {
+		fmt.Fprintln(u.out)
+		return errQuit
+	}
+	if errors.Is(err, io.EOF) {
 		return nil
 	}
 	return err
@@ -70,7 +75,11 @@ func (m *Manager) pauseAfterOutput() error {
 	}
 	fmt.Fprint(m.errOut, "\n按 Enter 继续……")
 	_, err := u.readLine()
-	if errors.Is(err, errInterrupted) || errors.Is(err, io.EOF) {
+	if errors.Is(err, errInterrupted) {
+		fmt.Fprintln(m.errOut)
+		return errQuit
+	}
+	if errors.Is(err, io.EOF) {
 		return nil
 	}
 	return err

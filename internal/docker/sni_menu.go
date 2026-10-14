@@ -284,10 +284,8 @@ func (u *ui) readSNIPageChoice(total, page, pages int, opts sniPageOptions) (str
 		fmt.Fprintf(u.out, "%s：", prompt)
 		line, err := u.readLine()
 		if errors.Is(err, errInterrupted) {
-			if opts.AllowBack {
-				return sniPageActionBack, 0, nil
-			}
-			return sniPageActionCancel, 0, nil
+			fmt.Fprintln(u.out)
+			return "", 0, errQuit
 		}
 		if err != nil && len(line) == 0 {
 			return "", 0, err

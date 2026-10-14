@@ -76,7 +76,7 @@ func TestMenuInterruptDoesNotCancelTheSession(t *testing.T) {
 	}
 }
 
-func TestCtrlCAtMenuPromptReturns(t *testing.T) {
+func TestCtrlCAtMenuPromptQuits(t *testing.T) {
 	m, _ := testManager(t)
 	var out lockedBuffer
 	input, output, err := os.Pipe()
@@ -107,17 +107,60 @@ func TestCtrlCAtMenuPromptReturns(t *testing.T) {
 	signalProcess(t, os.Interrupt)
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, errQuit) {
+			t.Fatalf("config menu interrupt = %v, want quit", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Ctrl+C did not leave the config menu")
 	}
 	if ctx.Err() != nil {
-		t.Fatalf("returning canceled the session: %v", ctx.Err())
+		t.Fatalf("quitting canceled the session: %v", ctx.Err())
 	}
-	if strings.Contains(out.String(), "操作失败") || strings.Contains(out.String(), "context canceled") {
-		t.Fatalf("interrupt was reported as a failure:\n%s", out.String())
+	text := out.String()
+	if strings.Contains(text, "操作失败") || strings.Contains(text, "context canceled") || strings.Contains(text, "已取消") {
+		t.Fatalf("interrupt was reported as a failure:\n%s", text)
+	}
+}
+
+func TestCtrlCAtCancelablePromptQuits(t *testing.T) {
+	var out lockedBuffer
+	input, output, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = input.Close()
+		_ = output.Close()
+	})
+	ui := newUI(input, &out)
+	ui.interactive = true
+	ctx, stop := notifyCommand(context.Background())
+	defer stop()
+	detach := attachMenuSignals(ctx, ui)
+	defer detach()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ui.chooseNumberCancelable("请选择", 1, 2, 1)
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(out.String(), "请选择") {
+		if time.Now().After(deadline) {
+			t.Fatalf("prompt did not appear:\n%s", out.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	signalProcess(t, os.Interrupt)
+	select {
+	case err := <-done:
+		if !errors.Is(err, errQuit) {
+			t.Fatalf("prompt interrupt = %v, want quit", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ctrl+C did not leave the prompt")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("quitting canceled the session: %v", ctx.Err())
 	}
 }
 

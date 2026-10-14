@@ -56,7 +56,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.menuChoice("6", "恢复未完成事务（回滚中断的配置或升级）")
 		u.menuChoice("0/q", "退出")
 		choice, err := u.chooseNumber("请选择", 0, 6, -1)
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
 			return nil
 		}
 		if err != nil {
@@ -84,7 +84,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		case 6:
 			err = m.Recover(ctx)
 		}
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
 			return nil
 		}
 		if errors.Is(err, errBack) {
@@ -118,7 +118,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		}
 		if shouldPause || cancelled || err != nil {
 			if err := u.pause(); err != nil {
-				if errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
 					return nil
 				}
 				return err
@@ -362,7 +362,7 @@ func (m *Manager) configMenu(ctx context.Context, u *ui) error {
 			shouldPause = false
 			err = m.linkMenu(ctx, u)
 		}
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, errQuit) || errors.Is(err, io.EOF) {
 			return err
 		}
 		if errors.Is(err, errCancelled) {
@@ -593,7 +593,7 @@ func (m *Manager) modifyMenu(ctx context.Context, u *ui) error {
 		case sniChoice > 0 && choice == sniChoice:
 			err = m.retestSNICandidates(ctx, u)
 		}
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, errQuit) || errors.Is(err, io.EOF) {
 			return err
 		}
 		if errors.Is(err, errCancelled) {
@@ -826,6 +826,9 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 		if choice == 6 {
 			u.pageHeader("Xray（Docker）", "服务端配置", "服务管理", "实时日志")
 			err = m.followLogs(ctx, u)
+			if errors.Is(err, errQuit) {
+				return err
+			}
 			if err != nil && ctx.Err() == nil {
 				m.printMenuError(err)
 				if err := u.pause(); err != nil {
@@ -852,6 +855,9 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 				fmt.Fprintln(m.out)
 			}
 			err = e
+		}
+		if errors.Is(err, errQuit) {
+			return err
 		}
 		if next, pause := m.consumeInterrupt(err); pause {
 			err = next

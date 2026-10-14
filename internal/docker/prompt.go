@@ -122,10 +122,7 @@ func (u *ui) chooseNumberInput(label string, min, max, def int, cancelable bool)
 		line, err := u.readLine()
 		if errors.Is(err, errInterrupted) {
 			fmt.Fprintln(u.out)
-			if cancelable || min > 0 {
-				return 0, errCancelled
-			}
-			return 0, nil
+			return 0, errQuit
 		}
 		if err != nil && len(line) == 0 {
 			return 0, err
@@ -182,7 +179,7 @@ func (u *ui) ask(label, def string) (string, error) {
 	line, err := u.readLine()
 	if errors.Is(err, errInterrupted) {
 		fmt.Fprintln(u.out)
-		return "", errCancelled
+		return "", errQuit
 	}
 	if err != nil && len(line) == 0 {
 		return "", err
@@ -218,7 +215,7 @@ func (u *ui) confirmChoice(message string, defaultYes bool) error {
 		line, err := u.readLine()
 		if errors.Is(err, errInterrupted) {
 			fmt.Fprintln(u.out)
-			return errCancelled
+			return errQuit
 		}
 		if err != nil && len(line) == 0 {
 			return err
