@@ -16,6 +16,18 @@ func (m *Manager) saveConfigBackup(name string, data []byte) error {
 	return atomicWrite(filepath.Join(dir, "config.json"), data, 0600)
 }
 
+func (m *Manager) backupConfiguration(data []byte) (string, error) {
+	id, err := randomHex(6)
+	if err != nil {
+		return "", err
+	}
+	name := m.now().UTC().Format("20060102T150405.000000000Z") + "-" + id
+	if err := m.saveConfigBackup(name, data); err != nil {
+		return "", err
+	}
+	return filepath.Join(m.paths.Backups(), name), nil
+}
+
 // Called only after the journal has been removed. This also reclaims snapshots
 // left by a crash between committing a transaction and deleting its files.
 func (m *Manager) cleanupTransactionSnapshots() error {
@@ -44,7 +56,18 @@ func (m *Manager) cleanupTransactionSnapshots() error {
 		if err != nil {
 			return err
 		}
-		if len(files) == 1 && files[0].Name() == "snapshot.json" && files[0].Type().IsRegular() {
+		known, manifest := true, false
+		for _, file := range files {
+			if !file.Type().IsRegular() || (file.Name() != "snapshot.json" && file.Name() != "config.json") {
+				known = false
+				break
+			}
+			manifest = manifest || file.Name() == "snapshot.json"
+		}
+		if !known {
+			continue
+		}
+		if manifest {
 			var snapshots []fileSnapshot
 			if err := loadSnapshot(filepath.Join(dir, "snapshot.json"), &snapshots); err != nil {
 				return err
@@ -52,8 +75,6 @@ func (m *Manager) cleanupTransactionSnapshots() error {
 			if err := m.checkSnapshotFiles(snapshots); err != nil {
 				return err
 			}
-		} else if len(files) != 0 {
-			continue
 		}
 		if err := safePath(dir); err != nil {
 			return err
@@ -78,6 +99,16 @@ func (m *Manager) checkSnapshotFiles(snapshots []fileSnapshot) error {
 			return fmt.Errorf("快照引用非受管路径")
 		}
 		delete(allowed, snapshot.Path)
+		if !snapshot.Exists && len(snapshot.Data) != 0 {
+			return fmt.Errorf("不存在的事务文件不能包含内容")
+		}
+		if snapshot.Path == m.paths.Config() && snapshot.Exists {
+			if len(snapshot.Data) != 0 || snapshot.Reference != "config.json" || len(snapshot.SHA256) != 64 {
+				return fmt.Errorf("事务配置必须引用本事务的配置副本")
+			}
+		} else if snapshot.Reference != "" || snapshot.SHA256 != "" {
+			return fmt.Errorf("事务文件不允许引用外部备份: %s", snapshot.Path)
+		}
 	}
 	return nil
 }

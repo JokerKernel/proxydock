@@ -89,17 +89,9 @@ func (m *Manager) logDockerCommand(label opLabel, full []string) {
 	terminal.WriteOperation(m.errOut, levelInfo, "命令详情", "docker "+formatCommandArgs(full))
 }
 
-func (m *Manager) logBackup(dir string, snapshots []fileSnapshot) {
-	var paths []string
-	for _, snapshot := range snapshots {
-		if snapshot.Exists && snapshot.Path == m.paths.Config() {
-			paths = append(paths, snapshot.Path)
-		}
-	}
-	if len(paths) > 0 {
-		m.op(phaseBackup, levelStep, "备份原配置", strings.Join(paths, "\n"))
-		m.op(phaseBackup, levelInfo, "备份位置", dir)
-	}
+func (m *Manager) logBackup(dir string) {
+	m.op(phaseBackup, levelStep, "备份原配置", m.paths.Config())
+	m.op(phaseBackup, levelInfo, "备份位置", dir)
 }
 
 func formatCommandArgs(args []string) string {

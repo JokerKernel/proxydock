@@ -262,16 +262,9 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 				return nil
 			}
 			if md.Channel != old.Channel {
-				j, err := m.begin("upgrade", in)
-				if err != nil {
-					return err
-				}
 				md.UpdatedAt = m.now().UTC()
 				if err = saveJSON(m.paths.Metadata(), md); err != nil {
-					return m.rollback(j, err)
-				}
-				if err = m.commit(j); err != nil {
-					return m.rollback(j, err)
+					return err
 				}
 			}
 			m.op(phaseResult, levelResult, "升级结果", "镜像未变化，无需重建容器")
@@ -779,11 +772,8 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 				return err
 			}
 		}
-		j, err := m.begin("service", in)
-		if err != nil {
-			return err
-		}
-		fail := func(e error) error { return m.rollback(j, e) }
+		// Service controls keep the existing definition and only atomically
+		// update desired_state. They do not require file snapshots or rollback.
 		switch action {
 		case "start":
 			output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
@@ -795,30 +785,27 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 			output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重启容器"}, "restart", Service)
 		}
 		if err != nil {
-			return fail(err)
+			return err
 		}
 		if action != "stop" {
 			ports := hostPorts(state.Node, md.Network)
 			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
 			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
-				return fail(err)
+				return err
 			}
 			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
 			md.DesiredState = "running"
 		} else {
 			current, e := m.inspect(ctx)
 			if e != nil || current != nil && current.State.Running {
-				return fail(fmt.Errorf("停止容器后状态异常: %v", e))
+				return fmt.Errorf("停止容器后状态异常: %v", e)
 			}
 			md.DesiredState = "stopped"
 			m.op(phaseApply, levelResult, "运行状态", "已停止")
 		}
 		md.UpdatedAt = m.now().UTC()
 		if err = saveJSON(m.paths.Metadata(), md); err != nil {
-			return fail(err)
-		}
-		if err = m.commit(j); err != nil {
-			return fail(err)
+			return err
 		}
 		result := "已重启"
 		switch action {

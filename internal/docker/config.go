@@ -420,6 +420,13 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 	if err := m.validateBytes(ctx, md, b); err != nil {
 		return &configurationValidationError{err}
 	}
+	if configChanged && readErr == nil {
+		dir, err := m.backupConfiguration(old)
+		if err != nil {
+			return err
+		}
+		m.logBackup(dir)
+	}
 	j, err := m.begin("config", in)
 	if err != nil {
 		return err

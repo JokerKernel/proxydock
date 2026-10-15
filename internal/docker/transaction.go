@@ -21,6 +21,8 @@ type journal struct {
 	OldRunning    bool   `json:"old_running"`
 }
 
+const transactionSchemaVersion = 2
+
 func (m *Manager) withLock(ctx context.Context, work func() error) error {
 	release, err := m.acquireLock(ctx)
 	if err != nil {
@@ -66,6 +68,11 @@ func (m *Manager) acquireLock(ctx context.Context) (func(), error) {
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 }
 func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr error) {
+	switch kind {
+	case "config", "upgrade", "prepare":
+	default:
+		return journal{}, fmt.Errorf("操作不需要配置回滚事务: %s", kind)
+	}
 	if _, err := os.Stat(m.paths.Journal()); err == nil {
 		return journal{}, fmt.Errorf("存在未完成事务，请先恢复")
 	} else if !os.IsNotExist(err) {
@@ -96,17 +103,21 @@ func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr e
 		}
 		snapshots = append(snapshots, s)
 	}
+	for i := range snapshots {
+		s := &snapshots[i]
+		if s.Path == m.paths.Config() && s.Exists {
+			if err := atomicWrite(filepath.Join(dir, "config.json"), s.Data, 0600); err != nil {
+				return journal{}, err
+			}
+			s.Reference = "config.json"
+			s.SHA256 = digest(s.Data)
+			s.Data = nil
+		}
+	}
 	if err = saveJSON(filepath.Join(dir, "snapshot.json"), snapshots); err != nil {
 		return journal{}, err
 	}
-	for _, snapshot := range snapshots {
-		if snapshot.Path == m.paths.Config() && snapshot.Exists {
-			if err = m.saveConfigBackup(name, snapshot.Data); err != nil {
-				return journal{}, err
-			}
-		}
-	}
-	j := journal{SchemaVersion: 1, InstanceID: Instance, Kind: kind, Phase: "prepared", Backup: dir}
+	j := journal{SchemaVersion: transactionSchemaVersion, InstanceID: Instance, Kind: kind, Phase: "prepared", Backup: dir}
 	if in != nil {
 		j.HadContainer = true
 		j.OldRunning = in.State.Running
@@ -114,7 +125,6 @@ func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr e
 	if err = saveJSON(m.paths.Journal(), j); err != nil {
 		return j, err
 	}
-	m.logBackup(filepath.Join(m.paths.Backups(), name), snapshots)
 	return j, nil
 }
 func (m *Manager) phase(j *journal, phase string) error {
@@ -142,8 +152,8 @@ func (m *Manager) rollback(j journal, cause error) error {
 	return fmt.Errorf("%w；已恢复旧配置与运行状态", cause)
 }
 func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
-	if j.SchemaVersion != 1 || j.InstanceID != Instance || filepath.Dir(j.Backup) != m.paths.Transactions() {
-		return fmt.Errorf("事务恢复记录标识/路径无效")
+	if err := m.checkJournal(j); err != nil {
+		return err
 	}
 	var snaps []fileSnapshot
 	if err := loadSnapshot(filepath.Join(j.Backup, "snapshot.json"), &snaps); err != nil {
@@ -152,6 +162,38 @@ func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
 	if err := m.checkSnapshotFiles(snaps); err != nil {
 		return err
 	}
+	// Verify the transaction's own configuration copy before stopping the
+	// container or restoring any other files.
+	for i := range snaps {
+		s := &snaps[i]
+		if s.Reference == "" {
+			continue
+		}
+		data, err := readPrivate(filepath.Join(j.Backup, s.Reference))
+		if err != nil {
+			return err
+		}
+		if digest(data) != s.SHA256 {
+			return fmt.Errorf("事务配置副本校验失败")
+		}
+		s.Data = data
+	}
+	return m.restoreSnapshot(ctx, j, snaps)
+}
+
+func (m *Manager) checkJournal(j journal) error {
+	if j.SchemaVersion != transactionSchemaVersion || j.InstanceID != Instance || filepath.Dir(j.Backup) != m.paths.Transactions() || !backupNamePattern.MatchString(filepath.Base(j.Backup)) {
+		return fmt.Errorf("事务恢复记录标识/路径无效")
+	}
+	switch j.Kind {
+	case "config", "upgrade", "prepare":
+		return nil
+	default:
+		return fmt.Errorf("事务操作类型无效")
+	}
+}
+
+func (m *Manager) restoreSnapshot(ctx context.Context, j journal, snaps []fileSnapshot) error {
 	m.op(phaseBackup, levelInfo, "读取快照", filepath.Join(j.Backup, "snapshot.json"))
 	// The on-disk Compose may already describe the new network while the
 	// container still uses the old one. Verify ownership before restoring it.
@@ -257,6 +299,9 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if err := m.checkJournal(j); err != nil {
 		return err
 	}
 	if j.Phase == "committed" {

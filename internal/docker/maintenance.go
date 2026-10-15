@@ -245,14 +245,11 @@ func (m *Manager) pruneBackups() (map[string]bool, error) {
 			if err := m.certificateReferences(data, refs); err != nil {
 				return nil, err
 			}
-			id, err := randomHex(6)
+			dir, err := m.backupConfiguration(data)
 			if err != nil {
 				return nil, err
 			}
-			name := m.now().UTC().Format("20060102T150405.000000000Z") + "-" + id
-			if err := m.saveConfigBackup(name, data); err != nil {
-				return nil, err
-			}
+			name := filepath.Base(dir)
 			records = append(records, record{name: name, generated: true, refs: refs})
 			generated = append(generated, name)
 		} else if !os.IsNotExist(err) {

@@ -252,12 +252,14 @@ func decodeStrictReader(r io.Reader, v any) error {
 }
 
 type fileSnapshot struct {
-	Path   string `json:"path"`
-	Exists bool   `json:"exists"`
-	Data   []byte `json:"data,omitempty"`
-	Mode   uint32 `json:"mode"`
-	UID    int    `json:"uid"`
-	GID    int    `json:"gid"`
+	Path      string `json:"path"`
+	Exists    bool   `json:"exists"`
+	Data      []byte `json:"data,omitempty"`
+	Reference string `json:"reference,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Mode      uint32 `json:"mode"`
+	UID       int    `json:"uid"`
+	GID       int    `json:"gid"`
 }
 
 func snapshot(path string) (fileSnapshot, error) {
