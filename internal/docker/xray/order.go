@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"sort"
-
-	"proxydock/internal/docker/xray/jsonutil"
 )
 
 // marshalXray keeps Xray's documented field order for managed objects. Unknown
@@ -16,7 +14,14 @@ func marshalXray(value any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return jsonutil.Marshal(orderXrayValue(normalized))
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(orderXrayValue(normalized)); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
 }
 
 func normalizeXrayValue(value any) (any, error) {

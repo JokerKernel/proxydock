@@ -100,7 +100,7 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 		if access.UsesPrimaryInbound() {
 			continue
 		}
-		tag := xrayLandingTLSInboundTag(access.Name)
+		tag := model.LandingTLSInboundTag(access.Name)
 		oldTLSInboundTags[tag] = true
 		if access.Enabled && countXrayLandingTLSInbounds(rawInbounds, tag, access.UserName, access.UUID) != 1 {
 			return nil, fmt.Errorf("现有 Xray 配置中 TLS 落地接入 %q 的入站不唯一或不存在，拒绝修改", access.Name)
@@ -122,7 +122,7 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 		if access.UsesPrimaryInbound() || !access.Enabled {
 			continue
 		}
-		tag := xrayLandingTLSInboundTag(access.Name)
+		tag := model.LandingTLSInboundTag(access.Name)
 		if countXrayTaggedObjects(inbounds, tag) != 0 {
 			return nil, fmt.Errorf("Xray TLS 落地入站 tag 冲突: %s", tag)
 		}
@@ -147,7 +147,7 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 		return nil, fmt.Errorf("Xray outbounds 不存在或格式无效")
 	}
 	for _, link := range old.RelayLinks {
-		if link.Enabled && countXrayTaggedObjects(rawOutbounds, xrayRelayOutboundTag(link.Name)) != 1 {
+		if link.Enabled && countXrayTaggedObjects(rawOutbounds, model.RelayOutboundTag(link.Name)) != 1 {
 			return nil, fmt.Errorf("现有 Xray 配置中中转线路 %q 的出站不唯一或不存在，拒绝修改", link.Name)
 		}
 	}
@@ -167,7 +167,7 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 		if !link.Enabled {
 			continue
 		}
-		tag := xrayRelayOutboundTag(link.Name)
+		tag := model.RelayOutboundTag(link.Name)
 		for _, item := range outbounds {
 			if outbound, ok := item.(map[string]any); ok && outbound["tag"] == tag {
 				return nil, fmt.Errorf("Xray 出站 tag 冲突: %s", tag)
@@ -213,7 +213,7 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 		return nil, fmt.Errorf("Xray routing.rules 不存在或格式无效")
 	}
 	for _, link := range old.RelayLinks {
-		if link.Enabled && countXrayRelayRules(rawRules, link.UserName, xrayRelayOutboundTag(link.Name)) != 1 {
+		if link.Enabled && countXrayRelayRules(rawRules, link.UserName, model.RelayOutboundTag(link.Name)) != 1 {
 			return nil, fmt.Errorf("现有 Xray 配置中中转线路 %q 的路由不唯一或不存在，拒绝修改", link.Name)
 		}
 	}
@@ -235,7 +235,7 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 		}
 		rules = append(rules, map[string]any{
 			"inboundTag": []string{next.InboundTag}, "user": []string{link.UserName},
-			"outboundTag": xrayRelayOutboundTag(link.Name),
+			"outboundTag": model.RelayOutboundTag(link.Name),
 		})
 	}
 	routing["rules"] = rules
@@ -247,9 +247,6 @@ func (*Codec) PatchLinks(config []byte, old, next model.Node) ([]byte, error) {
 	return marshalXray(root)
 }
 
-func xrayRelayOutboundTag(name string) string     { return model.RelayOutboundTag(name) }
-func xrayLandingTLSInboundTag(name string) string { return model.LandingTLSInboundTag(name) }
-
 func xrayLinkIdentity(n model.Node) (map[string]bool, map[string]bool, map[string]bool) {
 	names, uuids, tags := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, access := range n.LandingAccesses {
@@ -258,7 +255,7 @@ func xrayLinkIdentity(n model.Node) (map[string]bool, map[string]bool, map[strin
 		}
 	}
 	for _, link := range n.RelayLinks {
-		names[link.UserName], uuids[link.UUID], tags[xrayRelayOutboundTag(link.Name)] = true, true, true
+		names[link.UserName], uuids[link.UUID], tags[model.RelayOutboundTag(link.Name)] = true, true, true
 	}
 	return names, uuids, tags
 }

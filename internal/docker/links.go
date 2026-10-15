@@ -19,7 +19,7 @@ func cloneNode(n model.Node) (model.Node, error) {
 		return n, err
 	}
 	var copy model.Node
-	err = decodeNode(b, &copy)
+	err = decodeStrict(b, &copy)
 	return copy, err
 }
 func linkName(name string) error {
@@ -294,10 +294,6 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 		return m.patchLinks(ctx, md, in, s.Node, next, b)
 	})
 }
-func (m *Manager) Peer(name string) (model.LandingPeer, error) {
-	return m.peer(context.Background(), name)
-}
-
 func (m *Manager) peer(ctx context.Context, name string) (model.LandingPeer, error) {
 	s, err := m.readManagedState(ctx)
 	if err != nil {

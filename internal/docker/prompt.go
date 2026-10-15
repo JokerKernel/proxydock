@@ -46,7 +46,7 @@ func (u *ui) labeledCard(title string, rows [][2]string) {
 
 func (u *ui) instanceCard(name, badge, version, detail string, rows [][2]string) {
 	fmt.Fprintln(u.out, "╭─ 当前实例")
-	padding := menuStatusColumn - displayWidth(name)
+	padding := menuStatusColumn - terminal.DisplayWidth(name)
 	if padding < 2 {
 		padding = 2
 	}
@@ -65,7 +65,7 @@ func (u *ui) instanceCard(name, badge, version, detail string, rows [][2]string)
 }
 
 func (u *ui) writeCardRow(label, value string, labelWidth int) {
-	padding := labelWidth - displayWidth(label)
+	padding := labelWidth - terminal.DisplayWidth(label)
 	if padding < 1 {
 		padding = 1
 	}
@@ -77,7 +77,7 @@ func (u *ui) menuChoice(key, label string) {
 	var line strings.Builder
 	fmt.Fprintf(&line, "  %-3s %s", key, title)
 	if description != "" {
-		padding := menuDescriptionColumn - displayWidth(title)
+		padding := menuDescriptionColumn - terminal.DisplayWidth(title)
 		if padding < 2 {
 			padding = 2
 		}
@@ -87,7 +87,7 @@ func (u *ui) menuChoice(key, label string) {
 }
 
 func (u *ui) menuBadge(key, title, badge string) {
-	padding := menuStatusColumn - displayWidth(title)
+	padding := menuStatusColumn - terminal.DisplayWidth(title)
 	if padding < 2 {
 		padding = 2
 	}
@@ -318,32 +318,6 @@ func cardText(label string) string {
 		return title
 	}
 	return title + "  -- " + description
-}
-
-func displayWidth(value string) int {
-	width := 0
-	for _, r := range value {
-		if isWideRune(r) {
-			width += 2
-		} else {
-			width++
-		}
-	}
-	return width
-}
-
-func isWideRune(r rune) bool {
-	return r >= 0x1100 && (r <= 0x115f ||
-		r == 0x2329 || r == 0x232a ||
-		(r >= 0x2e80 && r <= 0xa4cf && r != 0x303f) ||
-		(r >= 0xac00 && r <= 0xd7a3) ||
-		(r >= 0xf900 && r <= 0xfaff) ||
-		(r >= 0xfe10 && r <= 0xfe19) ||
-		(r >= 0xfe30 && r <= 0xfe6f) ||
-		(r >= 0xff00 && r <= 0xff60) ||
-		(r >= 0xffe0 && r <= 0xffe6) ||
-		(r >= 0x1f300 && r <= 0x1faff) ||
-		(r >= 0x20000 && r <= 0x3fffd))
 }
 
 func channelLabel(channel string) string {

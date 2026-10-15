@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"proxydock/internal/terminal"
 )
 
 var defaultSNICandidates = []string{
@@ -518,7 +520,7 @@ func formatCertificateSANs(sans []string, limit int) string {
 func sniDomainColumnWidth(candidates []sniCandidate) int {
 	width := 16
 	for _, candidate := range candidates {
-		if w := displayWidth(candidate.Domain); w > width {
+		if w := terminal.DisplayWidth(candidate.Domain); w > width {
 			width = w
 		}
 	}
@@ -529,7 +531,7 @@ func sniDomainColumnWidth(candidates []sniCandidate) int {
 }
 
 func padDisplay(value string, width int) string {
-	padding := width - displayWidth(value)
+	padding := width - terminal.DisplayWidth(value)
 	if padding <= 0 {
 		return value
 	}
@@ -537,7 +539,7 @@ func padDisplay(value string, width int) string {
 }
 
 func padDisplayLeft(value string, width int) string {
-	padding := width - displayWidth(value)
+	padding := width - terminal.DisplayWidth(value)
 	if padding <= 0 {
 		return value
 	}
@@ -545,16 +547,13 @@ func padDisplayLeft(value string, width int) string {
 }
 
 func fitDisplay(value string, width int) string {
-	if displayWidth(value) <= width {
+	if terminal.DisplayWidth(value) <= width {
 		return padDisplay(value, width)
 	}
 	var builder strings.Builder
 	used := 0
 	for _, r := range value {
-		w := 1
-		if isWideRune(r) {
-			w = 2
-		}
+		w := terminal.DisplayWidth(string(r))
 		if used+w >= width {
 			break
 		}

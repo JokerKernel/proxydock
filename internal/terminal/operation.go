@@ -1,7 +1,6 @@
 package terminal
 
 import (
-	"fmt"
 	"io"
 	"strings"
 	"unicode"
@@ -147,40 +146,4 @@ func isWideRune(r rune) bool {
 	default:
 		return false
 	}
-}
-
-// SeparatorColumn is the display column of "│" (the label width plus one space).
-func SeparatorColumn(line string) (int, bool) {
-	plain := stripANSI(line)
-	index := strings.Index(plain, "│")
-	if index < 0 {
-		return 0, false
-	}
-	return DisplayWidth(plain[:index]), true
-}
-
-func stripANSI(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] != 0x1b {
-			b.WriteByte(s[i])
-			continue
-		}
-		end := strings.IndexByte(s[i:], 'm')
-		if end < 0 {
-			b.WriteByte(s[i])
-			continue
-		}
-		i += end
-	}
-	return b.String()
-}
-
-// FormatOperation is the plain-text form of one single-line operation.
-func FormatOperation(name, detail string) string {
-	var b strings.Builder
-	fmt.Fprint(&b, renderLabel(name, LevelInfo, false))
-	b.WriteString(" │ ")
-	b.WriteString(detail)
-	return b.String()
 }

@@ -17,7 +17,6 @@ import (
 	"proxydock/internal/docker/xray/accesspolicy"
 )
 
-func decodeNode(b []byte, n *model.Node) error { return decodeStrict(b, n) }
 func nodePorts(n model.Node) []int {
 	seen := map[int]bool{n.Port: true}
 	if n.XrayFallbackGuard {
@@ -78,16 +77,6 @@ func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, 
 	}
 	return md, in, err
 }
-func (m *Manager) Deploy(ctx context.Context, version string, opts model.GenerateOptions) error {
-	if err := validateGenerateInput(opts); err != nil {
-		return err
-	}
-	if err := m.prepareDeployment(ctx, version, ""); err != nil {
-		return err
-	}
-	return m.Generate(ctx, opts, true)
-}
-
 func (m *Manager) prepareDeployment(ctx context.Context, version, network string) error {
 	md, err := m.metadata()
 	if os.IsNotExist(err) {
@@ -624,15 +613,6 @@ func (m *Manager) PatchSetting(ctx context.Context, setting, value string) error
 		return m.applyConfig(ctx, md, in, s.Node, patched, false, "配置已生效")
 	})
 }
-func (m *Manager) SetPolicy(ctx context.Context, policy model.AccessPolicy) error {
-	normalized, err := policy.Normalize()
-	if err != nil {
-		return err
-	}
-	return m.updatePolicy(ctx, func(model.AccessPolicy) (model.AccessPolicy, error) {
-		return normalized, nil
-	})
-}
 
 // Read and change the policy under the same lock, after transaction recovery.
 func (m *Manager) updatePolicy(ctx context.Context, change func(model.AccessPolicy) (model.AccessPolicy, error)) error {
@@ -817,30 +797,6 @@ func (m *Manager) Validate(ctx context.Context) error {
 		return m.validateBytes(ctx, md.ImageID, b)
 	})
 }
-func (m *Manager) ApplyEdited(ctx context.Context, data []byte) error {
-	if len(data) == 0 || len(data) > maxConfigSize || !json.Valid(data) {
-		return fmt.Errorf("配置必须是大小合理的有效 JSON")
-	}
-	return m.withLock(ctx, func() error {
-		return m.applyEditedLocked(ctx, data)
-	})
-}
-func (m *Manager) applyEditedLocked(ctx context.Context, data []byte) error {
-	md, in, err := m.prepareOperation(ctx)
-	if err != nil {
-		return err
-	}
-	s, err := m.LoadState()
-	if err != nil {
-		return err
-	}
-	data, err = m.prepareEditedConfig(data, s.Node)
-	if err != nil {
-		return err
-	}
-	return m.applyConfig(ctx, md, in, s.Node, data, false, "配置已生效")
-}
-
 func (m *Manager) prepareEditedConfig(data []byte, node model.Node) ([]byte, error) {
 	original, err := m.renderNode(node)
 	if err != nil {

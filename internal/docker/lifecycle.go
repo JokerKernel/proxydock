@@ -72,10 +72,6 @@ func (m *Manager) checkProject(ctx context.Context) error {
 	return nil
 }
 func stringsFields(b []byte) []string { return strings.Fields(string(b)) }
-func (m *Manager) Prepare(ctx context.Context, version string) error {
-	return m.prepareWithNetwork(ctx, version, networkHost)
-}
-
 func (m *Manager) prepareWithNetwork(ctx context.Context, version, network string) error {
 	mode, err := normalizeNetwork(network)
 	if err != nil {
@@ -181,10 +177,6 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	}
 	return m.validateBytes(ctx, md.ImageID, client)
 }
-func (m *Manager) Upgrade(ctx context.Context, version string) error {
-	return m.upgrade(ctx, version, "")
-}
-
 func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 	requested := ""
 	if strings.TrimSpace(network) != "" {

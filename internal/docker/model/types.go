@@ -16,10 +16,8 @@ const (
 	LandingSecurityTLS     = "tls"
 	DefaultUserName        = "one"
 	DefaultInboundTag      = "docker-one"
-	LandingTLSPortMin      = 30000
-	LandingTLSPortMax      = 65000
-	FallbackPortMin        = LandingTLSPortMin
-	FallbackPortMax        = LandingTLSPortMax
+	FallbackPortMin        = 30000
+	FallbackPortMax        = 65000
 	StateSchemaVersion     = 1
 )
 
@@ -132,7 +130,6 @@ type GenerateOptions struct {
 	// The interactive menu sets it. CLI flags leave it unset and can only turn a flag on.
 	ApplyFallbackPolicy bool
 	RotateCredentials   bool
-	NonInteractive      bool
 	DropLinks           bool
 }
 
@@ -149,23 +146,9 @@ type KeyPair struct {
 	Public  string
 }
 
-type ServiceStatus struct {
-	Active bool
-	Detail string
-}
-
 func (n Node) IsTLS() bool { return n.Security == LandingSecurityTLS }
 
 // A zero-port access shares the primary inbound.
 func (a LandingAccess) UsesPrimaryInbound() bool {
 	return a.Port == 0
-}
-
-// TLSAccesses includes the main certificate for shared file permission handling.
-func (n Node) TLSAccesses() []LandingAccess {
-	accesses := append([]LandingAccess(nil), n.LandingAccesses...)
-	if n.TLSCertificate != nil {
-		accesses = append(accesses, *n.TLSCertificate)
-	}
-	return accesses
 }

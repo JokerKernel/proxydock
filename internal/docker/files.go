@@ -16,6 +16,9 @@ import (
 
 const maxConfigSize = 8 << 20
 
+// A pinned directory keeps subsequent file operations on the verified inode.
+type secureDir struct{ *os.File }
+
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
 // Reject symlinked managed paths, including symlinked parents before creating or
