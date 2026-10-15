@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"proxydock/internal/docker/model"
 )
 
 func TestParseImageUser(t *testing.T) {
@@ -179,16 +181,19 @@ func TestPrepareCanPinRoot(t *testing.T) {
 	if err := m.prepareWithNetwork(context.Background(), "26.3.27", networkHost, true); err != nil {
 		t.Fatal(err)
 	}
-	b := readFile(t, m.paths.Compose())
-	if !bytes.Contains(b, []byte("user: \"0:0\"")) {
-		t.Fatalf("prepare did not pin root:\n%s", b)
-	}
 	md, err := m.metadata()
 	if err != nil || !md.RunAsRoot {
 		t.Fatalf("run_as_root = %t, err = %v", md.RunAsRoot, err)
 	}
 	if f.container != nil {
 		t.Fatal("prepare started a container")
+	}
+	if err := m.Generate(context.Background(), model.GenerateOptions{Security: "tls", Server: "example.com", Port: 8443}, true); err != nil {
+		t.Fatal(err)
+	}
+	b := readFile(t, m.paths.Compose())
+	if !bytes.Contains(b, []byte("user: \"0:0\"")) || f.container == nil || f.container.Config.User != "0:0" {
+		t.Fatalf("first config did not use prepared root selection:\n%s", b)
 	}
 }
 
@@ -230,7 +235,10 @@ func TestPrepareRecordsDistrolessUser(t *testing.T) {
 	if md.ImageUser != "65532:65532" || md.RunAsRoot {
 		t.Fatalf("image user %q root %t", md.ImageUser, md.RunAsRoot)
 	}
-	b := readFile(t, m.paths.Compose())
+	b, err := m.composeFor(md, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if bytes.Contains(b, []byte("user:")) || !bytes.Contains(b, []byte("uid=65532,gid=65532")) {
 		t.Fatalf("compose = %s", b)
 	}

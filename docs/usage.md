@@ -55,13 +55,13 @@ sudo proxydock config set network publish
 sudo proxydock config set network host
 ```
 
-只准备镜像和 Compose：
+只准备镜像和部署参数：
 
 ```bash
 sudo proxydock prepare --version VERSION
 ```
 
-该操作不启动空代理实例。随后通过 Docker 菜单生成配置，或执行 `proxydock config generate`；首次生成有效节点会自动启动。已有停止实例修改配置后保持停止，使用服务入口显式启动。
+该操作校验镜像并保存版本、网络方式和运行用户等部署参数，不写入 Compose 或正式节点配置，不启动代理实例。随后通过 Docker 菜单生成配置，或执行 `proxydock config generate`；首次生成有效节点时写入配置和 Compose，并自动启动。生成配置前更新镜像、切换网络或运行用户也只更新部署参数。生成、编辑或修改节点配置后会自动应用并确保容器运行；已停止时启动，已移除时重新创建。配置校验失败不应用，启动或应用失败则恢复修改前的配置与容器状态。
 
 ## 配置与凭据
 

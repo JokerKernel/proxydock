@@ -123,30 +123,10 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 		if err = m.probeCapabilities(ctx, md); err != nil {
 			return err
 		}
-		compose, err := m.composeFor(md, nil)
-		if err != nil {
-			return err
-		}
-		md.ComposeSHA256 = digest(compose)
-		j, err := m.begin("prepare", nil)
-		if err != nil {
-			return err
-		}
-		fail := func(e error) error { return m.rollback(j, e) }
-		if err = atomicWrite(m.paths.Compose(), compose, 0600); err != nil {
-			return fail(err)
-		}
 		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
 		m.op(phaseCheck, levelInfo, "运行用户", runUserLabel(runAsRoot))
-		m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
-		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
-			return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
-		}
-		if err = saveJSON(m.paths.Metadata(), md); err != nil {
-			return fail(err)
-		}
-		if err = m.commit(j); err != nil {
-			return fail(err)
+		if err = m.saveDeploymentParameters(md); err != nil {
+			return err
 		}
 		m.op(phaseResult, levelResult, "准备结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
 		return nil
@@ -223,8 +203,13 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 		if in != nil && in.Image != old.ImageID {
 			return fmt.Errorf("实际容器镜像与记录不一致")
 		}
-		if _, err = m.docker(ctx, "image", "inspect", old.ImageID); err != nil {
-			return fmt.Errorf("回滚镜像不在本机，拒绝升级: %w", err)
+		if in != nil && old.ComposeSHA256 == "" {
+			return fmt.Errorf("存在容器但缺少受管 Compose 记录")
+		}
+		if old.ComposeSHA256 != "" {
+			if _, err = m.docker(ctx, "image", "inspect", old.ImageID); err != nil {
+				return fmt.Errorf("回滚镜像不在本机，拒绝升级: %w", err)
+			}
 		}
 		md, err := m.prepareImage(ctx, version, &old)
 		if err != nil {
@@ -241,6 +226,18 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 			md.RunAsRoot = *requestedRoot
 		} else {
 			md.RunAsRoot = old.RunAsRoot
+		}
+		if old.ComposeSHA256 == "" {
+			if md.ImageID != old.ImageID {
+				if err = m.probeCapabilities(ctx, md); err != nil {
+					return err
+				}
+			}
+			if err = m.saveDeploymentParameters(md); err != nil {
+				return err
+			}
+			m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
+			return nil
 		}
 		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {
 			next, composeErr := m.composeFor(md, nil)
@@ -359,6 +356,9 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 }
 
 func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspection) error {
+	if md.ComposeSHA256 == "" {
+		return m.saveDeploymentParameters(md)
+	}
 	var node *model.Node
 	if s, err := m.LoadState(); err == nil {
 		node = &s.Node
@@ -432,6 +432,10 @@ func (m *Manager) SetRunAsRoot(ctx context.Context, root bool) error {
 			return err
 		}
 		if md.RunAsRoot == root {
+			if md.ComposeSHA256 == "" {
+				m.op(phaseResult, levelResult, "运行用户", "未变化")
+				return nil
+			}
 			next, err := m.composeFor(md, nil)
 			if err != nil {
 				return err
@@ -466,6 +470,10 @@ func (m *Manager) SetNetwork(ctx context.Context, network string) error {
 			return err
 		}
 		if canonicalNetwork(md.Network) == mode {
+			if md.ComposeSHA256 == "" {
+				m.op(phaseResult, levelResult, "网络方式", "未变化")
+				return nil
+			}
 			next, err := m.composeFor(md, nil)
 			if err != nil {
 				return err
@@ -752,6 +760,16 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 		in, err := m.inspect(ctx)
 		if err != nil {
 			return err
+		}
+		if md.ComposeSHA256 == "" {
+			if in != nil {
+				return fmt.Errorf("存在容器但缺少受管 Compose 记录")
+			}
+			if action == "stop" {
+				m.op(phaseResult, levelResult, "服务结果", "当前没有容器")
+				return nil
+			}
+			return fmt.Errorf("尚未生成节点配置，请先生成配置")
 		}
 		// Stop must not recreate a running container. Start and restart move an
 		// authentic root pin onto the image user before they use the container.

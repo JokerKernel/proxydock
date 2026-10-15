@@ -272,7 +272,11 @@ func (m *Manager) confirmSetRunAsRoot(ctx context.Context, u *ui, root bool) err
 	if root {
 		effect = "容器以 root（0:0）启动"
 	}
-	u.confirmationPanel("操作确认：切换运行用户", []string{"目标实例：" + Container, "运行用户：" + runUserLabel(root)}, confirmSection{title: "将执行", items: []string{"重写 Compose 文件", "重建容器并保持当前运行状态", effect}})
+	items := []string{"重写 Compose 文件", "重建容器并保持当前运行状态", effect}
+	if md, err := m.metadata(); err == nil && md.ComposeSHA256 == "" {
+		items = []string{"保存运行用户设置，生成节点配置时生效", effect}
+	}
+	u.confirmationPanel("操作确认：切换运行用户", []string{"目标实例：" + Container, "运行用户：" + runUserLabel(root)}, confirmSection{title: "将执行", items: items})
 	if err := u.confirm("切换容器运行用户？"); err != nil {
 		return err
 	}
@@ -315,6 +319,9 @@ func (m *Manager) confirmSetNetwork(ctx context.Context, u *ui, network string) 
 	items := []string{"重写 Compose 文件", "重建容器并保持当前运行状态", "容器改为使用宿主机网络"}
 	if canonicalNetwork(network) == networkPublish {
 		items[2] = "监听端口按相同端口发布，回落仅容器内使用"
+	}
+	if md, err := m.metadata(); err == nil && md.ComposeSHA256 == "" {
+		items = []string{"保存网络方式，生成节点配置时生效", items[2]}
 	}
 	u.confirmationPanel("操作确认：切换网络方式", []string{"目标实例：" + Container, "网络方式：" + networkLabel(network)}, confirmSection{title: "将执行", items: items})
 	if err := u.confirm("切换 Docker 网络方式？"); err != nil {
@@ -375,8 +382,12 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 	if mode == "" {
 		mode = m.savedNetwork()
 	}
-	if _, e := m.metadata(); e == nil {
-		u.confirmationPanel("操作确认：更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
+	if md, e := m.metadata(); e == nil {
+		items := []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}
+		if md.ComposeSHA256 == "" {
+			items = []string{"拉取并校验选定镜像，更新部署参数", "生成节点配置时再写入 Compose 并启动容器"}
+		}
+		u.confirmationPanel("操作确认：更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: items})
 		if err := u.confirm("确认更新？"); err != nil {
 			return err
 		}
@@ -384,7 +395,7 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 	} else if !os.IsNotExist(e) {
 		return e
 	}
-	u.confirmationPanel("操作确认：安装", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取官方镜像并记录 digest", "校验镜像并写入 Compose 文件"}})
+	u.confirmationPanel("操作确认：安装", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取并校验官方镜像，记录 digest", "保存网络方式和运行用户等部署参数", "生成节点配置时再写入 Compose 并启动容器"}})
 	if err := u.confirm("确认安装？"); err != nil {
 		return err
 	}
@@ -522,7 +533,7 @@ func (m *Manager) configMenu(ctx context.Context, u *ui) error {
 
 func (m *Manager) generateInteractive(ctx context.Context, u *ui, deploy bool) error {
 	if _, e := os.Stat(m.paths.Config()); e == nil {
-		u.confirmationPanel("操作确认：生成服务端配置", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"备份当前服务端配置", "完整覆盖现有配置，不合并原配置", "使用当前镜像校验新配置"}}, confirmSection{title: "配置保护", items: []string{"未选择清除时，保留已有落地接入和中转线路"}})
+		u.confirmationPanel("操作确认：生成服务端配置", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"备份当前服务端配置", "完整覆盖现有配置，不合并原配置", "使用当前镜像校验新配置", "应用配置并启动容器，已移除时重新创建"}}, confirmSection{title: "配置保护", items: []string{"未选择清除时，保留已有落地接入和中转线路"}})
 		if err := u.confirm("完整生成会覆盖手动配置，确认继续？"); err != nil {
 			return err
 		}

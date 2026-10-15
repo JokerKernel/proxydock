@@ -79,12 +79,32 @@ func (m *Manager) saveNode(n model.Node) error {
 	return m.stateWrite(m.paths.State(), data, 0600)
 }
 func (m *Manager) checkCompose(md Metadata) error {
+	if md.ComposeSHA256 == "" {
+		// A prepared image has no runtime definition until its first config.
+		for _, path := range []string{m.paths.Compose(), m.paths.Config(), m.paths.State()} {
+			if _, err := os.Lstat(path); err == nil {
+				return fmt.Errorf("尚未配置的部署存在配置文件，拒绝操作: %s", path)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
 	current, _, err := m.classifyCompose(md)
 	if err != nil || current {
 		return err
 	}
 	// An authentic copy of the previous root pin is still our file. Start,
 	// restart, upgrade, and the next compose rewrite move it to the image user.
+	return nil
+}
+
+func (m *Manager) saveDeploymentParameters(md Metadata) error {
+	md.UpdatedAt = m.now().UTC()
+	if err := saveJSON(m.paths.Metadata(), md); err != nil {
+		return err
+	}
+	m.op(phaseApply, levelStep, "保存部署参数", m.paths.Metadata())
 	return nil
 }
 func (m *Manager) managedConfig() (State, []byte, error) {

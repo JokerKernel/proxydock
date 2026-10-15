@@ -151,7 +151,7 @@ func TestTLSLandingSameNameCanBeRecreated(t *testing.T) {
 			if _, err = m.AddLanding(ctx, "office", "tls", 9443); err == nil {
 				t.Fatal("failed re-add unexpectedly succeeded")
 			}
-			assertRestoredNetwork(t, m, f, before, running)
+			assertRestoredNetwork(t, m, f, before, true)
 			if _, err = m.AddLanding(ctx, "office", "tls", 9443); err != nil {
 				t.Fatal(err)
 			}
@@ -175,8 +175,8 @@ func TestTLSLandingSameNameCanBeRecreated(t *testing.T) {
 			if _, err = m.Peer("office"); err != nil {
 				t.Fatal(err)
 			}
-			if f.container.State.Running != running {
-				t.Fatal("re-add changed runtime state")
+			if !f.container.State.Running {
+				t.Fatal("re-add did not start the container")
 			}
 		})
 	}
@@ -229,6 +229,9 @@ func TestEditingProtectsManagedLandingsAndFallback(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := m.AddLanding(ctx, "shared", "current", 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := m.Service(ctx, "stop"); err != nil {
 				t.Fatal(err)
 			}
 			before := managedSnapshots(t, m)

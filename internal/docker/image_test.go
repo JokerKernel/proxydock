@@ -23,7 +23,10 @@ func TestLatestPreparePinsDigestAndRecordsActualVersion(t *testing.T) {
 	if md.Channel != "latest" || md.RequestedVersion != "26.4.1" || !strings.HasPrefix(md.Version, "Xray 26.4.1 ") {
 		t.Fatalf("latest lost its channel or actual version: %+v", md)
 	}
-	compose := readFile(t, m.paths.Compose())
+	compose, err := m.composeFor(md, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Contains(compose, []byte(md.ImageRef)) || bytes.Contains(compose, []byte(Repository+":latest")) {
 		t.Fatalf("latest deployment must pin digest: %s", compose)
 	}
@@ -187,7 +190,10 @@ func TestImageSelectionsUseOfficialTags(t *testing.T) {
 			if md.Channel != tc.channel || md.RequestedVersion != tc.version {
 				t.Fatalf("channel or version: %+v", md)
 			}
-			compose := readFile(t, m.paths.Compose())
+			compose, err := m.composeFor(md, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if bytes.Contains(compose, []byte(tc.tag)) || !bytes.Contains(compose, []byte(md.ImageRef)) {
 				t.Fatalf("compose did not pin digest: %s", compose)
 			}

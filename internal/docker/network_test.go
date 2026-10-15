@@ -74,6 +74,12 @@ func TestCommandsDefaultToPublishedNetwork(t *testing.T) {
 				if err != nil || md.Network != want {
 					t.Fatalf("network = %q, %v; want %q", md.Network, err, want)
 				}
+				if action == "prepare" {
+					if _, err := os.Stat(m.paths.Compose()); !os.IsNotExist(err) {
+						t.Fatalf("prepare wrote Compose: %v", err)
+					}
+					return
+				}
 				compose := string(readFile(t, m.paths.Compose()))
 				if strings.Contains(compose, "network_mode: host") != explicitHost {
 					t.Fatalf("wrong compose network:\n%s", compose)
@@ -118,7 +124,7 @@ func TestCommandsKeepSavedNetworkWhenOmitted(t *testing.T) {
 }
 
 func TestHostComposeKeepsHostNetwork(t *testing.T) {
-	m, _ := prepared(t)
+	m, _ := deployed(t)
 	b := readFile(t, m.paths.Compose())
 	if !strings.Contains(string(b), "network_mode: host") || strings.Contains(string(b), "\n    ports:\n") {
 		t.Fatalf("host compose:\n%s", b)
@@ -137,9 +143,8 @@ func TestPublishComposeKeepsFallbackInternal(t *testing.T) {
 	if err := m.prepareWithNetwork(context.Background(), "26.3.27", networkPublish, false); err != nil {
 		t.Fatal(err)
 	}
-	preparedCompose := string(readFile(t, m.paths.Compose()))
-	if strings.Contains(preparedCompose, "network_mode: host") || strings.Contains(preparedCompose, "\n    ports:\n") {
-		t.Fatalf("publish compose before config should not publish ports:\n%s", preparedCompose)
+	if _, err := os.Stat(m.paths.Compose()); !os.IsNotExist(err) {
+		t.Fatalf("prepare wrote Compose before config: %v", err)
 	}
 	if err := m.Generate(context.Background(), model.GenerateOptions{Server: "example.com", Port: 8443, SNI: "www.example.com", Target: "www.example.com:443"}, true); err != nil {
 		t.Fatal(err)

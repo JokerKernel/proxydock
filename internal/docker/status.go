@@ -283,6 +283,11 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 			s.Detail = err.Error()
 			return s, err
 		}
+		if in != nil && md.ComposeSHA256 == "" {
+			err = fmt.Errorf("存在容器但缺少受管 Compose 记录")
+			s.Label, s.Detail = "异常", err.Error()
+			return s, err
+		}
 	}
 	if metaErr == nil && full {
 		if _, _, stateErr := m.managedConfig(); stateErr != nil && !os.IsNotExist(stateErr) {

@@ -82,6 +82,9 @@ func (m *Manager) prepareOperationWithUser(ctx context.Context, learnUser bool) 
 	if err != nil {
 		return md, in, err
 	}
+	if in != nil && md.ComposeSHA256 == "" {
+		return md, in, fmt.Errorf("存在容器但缺少受管 Compose 记录")
+	}
 	// The live container is the source of the image user's id. Root remains an
 	// explicit selection and is not overwritten from the container.
 	if learnUser {
@@ -406,7 +409,7 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 		return readErr
 	}
 	configChanged := readErr != nil || string(old) != string(b)
-	if !configChanged && !start {
+	if !configChanged && !start && in != nil && in.State.Running {
 		if s, err := m.LoadState(); err == nil {
 			compare := n
 			compare.ConfigSHA256 = digest(b)
@@ -432,14 +435,14 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 		return err
 	}
 	fail := func(e error) error { return m.rollback(j, e) }
-	running := start || in != nil && in.State.Running
+	needsStart := in == nil || !in.State.Running
 	var oldPorts []int
 	if s, e := m.LoadState(); e == nil {
 		oldPorts = hostPorts(s.Node, md.Network)
 	}
 	ports := hostPorts(n, md.Network)
 	changed := !slices.Equal(oldPorts, ports)
-	if running && changed {
+	if needsStart || changed {
 		if in != nil && in.State.Running {
 			detail := formatPorts(ports)
 			if len(oldPorts) > 0 {
@@ -474,45 +477,25 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 		return fail(err)
 	}
 	if composeChanged && in != nil {
-		args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
-		if running {
-			args = append(args, "-d")
-		} else {
-			args = append(args, "--no-start")
-		}
-		args = append(args, Service)
-		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, args...); err != nil {
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", Service); err != nil {
 			return fail(err)
 		}
-		if running {
-			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
-			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
-				return fail(err)
-			}
-			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
-		}
-	} else if running && (configChanged || start) {
-		if in == nil {
-			_, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
-		} else {
-			_, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重启容器"}, "restart", Service)
-		}
+	} else if needsStart {
+		_, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
 		if err != nil {
 			return fail(err)
 		}
-		m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
-		if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+	} else if configChanged || start {
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重启容器"}, "restart", Service); err != nil {
 			return fail(err)
 		}
-		m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
-	} else if !running {
-		m.op(phaseApply, levelInfo, "运行状态", "未运行，配置已写入，启动后生效")
 	}
-	if running {
-		md.DesiredState = "running"
-	} else {
-		md.DesiredState = "stopped"
+	m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+	if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+		return fail(err)
 	}
+	m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+	md.DesiredState = "running"
 	if err = m.phase(&j, "runtime-applied"); err != nil {
 		return fail(err)
 	}

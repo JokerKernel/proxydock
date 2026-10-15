@@ -428,23 +428,21 @@ func TestPreparePinsImageWithoutStarting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := readFile(t, m.paths.Compose())
-	for _, part := range []string{md.ImageRef, "network_mode: host", "read_only: true", "NET_BIND_SERVICE", "json-file", "max-size: \"10m\""} {
-		if !bytes.Contains(b, []byte(part)) {
-			t.Fatalf("compose missing %q", part)
+	if !validImageRef(md.ImageRef) || md.Network != networkHost || md.ComposeSHA256 != "" {
+		t.Fatalf("invalid prepared deployment parameters: %+v", md)
+	}
+	for _, path := range []string{m.paths.Compose(), m.paths.Config(), m.paths.State(), m.paths.Journal(), m.paths.Transactions(), m.paths.Backups()} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("prepare wrote configuration or rollback data: %s %v", path, err)
 		}
 	}
-	if bytes.Contains(b, []byte("user:")) {
-		t.Fatalf("compose pins a container user:\n%s", b)
-	}
-	if strings.Contains(string(b), "latest") {
-		t.Fatal("unpinned image")
-	}
-	if _, err = os.Stat(m.paths.Journal()); !os.IsNotExist(err) {
-		t.Fatal("prepare left an active transaction")
+	for _, call := range f.calls {
+		if call[0] == "compose" && !contains(call, "version") {
+			t.Fatalf("prepare invoked a Compose operation: %v", call)
+		}
 	}
 }
-func TestConfigChangesPreserveStopStateAndNativeFiles(t *testing.T) {
+func TestConfigChangesStartStoppedContainerAndPreserveNativeFiles(t *testing.T) {
 	m, f := deployed(t)
 	native := m.paths.resolve("/usr/local/etc/xray/config.json")
 	if err := os.MkdirAll(filepath.Dir(native), 0700); err != nil {
@@ -464,13 +462,11 @@ func TestConfigChangesPreserveStopStateAndNativeFiles(t *testing.T) {
 	if err = m.PatchSetting(context.Background(), "dns", "public-cloudflare"); err != nil {
 		t.Fatal(err)
 	}
-	if f.container.State.Running {
-		t.Fatal("config change started stopped instance")
+	if !f.container.State.Running {
+		t.Fatal("config change did not start stopped instance")
 	}
-	for _, call := range f.calls {
-		if contains(call, "restart") || contains(call, "up") {
-			t.Fatalf("stopped config invoked service mutation: %v", call)
-		}
+	if count := countDockerCalls(f, func(c []string) bool { return c[0] == "compose" && contains(c, "up") }); count != 1 {
+		t.Fatalf("config change started the stopped instance %d times", count)
 	}
 	after, err := m.LoadState()
 	if err != nil {

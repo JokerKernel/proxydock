@@ -23,7 +23,7 @@ func (m *Manager) Command() *cobra.Command {
 	for _, action := range []string{"prepare", "upgrade"} {
 		action := action
 		var version, network, runUser string
-		sub := &cobra.Command{Use: action, Short: map[string]string{"prepare": "准备官方镜像和 Compose，不启动代理", "upgrade": "升级镜像，保留凭据并支持回滚"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		sub := &cobra.Command{Use: action, Short: map[string]string{"prepare": "准备官方镜像和部署参数，不启动代理", "upgrade": "升级镜像，保留凭据并支持回滚"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			if action == "prepare" {
 				if strings.TrimSpace(network) == "" {
 					network = defaultNetwork

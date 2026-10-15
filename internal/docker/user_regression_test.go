@@ -288,8 +288,9 @@ func TestNamedImagePreparationAndContainerUser(t *testing.T) {
 	if err != nil || md.ImageUser != "65532:1234" {
 		t.Fatalf("prepared user: %q %v", md.ImageUser, err)
 	}
-	f.newContainer(md.ImageID)
-	f.container.State.Running = true
+	if err := m.Generate(context.Background(), model.GenerateOptions{Security: "tls", Server: "example.com", Port: 8443}, true); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := m.prepareOperation(context.Background()); err != nil {
 		t.Fatal(err)
 	}
