@@ -404,6 +404,9 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 	if err := m.prepareWithNetwork(ctx, version, network, runAsRoot); err != nil {
 		return err
 	}
+	if err := m.pauseAfterOutput(); err != nil {
+		return err
+	}
 	opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
 	if err != nil {
 		return err
