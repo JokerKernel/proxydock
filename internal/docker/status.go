@@ -51,15 +51,16 @@ type dockerQueryError struct{ error }
 func (e *dockerQueryError) Unwrap() error { return e.error }
 
 type Status struct {
-	Label        string `json:"label"`
-	Detail       string `json:"detail,omitempty"`
-	Exists       bool   `json:"exists"`
-	Running      bool   `json:"running"`
-	ContainerID  string `json:"container_id,omitempty"`
-	ImageID      string `json:"image_id,omitempty"`
-	Version      string `json:"version,omitempty"`
-	ExitCode     int    `json:"exit_code"`
-	RestartCount int    `json:"restart_count"`
+	Label          string `json:"label"`
+	Detail         string `json:"detail,omitempty"`
+	Exists         bool   `json:"exists"`
+	Running        bool   `json:"running"`
+	ContainerID    string `json:"container_id,omitempty"`
+	ContainerState string `json:"container_state,omitempty"`
+	ImageID        string `json:"image_id,omitempty"`
+	Version        string `json:"version,omitempty"`
+	ExitCode       int    `json:"exit_code"`
+	RestartCount   int    `json:"restart_count"`
 }
 
 func (m *Manager) inspect(ctx context.Context) (*inspection, error) {
@@ -249,6 +250,18 @@ func (m *Manager) collectStatus(ctx context.Context, full bool) (Status, error) 
 		}
 		s.Detail = err.Error()
 		return s, err
+	}
+	s.ContainerState = "absent"
+	if in != nil {
+		s.ContainerState = in.State.Status
+		switch {
+		case in.State.Paused:
+			s.ContainerState = "paused"
+		case in.State.Restarting:
+			s.ContainerState = "restarting"
+		case in.State.Running:
+			s.ContainerState = "running"
+		}
 	}
 	if cleaning {
 		s.Label = "清理未完成"

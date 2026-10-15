@@ -289,14 +289,14 @@ func TestEditedConfigRetainsUnknownFieldsAndRejectsCredentialChanges(t *testing.
 func TestStatusDistinguishesStoppedDriftAndRecovery(t *testing.T) {
 	m, f := deployed(t)
 	s, err := m.Status(context.Background())
-	if err != nil || s.Label != "运行中" {
+	if err != nil || s.Label != "运行中" || s.ContainerState != "running" {
 		t.Fatalf("running status: %+v %v", s, err)
 	}
 	if _, err = m.Service(context.Background(), "stop"); err != nil {
 		t.Fatal(err)
 	}
 	s, err = m.Status(context.Background())
-	if err != nil || s.Label != "已停止" {
+	if err != nil || s.Label != "已停止" || s.ContainerState != "exited" {
 		t.Fatalf("stopped status: %+v %v", s, err)
 	}
 	before := readFile(t, m.paths.Config())
@@ -304,7 +304,7 @@ func TestStatusDistinguishesStoppedDriftAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, err = m.Status(context.Background())
-	if err == nil || s.Label != "异常" {
+	if err == nil || s.Label != "异常" || s.ContainerState != "exited" {
 		t.Fatalf("drift status: %+v %v", s, err)
 	}
 	if err = atomicWrite(m.paths.Config(), before, 0600); err != nil {
@@ -318,7 +318,7 @@ func TestStatusDistinguishesStoppedDriftAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, err = m.Status(context.Background())
-	if err != nil || s.Label != "需恢复" {
+	if err != nil || s.Label != "需恢复" || s.ContainerState != "exited" {
 		t.Fatalf("pending transaction status: %+v %v", s, err)
 	}
 	if err = m.restoreTransaction(context.Background(), j); err != nil {
@@ -326,7 +326,7 @@ func TestStatusDistinguishesStoppedDriftAndRecovery(t *testing.T) {
 	}
 	f.unavailable = true
 	s, err = m.Status(context.Background())
-	if err == nil || s.Label != "Docker 不可用" {
+	if err == nil || s.Label != "Docker 不可用" || s.ContainerState != "" {
 		t.Fatalf("daemon failure status: %+v %v", s, err)
 	}
 }

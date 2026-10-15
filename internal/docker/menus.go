@@ -47,7 +47,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		cancel()
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）")
-		u.instanceCard(Container, "["+s.Label+"]", s.Version, s.Detail, m.instanceRows())
+		u.instanceCard(Container, "["+s.Label+"]", s.Version, s.Detail, m.instanceRows(s))
 		u.menuChoice("1", "安装与更新（部署容器和更新容器）")
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
@@ -439,7 +439,7 @@ func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
 	return m.Cleanup(ctx)
 }
 
-func (m *Manager) instanceRows() [][2]string {
+func (m *Manager) instanceRows(status Status) [][2]string {
 	port := "未生成"
 	if s, err := m.LoadState(); err == nil {
 		if s.Node.Port >= 1 && s.Node.Port <= 65535 {
@@ -448,11 +448,25 @@ func (m *Manager) instanceRows() [][2]string {
 			port = "无法读取"
 		}
 	}
-	rows := [][2]string{{"监听端口", port}, {"网络方式", networkLabel(m.savedNetwork())}, {"运行用户", runUserLabel(m.savedRunAsRoot())}}
+	rows := [][2]string{{"容器状态", containerStateLabel(status.ContainerState)}, {"监听端口", port}, {"网络方式", networkLabel(m.savedNetwork())}, {"运行用户", runUserLabel(m.savedRunAsRoot())}}
 	if md, err := m.metadata(); err == nil {
 		rows = append(rows, [2]string{"更新渠道", "[" + channelLabel(md.Channel) + "]"})
 	}
 	return rows
+}
+
+func containerStateLabel(state string) string {
+	labels := map[string]string{
+		"created": "已创建", "running": "运行中", "paused": "已暂停",
+		"restarting": "重启中", "removing": "移除中", "exited": "已停止", "dead": "已失效",
+	}
+	if state == "absent" {
+		return "不存在"
+	}
+	if label, ok := labels[state]; ok {
+		return label + "（" + state + "）"
+	}
+	return "未知"
 }
 
 func (m *Manager) configMenu(ctx context.Context, u *ui) error {
@@ -1037,7 +1051,7 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 		if choice == 4 {
 			st, e := m.Status(ctx)
 			u.pageHeader("Xray（Docker）", "服务端配置", "服务管理", "状态")
-			u.instanceCard(Container, "["+st.Label+"]", st.Version, st.Detail, m.instanceRows())
+			u.instanceCard(Container, "["+st.Label+"]", st.Version, st.Detail, m.instanceRows(st))
 			err = e
 		} else {
 			b, e := m.Service(ctx, actions[choice])
