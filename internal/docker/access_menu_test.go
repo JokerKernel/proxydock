@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,6 +77,146 @@ func TestAccessMenuAddsBatchInOneUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAccessListMenuKeepsALongListOnOneScreen(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	m, _ := deployed(t)
+	const total = 20
+	if err := m.SetPolicy(context.Background(), model.AccessPolicy{Whitelist: accessDomains(t, total)}); err != nil {
+		t.Fatal(err)
+	}
+	var out dockerTerminalOutput
+	in := &dockerTerminalInput{answers: []string{"0\n"}, output: &out}
+	if err := m.accessListMenu(context.Background(), newUI(in, &out), "white"); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.screens) != 1 {
+		t.Fatalf("prompts = %d", len(in.screens))
+	}
+	screen := in.screens[0]
+	lines := 1 + strings.Count(strings.TrimRight(screen, "\n"), "\n")
+	if lines > 24 {
+		t.Fatalf("whitelist menu is %d lines:\n%s", lines, screen)
+	}
+	if !strings.Contains(screen, "20 条 · 第 1/4 页") || !strings.Contains(screen, "h01.example.com") || !strings.Contains(screen, "h06.example.com") {
+		t.Fatalf("first page is incomplete:\n%s", screen)
+	}
+	card := strings.Index(screen, "当前名单")
+	closeAt := strings.Index(screen[card:], pageHeaderRule)
+	if card < 0 || closeAt < 0 || strings.Contains(screen[card:card+closeAt], "h01.example.com") || strings.Index(screen, "h01.example.com") < card+closeAt {
+		t.Fatalf("rules are still inside the summary card:\n%s", screen)
+	}
+	if strings.Contains(screen, "h07.example.com") || strings.Contains(screen, "规则 1") || strings.Contains(screen, "规则 20") {
+		t.Fatalf("first page still lists rules outside the page:\n%s", screen)
+	}
+	if !strings.Contains(screen, "n 下一页") || !strings.Contains(screen, "按页选择") {
+		t.Fatalf("paging controls missing:\n%s", screen)
+	}
+}
+
+func TestAccessListMenuDeletesRuleOnLaterPage(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	m, _ := deployed(t)
+	if err := m.SetPolicy(context.Background(), model.AccessPolicy{Whitelist: accessDomains(t, 20)}); err != nil {
+		t.Fatal(err)
+	}
+	var out dockerTerminalOutput
+	in := &dockerTerminalInput{answers: []string{"n\n", "2\n", "7\n", "0\n", "0\n"}, output: &out}
+	if err := m.accessListMenu(context.Background(), newUI(in, &out), "white"); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.screens) != 5 {
+		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
+	}
+	if strings.Contains(in.screens[1], "h01.example.com") || !strings.Contains(in.screens[1], "第 2/4 页") || !strings.Contains(in.screens[1], "h07.example.com") {
+		t.Fatalf("next page did not advance:\n%s", in.screens[1])
+	}
+	if !strings.Contains(in.screens[2], "删除规则") || !strings.Contains(in.screens[2], "h07.example.com") || strings.Contains(in.screens[2], "h01.example.com") {
+		t.Fatalf("delete picker did not open on the current page:\n%s", in.screens[2])
+	}
+	if strings.Contains(in.screens[3], "h07.example.com") || !strings.Contains(in.screens[3], "h08.example.com") {
+		t.Fatalf("deleted rule still on the picker:\n%s", in.screens[3])
+	}
+	state, err := m.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := state.Node.AccessPolicy.Whitelist
+	if len(got) != 19 || got[6].Value == "h07.example.com" || got[6].Value != "h08.example.com" {
+		t.Fatalf("whitelist after delete = %+v", got)
+	}
+}
+
+func TestAccessListMenuRejectsOffPageDelete(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	m, _ := deployed(t)
+	if err := m.SetPolicy(context.Background(), model.AccessPolicy{Whitelist: accessDomains(t, 20)}); err != nil {
+		t.Fatal(err)
+	}
+	var out dockerTerminalOutput
+	in := &dockerTerminalInput{answers: []string{"2\n", "7\n", "0\n", "0\n"}, output: &out}
+	if err := m.accessListMenu(context.Background(), newUI(in, &out), "white"); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.screens) != 4 {
+		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
+	}
+	if !strings.Contains(in.screens[2], "本页编号 1 到 6") {
+		t.Fatalf("off-page number was accepted:\n%s", in.screens[2])
+	}
+	state, err := m.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Node.AccessPolicy.Whitelist) != 20 {
+		t.Fatalf("off-page delete changed the list: %d", len(state.Node.AccessPolicy.Whitelist))
+	}
+}
+
+func TestParseAccessListInput(t *testing.T) {
+	for _, tc := range []struct {
+		value, action string
+		page, pages   int
+		target        int
+		ok            bool
+	}{
+		{value: "0", action: "back", pages: 4, ok: true},
+		{value: "q", action: "back", pages: 1, ok: true},
+		{value: "1", action: "add", pages: 4, ok: true},
+		{value: "2", action: "delete", pages: 4, ok: true},
+		{value: "3", action: "clear", pages: 1, ok: true},
+		{value: "n", action: "next", page: 0, pages: 4, ok: true},
+		{value: "n", page: 3, pages: 4},
+		{value: "p", action: "prev", page: 1, pages: 4, ok: true},
+		{value: "p", page: 0, pages: 4},
+		{value: "g", action: "goto", page: 2, pages: 4, ok: true},
+		{value: "G", action: "goto", page: 0, pages: 4, target: 3, ok: true},
+		{value: "p3", action: "goto", page: 0, pages: 4, target: 2, ok: true},
+		{value: "n", pages: 1},
+		{value: "4", pages: 4},
+	} {
+		action, target, ok := parseAccessListInput(tc.value, tc.page, tc.pages)
+		if action != tc.action || target != tc.target || ok != tc.ok {
+			t.Fatalf("parse %q page %d/%d = %q,%d,%v want %q,%d,%v", tc.value, tc.page, tc.pages, action, target, ok, tc.action, tc.target, tc.ok)
+		}
+	}
+	action, target, ok := parseAccessDeleteInput("7", 6, 12, 1, 4)
+	if action != "pick" || target != 7 || !ok {
+		t.Fatalf("delete on page = %q,%d,%v", action, target, ok)
+	}
+	if _, _, ok = parseAccessDeleteInput("7", 0, 6, 0, 4); ok {
+		t.Fatal("off-page delete index was accepted")
+	}
+}
+
+func accessDomains(t *testing.T, n int) []model.AccessEntry {
+	t.Helper()
+	entries := make([]model.AccessEntry, n)
+	for i := range entries {
+		entries[i] = accessEntry(t, fmt.Sprintf("h%02d.example.com", i+1))
+	}
+	return entries
 }
 
 func TestAccessMenuRejectsInvalidBatchWithoutWriting(t *testing.T) {

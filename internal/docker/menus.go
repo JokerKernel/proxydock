@@ -1276,51 +1276,63 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 	})
 }
 
+// Six rules leave room for the card, the actions, and the prompt on a 24-line terminal.
+const accessListPageSize = 6
+
 func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) error {
-	name := "白名单"
-	if listName == "black" {
-		name = "黑名单"
-	}
+	name := accessListName(listName)
+	page := 0
 	for {
-		s, err := m.readManagedState(ctx)
+		entries, err := m.accessListEntries(ctx, listName)
 		if err != nil {
 			return err
 		}
-		policy := s.Node.AccessPolicy
-		entries := policy.Whitelist
-		if listName == "black" {
-			entries = policy.Blacklist
-		}
+		start, _, pages := menuPageBounds(len(entries), page, accessListPageSize)
+		page = start / accessListPageSize
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）", "访问控制", name)
-		rows := [][2]string{{"名单", name}, {"规则数量", strconv.Itoa(len(entries)) + " 条"}}
-		if len(entries) == 0 {
-			rows = append(rows, [2]string{"名单内容", "暂无规则"})
-		} else {
-			for i, entry := range entries {
-				rows = append(rows, [2]string{"规则 " + strconv.Itoa(i+1), entry.Value})
-			}
-		}
-		u.labeledCard("当前名单", rows)
+		u.labeledCard("当前名单", accessListCardRows(name, entries, page))
+		u.printAccessRules(entries, page)
 		u.menuChoice("1", "添加规则（支持批量输入）")
-		u.menuChoice("2", "删除规则")
+		if pages > 1 {
+			u.menuChoice("2", "删除规则（按页选择）")
+		} else {
+			u.menuChoice("2", "删除规则")
+		}
 		u.menuChoice("3", "清空名单")
 		u.menuChoice("0/q", "返回")
-		choice, err := u.chooseNumber("请选择", 0, 3, 0)
+		if nav := accessPageNav(page, pages); nav != "" {
+			fmt.Fprintln(u.out)
+			fmt.Fprintln(u.out, nav)
+		}
+		action, target, err := u.readAccessListCommand(page, pages)
 		if err != nil {
 			return err
 		}
-		if choice == 0 {
+		switch action {
+		case "back":
 			return nil
-		}
-		switch choice {
-		case 1:
+		case "next":
+			page++
+			continue
+		case "prev":
+			page--
+			continue
+		case "goto":
+			page = target
+			continue
+		case "add":
 			err = m.addAccessEntry(ctx, u, listName)
-		case 2:
-			err = m.removeAccessEntry(ctx, u, listName, entries)
-		case 3:
+			if err == nil {
+				// Newly added rules sit at the end. The next draw clamps this to the last page.
+				page = len(entries) + 1<<20
+			}
+		case "delete":
+			err = m.removeAccessEntry(ctx, u, listName, page)
+		case "clear":
 			if err = u.confirm("清空" + name + "？"); err == nil {
 				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.ClearList(listName) })
+				page = 0
 			}
 		}
 		if errors.Is(err, errCancelled) {
@@ -1369,40 +1381,286 @@ func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) er
 	})
 }
 
-func (m *Manager) removeAccessEntry(ctx context.Context, u *ui, listName string, entries []model.AccessEntry) error {
-	if len(entries) == 0 {
-		fmt.Fprintln(u.out, "当前名单是空的。")
-		return nil
-	}
-	for i, entry := range entries {
-		u.menuChoice(strconv.Itoa(i+1), accessEntryLabel(entry))
-	}
-	u.menuChoice("0/q", "返回")
-	choice, err := u.chooseNumberCancelable("请选择要删除的规则", 1, len(entries), 1)
-	if err != nil {
-		return err
-	}
-	target := entries[choice-1]
-	filter := func(list []model.AccessEntry) []model.AccessEntry {
-		filtered := make([]model.AccessEntry, 0, len(list))
-		removed := false
-		for _, item := range list {
-			if !removed && item == target {
-				removed = true
-				continue
-			}
-			filtered = append(filtered, item)
+func (m *Manager) removeAccessEntry(ctx context.Context, u *ui, listName string, page int) error {
+	name := accessListName(listName)
+	for {
+		entries, err := m.accessListEntries(ctx, listName)
+		if err != nil {
+			return err
 		}
-		return filtered
-	}
-	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
-		if listName == "black" {
-			policy.Blacklist = filter(policy.Blacklist)
+		if len(entries) == 0 {
+			fmt.Fprintln(u.out, "当前名单是空的。")
+			return nil
+		}
+		start, end, pages := menuPageBounds(len(entries), page, accessListPageSize)
+		page = start / accessListPageSize
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "访问控制", name, "删除规则")
+		if pages > 1 {
+			fmt.Fprintf(u.out, "共 %d 条，第 %d/%d 页，输入编号删除。\n\n", len(entries), page+1, pages)
 		} else {
-			policy.Whitelist = filter(policy.Whitelist)
+			fmt.Fprintf(u.out, "共 %d 条，输入编号删除。\n\n", len(entries))
 		}
-		return policy, nil
+		for i := start; i < end; i++ {
+			u.menuChoice(strconv.Itoa(i+1), accessEntryLabel(entries[i]))
+		}
+		if nav := accessPageNav(page, pages); nav != "" {
+			fmt.Fprintln(u.out)
+			fmt.Fprintln(u.out, nav)
+		}
+		u.menuChoice("0/q", "返回")
+		action, target, readErr := u.readAccessDeleteCommand(start, end, page, pages)
+		if readErr != nil {
+			return readErr
+		}
+		switch action {
+		case "back":
+			return nil
+		case "next":
+			page++
+			continue
+		case "prev":
+			page--
+			continue
+		case "goto":
+			page = target
+			continue
+		case "pick":
+			chosen := entries[target-1]
+			err = m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
+				if listName == "black" {
+					policy.Blacklist = removeAccessEntryOnce(policy.Blacklist, chosen)
+				} else {
+					policy.Whitelist = removeAccessEntryOnce(policy.Whitelist, chosen)
+				}
+				return policy, nil
+			})
+		default:
+			continue
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) accessListEntries(ctx context.Context, listName string) ([]model.AccessEntry, error) {
+	s, err := m.readManagedState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if listName == "black" {
+		return s.Node.AccessPolicy.Blacklist, nil
+	}
+	return s.Node.AccessPolicy.Whitelist, nil
+}
+
+func accessListName(listName string) string {
+	if listName == "black" {
+		return "黑名单"
+	}
+	return "白名单"
+}
+
+func accessListCardRows(name string, entries []model.AccessEntry, page int) [][2]string {
+	start, _, pages := menuPageBounds(len(entries), page, accessListPageSize)
+	count := strconv.Itoa(len(entries)) + " 条"
+	if pages > 1 {
+		count += fmt.Sprintf(" · 第 %d/%d 页", start/accessListPageSize+1, pages)
+	}
+	rows := [][2]string{{"名单", name}, {"规则数量", count}}
+	if len(entries) == 0 {
+		rows = append(rows, [2]string{"名单内容", "暂无规则"})
+	}
+	return rows
+}
+
+func (u *ui) printAccessRules(entries []model.AccessEntry, page int) {
+	if len(entries) == 0 {
+		return
+	}
+	start, end, _ := menuPageBounds(len(entries), page, accessListPageSize)
+	for i := start; i < end; i++ {
+		fmt.Fprintf(u.out, "  %-3d %s\n", i+1, accessEntryLabel(entries[i]))
+	}
+	fmt.Fprintln(u.out)
+}
+
+func accessPageNav(page, pages int) string {
+	if pages <= 1 {
+		return ""
+	}
+	nav := make([]string, 0, 4)
+	if page+1 < pages {
+		nav = append(nav, "n 下一页")
+	}
+	if page > 0 {
+		nav = append(nav, "p 上一页")
+	}
+	nav = append(nav, "g/G 首/末页", "pN 跳页")
+	return "  " + strings.Join(nav, "  ·  ")
+}
+
+func menuPageBounds(total, page, pageSize int) (start, end, pages int) {
+	if pageSize <= 0 {
+		pageSize = 1
+	}
+	if total <= 0 {
+		return 0, 0, 1
+	}
+	pages = (total + pageSize - 1) / pageSize
+	if page < 0 {
+		page = 0
+	}
+	if page >= pages {
+		page = pages - 1
+	}
+	start = page * pageSize
+	end = start + pageSize
+	if end > total {
+		end = total
+	}
+	return start, end, pages
+}
+
+func parseAccessPageInput(value string, page, pages int) (string, int, bool) {
+	switch {
+	case strings.EqualFold(value, "n"):
+		if page+1 < pages {
+			return "next", 0, true
+		}
+	case value == "p":
+		if page > 0 {
+			return "prev", 0, true
+		}
+	case value == "g":
+		if pages > 1 {
+			return "goto", 0, true
+		}
+	case value == "G":
+		if pages > 1 {
+			return "goto", pages - 1, true
+		}
+	}
+	if pages > 1 && len(value) > 1 && (value[0] == 'p' || value[0] == 'P') {
+		target, err := strconv.Atoi(value[1:])
+		if err == nil && target >= 1 && target <= pages {
+			return "goto", target - 1, true
+		}
+	}
+	return "", 0, false
+}
+
+func parseAccessListInput(value string, page, pages int) (string, int, bool) {
+	switch {
+	case strings.EqualFold(value, "q") || value == "0":
+		return "back", 0, true
+	case value == "1":
+		return "add", 0, true
+	case value == "2":
+		return "delete", 0, true
+	case value == "3":
+		return "clear", 0, true
+	}
+	if action, target, ok := parseAccessPageInput(value, page, pages); ok {
+		return action, target, true
+	}
+	return "", 0, false
+}
+
+func parseAccessDeleteInput(value string, start, end, page, pages int) (string, int, bool) {
+	switch {
+	case strings.EqualFold(value, "q") || value == "0":
+		return "back", 0, true
+	}
+	if action, target, ok := parseAccessPageInput(value, page, pages); ok {
+		return action, target, true
+	}
+	choice, err := strconv.Atoi(value)
+	if err == nil && choice >= start+1 && choice <= end {
+		return "pick", choice, true
+	}
+	return "", 0, false
+}
+
+func (u *ui) readAccessListCommand(page, pages int) (string, int, error) {
+	hint := "无效选择，请输入 0 到 3 之间的数字。"
+	if pages > 1 {
+		hint = "无效选择，请输入菜单编号，或使用 n/p/g/G/pN 翻页。"
+	}
+	return u.readAccessCommand("❯ 请选择 [0]：", hint, func(value string) (string, int, bool) {
+		if value == "" {
+			return "back", 0, true
+		}
+		return parseAccessListInput(value, page, pages)
 	})
+}
+
+func (u *ui) readAccessDeleteCommand(start, end, page, pages int) (string, int, error) {
+	hint := fmt.Sprintf("无效选择，请输入 %d 到 %d 之间的数字，或输入 q/0 返回。", start+1, end)
+	if pages > 1 {
+		hint = fmt.Sprintf("无效选择，请输入本页编号 %d 到 %d，或使用 n/p/g/G/pN 翻页。输入 q/0 返回。", start+1, end)
+	}
+	return u.readAccessCommand("❯ 请选择要删除的规则：", hint, func(value string) (string, int, bool) {
+		if value == "" {
+			return "", 0, false
+		}
+		return parseAccessDeleteInput(value, start, end, page, pages)
+	})
+}
+
+func (u *ui) readAccessCommand(prompt, hint string, parse func(string) (string, int, bool)) (string, int, error) {
+	invalidShown := false
+	firstPrompt := true
+	for {
+		if firstPrompt {
+			fmt.Fprintln(u.out)
+			firstPrompt = false
+		}
+		fmt.Fprint(u.out, prompt)
+		line, err := u.readLine()
+		if errors.Is(err, errInterrupted) {
+			fmt.Fprintln(u.out)
+			return "", 0, errQuit
+		}
+		if err != nil && len(line) == 0 {
+			return "", 0, err
+		}
+		pasted := u.discardBufferedInput()
+		value := strings.TrimSpace(line)
+		if action, target, ok := parse(value); ok {
+			return action, target, nil
+		}
+		if u.interactive {
+			eraseChoiceRetry(u.out, false)
+		}
+		if pasted {
+			fmt.Fprintln(u.out, "检测到粘贴了多行内容，已忽略多余输入。")
+			invalidShown = true
+			continue
+		}
+		if value == "" || invalidShown {
+			continue
+		}
+		fmt.Fprintln(u.out, hint)
+		invalidShown = true
+	}
+}
+
+func removeAccessEntryOnce(list []model.AccessEntry, target model.AccessEntry) []model.AccessEntry {
+	filtered := make([]model.AccessEntry, 0, len(list))
+	removed := false
+	for _, item := range list {
+		if !removed && item == target {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 func (m *Manager) linkMenu(ctx context.Context, u *ui) error {
