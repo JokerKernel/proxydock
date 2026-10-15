@@ -92,6 +92,7 @@ func (m *Manager) cleanupEmptyParents() error {
 		}
 		dir, err := openSecureDir(filepath.Dir(path), false)
 		if os.IsNotExist(err) {
+			m.op(phaseApply, levelInfo, "目录不存在", path+"（无需清理）")
 			continue
 		}
 		if err != nil {
@@ -112,9 +113,11 @@ func (m *Manager) cleanupEmptyParents() error {
 			m.op(phaseApply, levelInfo, "保留目录", path+"（包含其他文件）")
 			continue
 		}
-		if !os.IsNotExist(err) {
-			return err
+		if os.IsNotExist(err) {
+			m.op(phaseApply, levelInfo, "目录不存在", path+"（无需清理）")
+			continue
 		}
+		return err
 	}
 	return nil
 }

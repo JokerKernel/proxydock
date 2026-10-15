@@ -139,6 +139,7 @@ func TestCleanupRemovesEmptyParentsAndCanRepeat(t *testing.T) {
 	var output bytes.Buffer
 	m.errOut = &output
 	for i := 0; i < 2; i++ {
+		output.Reset()
 		if err := m.Cleanup(ctx); err != nil {
 			t.Fatalf("cleanup attempt %d: %v", i, err)
 		}
@@ -153,10 +154,22 @@ func TestCleanupRemovesEmptyParentsAndCanRepeat(t *testing.T) {
 		if len(fake.images) != images || string(readFile(t, export)) != "user export" || string(readFile(t, program)) != "dummy program" {
 			t.Fatal("cleanup deleted protected resources")
 		}
-	}
-	for _, want := range []string{"回收空目录", "保留锁文件", "并发保护", "保留资源", "用户导出配置", "实例数据已清理"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("cleanup result missing %q: %s", want, output.String())
+		status := "回收空目录"
+		if i > 0 {
+			status = "目录不存在"
+		}
+		for _, want := range []string{status, "保留锁文件", "并发保护", "保留资源", "用户导出配置", "实例数据已清理"} {
+			if !strings.Contains(output.String(), want) {
+				t.Fatalf("cleanup result missing %q: %s", want, output.String())
+			}
+		}
+		for _, parent := range []string{filepath.Dir(m.paths.Deploy()), filepath.Dir(m.paths.Data()), m.paths.resolve("/var/lib/proxydock")} {
+			if !strings.Contains(output.String(), parent) {
+				t.Fatalf("cleanup omitted parent directory result: %s\n%s", parent, output.String())
+			}
+			if i > 0 && !strings.Contains(output.String(), parent+"（无需清理）") {
+				t.Fatalf("repeat cleanup omitted missing directory status: %s\n%s", parent, output.String())
+			}
 		}
 	}
 }
