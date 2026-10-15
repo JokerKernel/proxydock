@@ -16,11 +16,10 @@ func TestProgramManagementOptionsWithoutDocker(t *testing.T) {
 		want selfupdate.Options
 	}{
 		{args: []string{"update"}},
-		{args: []string{"update", "--version", "v1.2.3", "--repository", "JokerKernel/proxydock", "--force", "--allow-downgrade", "--yes"}, want: selfupdate.Options{Version: "v1.2.3", Repository: "JokerKernel/proxydock", Force: true, AllowDowngrade: true, AssumeYes: true}},
+		{args: []string{"update", "--version", "v1.2.3", "--yes"}, want: selfupdate.Options{Version: "v1.2.3", AssumeYes: true}},
 		{args: []string{"uninstall"}, want: selfupdate.Options{Uninstall: true}},
 		{args: []string{"--yes", "uninstall"}, want: selfupdate.Options{Uninstall: true, AssumeYes: true}},
-		{args: []string{"--debug", "update", "--yes"}, want: selfupdate.Options{AssumeYes: true, Debug: true}},
-		{args: []string{"update", "--debug"}, want: selfupdate.Options{Debug: true}},
+		{args: []string{"--debug", "update", "--yes"}, want: selfupdate.Options{AssumeYes: true}},
 	} {
 		var got selfupdate.Options
 		called := false

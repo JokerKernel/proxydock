@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository=${PROXYDOCK_REPOSITORY:-JokerKernel/proxydock}
-readonly install_dir="${PROXYDOCK_INSTALL_DIR:-/usr/local/sbin}"
+readonly repository="JokerKernel/proxydock"
+readonly install_dir="/usr/local/sbin"
 readonly install_path="${install_dir}/proxydock"
 readonly max_version_size=256
 readonly max_release_api_size=$((1024 * 1024))
-readonly max_binary_size=$((128 * 1024 * 1024))
-export LC_ALL=C
-latest_release_api="https://api.github.com/repos/${repository}/releases/latest"
+readonly latest_release_api="https://api.github.com/repos/${repository}/releases/latest"
 
 color_enabled=false
 proxydock_color_mode=${PROXYDOCK_COLOR:-auto}
@@ -49,234 +47,54 @@ fi
 current_version=""
 current_installed=false
 requested_action="install"
-requested_version=${PROXYDOCK_VERSION:-latest}
-assume_yes=false
-force_install=false
-allow_downgrade=false
-debug=false
-op_phase=""
 
 selected_asset=""
 selected_checksum=""
 temporary_dir=""
 staged_path=""
-backup_path=""
-replacement_pending=false
-lock_acquired=false
 
 paint() {
   printf '%s%s%s' "$1" "$2" "${color_reset}"
 }
 
-display_width() {
-  local text=$1
-  if [[ -z "${text}" ]]; then
-    printf '0\n'
-    return
-  fi
-  local raw
-  raw=$(printf '%s' "${text}" | od -An -v -tu1)
-  local -a bytes
-  # shellcheck disable=SC2206
-  bytes=(${raw})
-  local i=0 n=${#bytes[@]} width=0
-  while (( i < n )); do
-    local b=${bytes[i]} adv=1 cp=0 decoded=false
-    local b2=0 b3=0 b4=0
-    if (( b < 128 )); then
-      cp=${b}
-      decoded=true
-    elif (( b >= 194 && b <= 223 && i + 1 < n )); then
-      b2=${bytes[i + 1]}
-      if (( b2 >= 128 && b2 <= 191 )); then
-        cp=$(( ((b & 31) << 6) | (b2 & 63) ))
-        adv=2
-        decoded=true
-      fi
-    elif (( b >= 224 && b <= 239 && i + 2 < n )); then
-      b2=${bytes[i + 1]}
-      b3=${bytes[i + 2]}
-      if (( b2 >= 128 && b2 <= 191 && b3 >= 128 && b3 <= 191 )); then
-        cp=$(( ((b & 15) << 12) | ((b2 & 63) << 6) | (b3 & 63) ))
-        adv=3
-        decoded=true
-      fi
-    elif (( b >= 240 && b <= 244 && i + 3 < n )); then
-      b2=${bytes[i + 1]}
-      b3=${bytes[i + 2]}
-      b4=${bytes[i + 3]}
-      if (( b2 >= 128 && b2 <= 191 && b3 >= 128 && b3 <= 191 && b4 >= 128 && b4 <= 191 )); then
-        cp=$(( ((b & 7) << 18) | ((b2 & 63) << 12) | ((b3 & 63) << 6) | (b4 & 63) ))
-        adv=4
-        decoded=true
-      fi
-    fi
-    if [[ "${decoded}" == true ]]; then
-      if (( cp < 32 || cp == 127 )); then
-        :
-      elif rune_is_wide "${cp}"; then
-        width=$((width + 2))
-      else
-        width=$((width + 1))
-      fi
-    else
+detail() {
+  local label=$1 text=$2 color=$3
+  local LC_ALL=C
+  local width=0 index character padding
+  # Count ASCII cells and UTF-8 leading bytes without requiring a locale.
+  for ((index = 0; index < ${#label}; index++)); do
+    character=${label:index:1}
+    if [[ "${character}" < $'\200' ]]; then
       width=$((width + 1))
+    elif [[ "${character}" > $'\277' ]]; then
+      width=$((width + 2))
     fi
-    i=$((i + adv))
   done
-  printf '%d\n' "${width}"
+  padding=$((22 - width))
+  ((padding >= 0)) || padding=0
+  printf '%s%*s │ %s\n' "$(paint "${color}" "${label}")" "${padding}" '' "${text}"
 }
 
-rune_is_wide() {
-  local cp=$1
-  (( (cp >= 0x1100 && cp <= 0x115F) \
-    || (cp >= 0x2329 && cp <= 0x232A) \
-    || (cp >= 0x2E80 && cp <= 0xA4CF) \
-    || (cp >= 0xAC00 && cp <= 0xD7A3) \
-    || (cp >= 0xF900 && cp <= 0xFAFF) \
-    || (cp >= 0xFE10 && cp <= 0xFE19) \
-    || (cp >= 0xFE30 && cp <= 0xFE6F) \
-    || (cp >= 0xFF01 && cp <= 0xFF60) \
-    || (cp >= 0xFFE0 && cp <= 0xFFE6) \
-    || (cp >= 0x1F300 && cp <= 0x1FAFF) \
-    || (cp >= 0x20000 && cp <= 0x3FFFD) ))
+info() {
+  detail "${1}" "${2}" "${color_blue}"
 }
 
-op_line() {
-  local level=$1 name=$2 detail=$3
-  local color=""
-  case "${level}" in
-    step) color=${color_bold_orange} ;;
-    result) color=${color_bold_green} ;;
-    warn) color=${color_bold_yellow} ;;
-    error) color=${color_bold_red} ;;
-    *) color=${color_blue} ;;
-  esac
-  while [[ "${detail}" == *$'\n' ]]; do
-    detail=${detail%$'\n'}
-  done
-  local -a lines=()
-  if [[ -z "${detail}" ]]; then
-    lines=("")
-  else
-    local line
-    while IFS= read -r line || [[ -n "${line}" ]]; do
-      lines+=("${line}")
-    done <<< "${detail}"
-  fi
-  local index=0 shown width pad label
-  for line in "${lines[@]}"; do
-    label=""
-    if (( index == 0 )); then
-      label=${name}
-    fi
-    width=$(display_width "${label}")
-    pad=0
-    if (( width < 16 )); then
-      pad=$((16 - width))
-    fi
-    shown=${label}
-    if [[ "${color_enabled}" == true && -n "${label}" ]]; then
-      shown=$(paint "${color}" "${label}")
-    fi
-    printf '%s%*s │ %s\n' "${shown}" "${pad}" '' "${line}"
-    index=$((index + 1))
-  done
+step() {
+  printf '\n'
+  detail "${1}" "${2}" "${color_bold_orange}"
 }
 
-op() {
-  local phase=$1 level=$2 name=$3 detail=$4
-  if [[ -n "${phase}" && -n "${op_phase}" && "${phase}" != "${op_phase}" ]]; then
-    printf '\n'
-  fi
-  if [[ -n "${phase}" ]]; then
-    op_phase=${phase}
-  fi
-  op_line "${level}" "${name}" "${detail}"
+result() {
+  detail "${1}" "${2}" "${color_bold_green}"
 }
 
 warn() {
-  op "${op_phase:-check}" warn "警告" "$*"
+  detail "${1}" "${2}" "${color_bold_yellow}"
 }
 
 die() {
-  op result error "操作失败" "$*" >&2
+  detail "操作失败" "$*" "${color_bold_red}" >&2
   exit 1
-}
-
-brief_command() {
-  if [[ $# -eq 0 ]]; then
-    printf '\n'
-    return
-  fi
-  local cmd=$1
-  shift
-  if [[ "${cmd}" == "sha256sum" ]]; then
-    printf 'sha256sum --check …\n'
-    return
-  fi
-  local -a args=("$@") kept=()
-  local skipped=false end_flags=false
-  local i=0 n=${#args[@]}
-  while (( i < n )); do
-    local arg=${args[i]}
-    if [[ "${end_flags}" == true ]]; then
-      kept+=("${arg}")
-      i=$((i + 1))
-      continue
-    fi
-    if [[ "${arg}" == "--" ]]; then
-      end_flags=true
-      skipped=true
-      i=$((i + 1))
-      continue
-    fi
-    if [[ "${arg}" == -* ]]; then
-      skipped=true
-      case "${arg}" in
-        --output=* | --output-document=* | --secure-protocol=*)
-          i=$((i + 1))
-          ;;
-        --fail | --location | --silent | --show-error | --progress-bar | --quiet | --https-only | --no-proxy | -q | -s | -f | -L | -p)
-          i=$((i + 1))
-          ;;
-        -m | --output | --output-document | --noproxy | --proto | --proto-redir | --tlsv1.2 | --secure-protocol | --connect-timeout | --max-time | --retry | --retry-max-time | --max-filesize | --timeout | --tries)
-          i=$((i + 2))
-          ;;
-        *)
-          i=$((i + 1))
-          ;;
-      esac
-      continue
-    fi
-    kept+=("${arg}")
-    i=$((i + 1))
-  done
-  local result=${cmd}
-  if [[ "${skipped}" == true ]]; then
-    result+=" …"
-  fi
-  if (( ${#kept[@]} > 0 )); then
-    result+=" ${kept[*]}"
-  fi
-  printf '%s\n' "${result}"
-}
-
-quote_command() {
-  local out="" arg quoted
-  for arg in "$@"; do
-    if [[ -z "${arg}" || "${arg}" == *[[:space:]\"\'\\\$\`]* ]]; then
-      quoted=$(printf '%q' "${arg}")
-    else
-      quoted=${arg}
-    fi
-    if [[ -z "${out}" ]]; then
-      out=${quoted}
-    else
-      out+=" ${quoted}"
-    fi
-  done
-  printf '%s\n' "${out}"
 }
 
 print_header() {
@@ -295,16 +113,15 @@ print_release_summary() {
   case "${installation_action}" in
     upgrade) action_display="更新" ;;
     replace) action_display="重新安装" ;;
-    downgrade) action_display="降级" ;;
     current) action_display="无需更新" ;;
     newer) action_display="跳过，避免降级" ;;
   esac
   printf '\n%s\n' "$(paint "${color_bold_orange}" '发布信息')"
   printf '%s\n' "$(paint "${color_orange}" '----------------------------------------')"
-  printf '  %s：Linux/%s\n' "$(paint "${color_orange}" '平台')" "$1"
-  printf '  %s：%s\n' "$(paint "${color_orange}" '当前版本')" "${current_display}"
-  printf '  %s：%s\n' "$(paint "${color_orange}" '目标版本')" "${resolved_version}"
-  printf '  %s：%s\n' "$(paint "${color_orange}" '执行操作')" "${action_display}"
+  info "平台" "Linux/$1"
+  info "当前版本" "${current_display}"
+  info "目标版本" "${resolved_version}"
+  info "执行操作" "${action_display}"
   printf '%s\n' "$(paint "${color_orange}" '----------------------------------------')"
 }
 
@@ -312,44 +129,24 @@ print_completion() {
   local action_label="安装完成"
   if [[ "${installation_action}" == "upgrade" ]]; then
     action_label="更新完成"
-  elif [[ "${installation_action}" == "downgrade" ]]; then
-    action_label="降级完成"
   elif [[ "${installation_action}" == "replace" ]]; then
     action_label="重新安装完成"
   fi
   printf '\n%s\n' "$(paint "${color_bold_orange}" '╭─ ProxyDock')"
-  printf '%s│ %s%s%s\n' "${color_orange}" "${color_bold_green}" "${action_label}" "${color_reset}"
-  printf '%s\n' "$(paint "${color_orange}" "│ 版本：${resolved_version}")"
-  printf '%s\n' "$(paint "${color_orange}" "│ 位置：${install_path}")"
-  printf '%s\n' "$(paint "${color_orange}" "│ 运行命令：sudo ${install_path}")"
+  result "安装结果" "${action_label}"
+  info "程序版本" "${resolved_version}"
+  info "安装位置" "${install_path}"
+  info "运行命令" "sudo ${install_path}"
   printf '%s\n' "$(paint "${color_bold_orange}" '╰──────────────────────────────────────────────')"
 }
 
 cleanup() {
-  local status=$?
-  trap - EXIT INT TERM
-  if [[ "${replacement_pending}" == true ]]; then
-    if [[ -n "${backup_path}" ]]; then
-      if mv -f -- "${backup_path}" "${install_path}"; then
-        backup_path=""
-        warn "安装未完成，已恢复原 ProxyDock 程序。"
-      else
-        warn "恢复失败，原程序备份保留在：${backup_path}"
-        backup_path=""
-        status=1
-      fi
-    elif ! rm -f -- "${install_path}"; then
-      warn "删除未完成安装的程序失败：${install_path}"
-      status=1
-    fi
+  if [[ -n "${staged_path}" && -e "${staged_path}" ]]; then
+    rm -f -- "${staged_path}"
   fi
-  [[ -z "${staged_path}" ]] || rm -f -- "${staged_path}"
-  [[ -z "${backup_path}" ]] || rm -f -- "${backup_path}"
-  [[ -z "${temporary_dir}" ]] || rm -rf -- "${temporary_dir}"
-  if [[ "${lock_acquired}" == true ]]; then
-    exec 9>&-
+  if [[ -n "${temporary_dir}" && -d "${temporary_dir}" ]]; then
+    rm -rf -- "${temporary_dir}"
   fi
-  return "${status}"
 }
 
 require_command() {
@@ -371,50 +168,35 @@ remove_proxydock_binary() {
 
 uninstall_proxydock() {
   print_header "自身卸载"
-  op check step "检查安装" "${install_path}"
+  step "检查安装状态" "ProxyDock"
   if ! proxydock_binary_exists; then
-    op result result "卸载结果" "ProxyDock 当前未安装，无需卸载。"
+    result "卸载结果" "ProxyDock 当前未安装，无需卸载。"
     return
   fi
 
-  confirm_uninstall
-  op apply step "删除程序" "${install_path}"
-  if [[ "${debug}" == true ]]; then
-    op "" info "命令详情" "$(quote_command rm -f -- "${install_path}")"
-  fi
+  info "卸载位置" "${install_path}"
+  step "删除程序文件" "ProxyDock 二进制"
   remove_proxydock_binary
   if proxydock_binary_exists; then
     die "卸载后仍检测到文件：${install_path}"
   fi
-  op result result "卸载结果" "ProxyDock 自身已卸载。"
-  op result info "保留数据" "Docker 容器、镜像、节点配置和管理数据均已保留。"
+  result "卸载结果" "ProxyDock 自身已卸载。"
+  info "保留组件数据" "Docker 容器、镜像、节点配置和管理数据均已保留。"
 }
 
 parse_arguments() {
-  local action_seen=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      install | update | uninstall)
-        [[ "${action_seen}" == false ]] || die "只能指定一个操作：install、update 或 uninstall"
-        requested_action=$1
-        action_seen=true
+      --yes | -y)
         shift
         ;;
-      --yes | -y) assume_yes=true; shift ;;
-      --debug) debug=true; shift ;;
-      --force) force_install=true; shift ;;
-      --allow-downgrade) allow_downgrade=true; shift ;;
-      --version | --repository)
-        [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 需要一个值"
-        if [[ "$1" == "--version" ]]; then
-          requested_version=$2
-        else
-          repository=$2
-        fi
-        shift 2
+      uninstall | --uninstall)
+        requested_action="uninstall"
+        shift
         ;;
-      --help | -h) requested_action="help"; shift ;;
-      *) die "未知参数：$1" ;;
+      *)
+        die "未知参数：$1"
+        ;;
     esac
   done
 }
@@ -436,49 +218,58 @@ detect_current_version() {
 }
 
 compare_versions() {
-  local left=$1 right=$2
-  valid_version "${left}" && valid_version "${right}" || return 1
-  left=${left#v}
-  right=${right#v}
-  left=${left%%+*}
-  right=${right%%+*}
-  local left_core=${left%%-*} right_core=${right%%-*}
-  local left_parts=() right_parts=() index
-  IFS=. read -r -a left_parts <<< "${left_core}"
-  IFS=. read -r -a right_parts <<< "${right_core}"
+  local left=$1
+  local right=$2
+  local version_pattern='^v([0-9]+)\.([0-9]+)\.([0-9]+)([-+][0-9A-Za-z.-]+)?$'
+  local left_major left_minor left_patch left_suffix
+  local right_major right_minor right_patch right_suffix
+
+  [[ "${left}" =~ ${version_pattern} ]] || return 1
+  left_major=$((10#${BASH_REMATCH[1]}))
+  left_minor=$((10#${BASH_REMATCH[2]}))
+  left_patch=$((10#${BASH_REMATCH[3]}))
+  left_suffix=${BASH_REMATCH[4]:-}
+  [[ "${right}" =~ ${version_pattern} ]] || return 1
+  right_major=$((10#${BASH_REMATCH[1]}))
+  right_minor=$((10#${BASH_REMATCH[2]}))
+  right_patch=$((10#${BASH_REMATCH[3]}))
+  right_suffix=${BASH_REMATCH[4]:-}
+
+  local left_parts=("${left_major}" "${left_minor}" "${left_patch}")
+  local right_parts=("${right_major}" "${right_minor}" "${right_patch}")
+  local index
   for index in 0 1 2; do
-    compare_numeric "${left_parts[index]}" "${right_parts[index]}"
-    if [[ ${version_order} -ne 0 ]]; then return; fi
+    if ((left_parts[index] < right_parts[index])); then
+      version_order=-1
+      return
+    fi
+    if ((left_parts[index] > right_parts[index])); then
+      version_order=1
+      return
+    fi
   done
-  local left_pre="" right_pre=""
-  [[ "${left}" != *-* ]] || left_pre=${left#*-}
-  [[ "${right}" != *-* ]] || right_pre=${right#*-}
-  if [[ -z "${left_pre}" && -z "${right_pre}" ]]; then
+
+  local left_prerelease="" right_prerelease=""
+  if [[ "${left_suffix}" == -* ]]; then
+    left_prerelease=${left_suffix#-}
+    left_prerelease=${left_prerelease%%+*}
+  fi
+  if [[ "${right_suffix}" == -* ]]; then
+    right_prerelease=${right_suffix#-}
+    right_prerelease=${right_prerelease%%+*}
+  fi
+  if [[ -z "${left_prerelease}" && -z "${right_prerelease}" ]]; then
     version_order=0
-  elif [[ -z "${left_pre}" ]]; then
+  elif [[ -z "${left_prerelease}" ]]; then
     version_order=1
-  elif [[ -z "${right_pre}" ]]; then
+  elif [[ -z "${right_prerelease}" ]]; then
+    version_order=-1
+  elif [[ "${left_prerelease}" == "${right_prerelease}" ]]; then
+    version_order=0
+  elif [[ "${left_prerelease}" < "${right_prerelease}" ]]; then
     version_order=-1
   else
-    IFS=. read -r -a left_parts <<< "${left_pre}"
-    IFS=. read -r -a right_parts <<< "${right_pre}"
-    for ((index = 0; index < ${#left_parts[@]} && index < ${#right_parts[@]}; index++)); do
-      local a=${left_parts[index]} b=${right_parts[index]}
-      if [[ "${a}" == "${b}" ]]; then continue; fi
-      if [[ "${a}" =~ ^[0-9]+$ && "${b}" =~ ^[0-9]+$ ]]; then
-        compare_numeric "${a}" "${b}"
-      elif [[ "${a}" =~ ^[0-9]+$ ]]; then
-        version_order=-1
-      elif [[ "${b}" =~ ^[0-9]+$ ]]; then
-        version_order=1
-      elif [[ "${a}" < "${b}" ]]; then
-        version_order=-1
-      else
-        version_order=1
-      fi
-      return
-    done
-    compare_numeric "${#left_parts[@]}" "${#right_parts[@]}"
+    version_order=1
   fi
 }
 
@@ -517,36 +308,45 @@ detect_architecture() {
 }
 
 download() {
-  local url=$1 output=$2 show_progress=${3:-false} limit=${4:-${max_binary_size}} direct=${5:-false} op_name=${6:-}
-  local -a cmd=()
+  local url=$1
+  local output=$2
+  local show_progress=${3:-false}
   if command -v curl >/dev/null 2>&1; then
-    local presentation=(--silent --show-error)
-    local proxy_options=()
-    if [[ "${direct}" == true ]]; then proxy_options=(--noproxy '*'); fi
-    if [[ "${show_progress}" == true && -t 2 ]]; then presentation=(--show-error --progress-bar); fi
-    cmd=(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
-      "${presentation[@]}" --connect-timeout 15 --max-time 180 --retry 3 --retry-max-time 300 \
-      --max-filesize "${limit}" "${proxy_options[@]}" --output "${output}" "${url}")
-  elif command -v wget >/dev/null 2>&1; then
-    local proxy_options=()
-    if [[ "${direct}" == true ]]; then proxy_options=(--no-proxy); fi
-    cmd=(wget --https-only --secure-protocol=TLSv1_2 --quiet --timeout=30 --tries=3 \
-      "${proxy_options[@]}" --output-document="${output}" "${url}")
-  else
-    die "需要 curl 或 wget 才能下载发布文件"
+    if [[ "${show_progress}" == true && -t 2 ]]; then
+      curl --proto '=https' --tlsv1.2 --fail --location --show-error --progress-bar \
+        --retry 3 --output "${output}" "${url}"
+    else
+      curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+        --retry 3 --output "${output}" "${url}"
+    fi
+    return
   fi
-  if [[ -n "${op_name}" ]]; then
-    op check step "${op_name}" "$(brief_command "${cmd[@]}")"
+  if command -v wget >/dev/null 2>&1; then
+    if [[ "${show_progress}" == true && -t 2 ]]; then
+      wget --https-only --secure-protocol=TLSv1_2 --no-verbose --show-progress \
+        --progress=bar:force:noscroll --output-document="${output}" "${url}"
+    else
+      wget --https-only --secure-protocol=TLSv1_2 --quiet --output-document="${output}" "${url}"
+    fi
+    return
   fi
-  if [[ "${debug}" == true ]]; then
-    op "" info "命令详情" "$(quote_command "${cmd[@]}")"
-  fi
-  "${cmd[@]}" || return $?
-  [[ $(wc -c < "${output}") -le ${limit} ]] || { warn "下载文件超过大小限制"; return 1; }
+  die "需要 curl 或 wget 才能下载发布文件"
 }
 
 download_direct() {
-  download "$1" "$2" "${3:-false}" "${4:-${max_binary_size}}" true "${5:-}"
+  local url=$1
+  local output=$2
+  if command -v curl >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+      --retry 3 --noproxy '*' --output "${output}" "${url}"
+    return
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget --https-only --secure-protocol=TLSv1_2 --quiet --no-proxy \
+      --output-document="${output}" "${url}"
+    return
+  fi
+  die "需要 curl 或 wget 才能下载发布文件"
 }
 
 read_api_version() {
@@ -560,7 +360,7 @@ read_api_version() {
     sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${api_file}"
   )
   [[ ${#versions[@]} -eq 1 ]] || return 1
-  valid_version "${versions[0]}" || return 1
+  [[ "${versions[0]}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || return 1
   resolved_version=${versions[0]}
 }
 
@@ -573,7 +373,7 @@ read_version_file() {
   local version_lines=()
   mapfile -t version_lines < "${version_file}"
   [[ ${#version_lines[@]} -eq 1 ]] || return 1
-  valid_version "${version_lines[0]}" || return 1
+  [[ "${version_lines[0]}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || return 1
   resolved_version=${version_lines[0]}
 }
 
@@ -582,245 +382,167 @@ resolve_latest_version() {
   local api_file="${temporary_dir}/latest-release.json"
   local version_file="${temporary_dir}/version"
 
-  if download "${latest_release_api}" "${api_file}" false "${max_release_api_size}" false "查询版本" && read_api_version "${api_file}"; then
-    op check info "版本来源" "最新正式版本：${resolved_version}（GitHub Releases API）"
+  if download "${latest_release_api}" "${api_file}" && read_api_version "${api_file}"; then
+    info "最新正式版本" "${resolved_version}（GitHub Releases API）"
     return
   fi
-  warn "通过当前网络或代理获取 GitHub Releases API 失败，尝试忽略代理直连"
-  if download_direct "${latest_release_api}" "${api_file}" false "${max_release_api_size}" "查询版本" && read_api_version "${api_file}"; then
-    op check info "版本来源" "最新正式版本：${resolved_version}（GitHub Releases API 直连）"
+  warn "切换下载方式" "通过当前网络或代理获取 GitHub Releases API 失败，尝试忽略代理直连"
+  if download_direct "${latest_release_api}" "${api_file}" && read_api_version "${api_file}"; then
+    info "最新正式版本" "${resolved_version}（GitHub Releases API 直连）"
     return
   fi
-  warn "GitHub Releases API 不可用，改用 Release version 文件"
-  if download "${release_base}/version" "${version_file}" false "${max_version_size}" false "查询版本" && read_version_file "${version_file}"; then
-    op check info "版本来源" "最新正式版本：${resolved_version}（Release version 文件）"
+  warn "切换版本来源" "GitHub Releases API 不可用，改用 Release version 文件"
+  if download "${release_base}/version" "${version_file}" && read_version_file "${version_file}"; then
+    info "最新正式版本" "${resolved_version}（Release version 文件）"
     return
   fi
   return 1
 }
 
 select_asset() {
-  local manifest=$1 architecture=$2 checksum asset extra
-  [[ $(wc -c < "${manifest}") -le ${max_release_api_size} ]] || die "校验清单超过大小限制"
-  local expected="proxydock_linux_${architecture}_${resolved_version}"
-  local matches=0 expected_checksum=""
-  while read -r checksum asset extra || [[ -n "${checksum}" ]]; do
-    [[ -z "${extra:-}" && "${checksum}" =~ ^[0-9A-Fa-f]{64}$ ]] || continue
-    asset=${asset#\*}
-    if [[ "${asset}" == "${expected}" ]]; then
-      expected_checksum=${checksum,,}
-      matches=$((matches + 1))
+  local manifest=$1
+  local architecture=$2
+  local checksum asset extra
+  local preferred_matches=0
+  local legacy_matches=0
+  local preferred_asset="" preferred_checksum=""
+  local legacy_asset="" legacy_checksum=""
+  local preferred_pattern="^proxydock_linux_${architecture}_v[0-9]+\\.[0-9]+\\.[0-9]+([+-][0-9A-Za-z.-]+)?$"
+  local legacy_pattern="^proxydock_v[0-9]+\\.[0-9]+\\.[0-9]+([+-][0-9A-Za-z.-]+)?_linux_${architecture}$"
+
+  while read -r checksum asset extra; do
+    [[ -z "${extra:-}" ]] || continue
+    [[ "${checksum}" =~ ^[0-9A-Fa-f]{64}$ ]] || continue
+    if [[ "${asset}" =~ ${preferred_pattern} ]]; then
+      preferred_checksum=${checksum,,}
+      preferred_asset=${asset}
+      preferred_matches=$((preferred_matches + 1))
+    elif [[ "${asset}" =~ ${legacy_pattern} ]]; then
+      legacy_checksum=${checksum,,}
+      legacy_asset=${asset}
+      legacy_matches=$((legacy_matches + 1))
     fi
   done < "${manifest}"
-  [[ ${matches} -le 1 ]] || die "校验清单包含重复的发布文件"
-  [[ ${matches} -eq 1 ]] || die "校验清单缺少 ${resolved_version} Linux/${architecture} 的 ProxyDock 发布文件"
-  selected_asset=${expected}
-  selected_checksum=${expected_checksum}
-}
 
-
-print_help() {
-  cat <<'HELP'
-ProxyDock 程序安装、更新与卸载
-
-用法：bash install.sh [install|update|uninstall] [选项]
-  --version VERSION       固定程序版本，例如 v1.0.0；缺省 latest
-  --repository OWNER/REPO 发布仓库；缺省 JokerKernel/proxydock
-  --force                 同版本重新安装
-  --allow-downgrade       允许显式降级
-  --yes, -y               跳过程序卸载确认
-  --debug                 显示完整命令参数
-  --help, -h              查看帮助，不需要 root
-
-环境变量：PROXYDOCK_VERSION、PROXYDOCK_REPOSITORY、PROXYDOCK_INSTALL_DIR
-默认安装位置：/usr/local/sbin/proxydock
-安装和更新只替换管理程序；卸载保留 Docker、容器、镜像、配置与数据。
-HELP
-}
-
-valid_version() {
-  local value=$1 identifier
-  [[ ${#value} -le ${max_version_size} && "${value}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
-  value=${value%%+*}
-  if [[ "${value}" == *-* ]]; then
-    local identifiers=()
-    IFS=. read -r -a identifiers <<< "${value#*-}"
-    for identifier in "${identifiers[@]}"; do
-      if [[ "${identifier}" =~ ^[0-9]+$ && ${#identifier} -gt 1 && "${identifier}" == 0* ]]; then return 1; fi
-    done
-  fi
-}
-
-compare_numeric() {
-  if [[ ${#1} -lt ${#2} ]]; then version_order=-1
-  elif [[ ${#1} -gt ${#2} ]]; then version_order=1
-  elif [[ "$1" == "$2" ]]; then version_order=0
-  elif [[ "$1" < "$2" ]]; then version_order=-1
-  else version_order=1
-  fi
-}
-
-acquire_install_lock() {
-  install -d -m 0755 "${install_dir}" || die "无法创建安装目录：${install_dir}"
-  local lock_path="${install_dir}/.proxydock.install.lock"
-  [[ ! -L "${lock_path}" && ( ! -e "${lock_path}" || -f "${lock_path}" ) ]] || die "安装锁路径无效"
-  # Create private temporary/lock files without changing the executable mode.
-  umask 077
-  exec 9>"${lock_path}" || die "无法打开安装锁：${lock_path}"
-  flock -n 9 || die "另一个 ProxyDock 安装、更新或卸载正在进行，请稍后重试"
-  lock_acquired=true
-}
-
-fetch() {
-  local url=$1 output=$2 show_progress=${3:-false} limit=${4:-${max_binary_size}} op_name=${5:-}
-  if download "${url}" "${output}" "${show_progress}" "${limit}" false "${op_name}"; then
+  if [[ ${preferred_matches} -eq 1 ]]; then
+    selected_checksum=${preferred_checksum}
+    selected_asset=${preferred_asset}
     return
   fi
-  warn "通过当前网络下载失败，尝试忽略代理直连"
-  download_direct "${url}" "${output}" "${show_progress}" "${limit}" "${op_name}"
-}
-
-verify_binary() {
-  local output first_line
-  output=$(timeout 10 "$1" --version 2>/dev/null) || return 1
-  first_line=${output%%$'\n'*}
-  [[ "${first_line}" == "proxydock ${resolved_version}" ]]
-}
-
-confirm_uninstall() {
-  [[ "${assume_yes}" == true ]] && return
-  [[ -t 0 ]] || die "非交互卸载必须显式提供 --yes"
-  local answer
-  printf '只删除 ProxyDock 程序，保留容器、镜像和节点数据。确认卸载？[y/N]：'
-  read -r answer || die "未收到卸载确认"
-  [[ "${answer}" == y || "${answer}" == Y || "${answer}" == 1 ]] || die "已取消卸载"
+  if [[ ${preferred_matches} -eq 0 && ${legacy_matches} -eq 1 ]]; then
+    selected_checksum=${legacy_checksum}
+    selected_asset=${legacy_asset}
+    return
+  fi
+  die "校验清单中匹配 ${architecture} 的发布文件数量异常：新格式 ${preferred_matches}，旧格式 ${legacy_matches}"
 }
 
 main() {
-  debug=false
-  op_phase=""
   requested_action="install"
-  current_version=""
-  current_installed=false
-  requested_version=${PROXYDOCK_VERSION:-latest}
-  assume_yes=false
-  force_install=false
-  allow_downgrade=false
   parse_arguments "$@"
-  if [[ "${requested_action}" == "help" ]]; then print_help; return; fi
   [[ "$(uname -s)" == "Linux" ]] || die "该安装脚本仅支持 Linux"
   require_root
-  [[ "${install_dir}" == /* && "${install_dir}" != *$'\n'* ]] || die "安装目录必须是绝对路径"
-  [[ ! -L "${install_path}" && ( ! -e "${install_path}" || -f "${install_path}" ) ]] || die "安装目标不是普通文件，拒绝操作：${install_path}"
-  require_command rm
-  if [[ "${requested_action}" == "uninstall" && ! -d "${install_dir}" ]]; then
+
+  if [[ "${requested_action}" == "uninstall" ]]; then
+    require_command rm
     uninstall_proxydock
     return
   fi
+
+  require_command uname
+  require_command mktemp
+  require_command sha256sum
+  require_command wc
+  require_command sed
   require_command install
-  require_command flock
+  require_command mv
+
+  local architecture
+  architecture=$(detect_architecture)
+  local requested_version=${PROXYDOCK_VERSION:-latest}
+  resolved_version=""
+  local release_base
+  case "${requested_version}" in
+    latest)
+      release_base="https://github.com/${repository}/releases/latest/download"
+      ;;
+    v[0-9]*.[0-9]*.[0-9]*)
+      [[ "${requested_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || \
+        die "PROXYDOCK_VERSION 格式无效：${requested_version}"
+      release_base="https://github.com/${repository}/releases/download/${requested_version}"
+      resolved_version=${requested_version}
+      ;;
+    *)
+      die "PROXYDOCK_VERSION 格式无效：${requested_version}"
+      ;;
+  esac
+
+  temporary_dir=$(mktemp -d /tmp/proxydock-install.XXXXXX)
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  acquire_install_lock
-  if [[ "${requested_action}" == "uninstall" ]]; then
-    uninstall_proxydock
-    return
-  fi
-  [[ "${repository}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "仓库格式必须是 OWNER/REPO"
-  latest_release_api="https://api.github.com/repos/${repository}/releases/latest"
-  [[ "${requested_version}" == "latest" ]] || valid_version "${requested_version}" || die "版本格式无效：${requested_version}"
-  local dependency
-  for dependency in uname mktemp sha256sum wc sed mv cp chmod timeout; do require_command "${dependency}"; done
-  local architecture release_base
-  architecture=$(detect_architecture) || die "无法选择当前平台的程序"
-  resolved_version=""
-  if [[ "${requested_version}" == "latest" ]]; then
-    release_base="https://github.com/${repository}/releases/latest/download"
-  else
-    resolved_version=${requested_version}
-    release_base="https://github.com/${repository}/releases/download/${resolved_version}"
-  fi
-  temporary_dir=$(mktemp -d /tmp/proxydock-install.XXXXXX) || die "无法创建下载临时目录"
+
   print_header
-  op check info "发布仓库" "${repository}"
-  op check step "检查版本" "${requested_version}"
+  step "检查发布版本" "GitHub Release"
   if [[ "${requested_version}" == "latest" ]]; then
-    resolve_latest_version "${release_base}" || die "无法读取最新正式版本；请确认仓库已有 Release，或使用 --version 指定版本"
-    release_base="https://github.com/${repository}/releases/download/${resolved_version}"
-  fi
-  classify_installation
-  if [[ "${installation_action}" == "newer" && "${allow_downgrade}" == true ]]; then
-    installation_action="downgrade"
-  elif [[ "${installation_action}" == "current" && "${force_install}" == true ]]; then
-    installation_action="replace"
-  fi
-  print_release_summary "${architecture}"
-  case "${installation_action}" in
-    current)
-      if [[ "${requested_version}" == "latest" ]]; then
-        op result result "更新结果" "当前已是最新正式版本，无需更新。"
-      else
-        op result result "安装结果" "当前已是指定版本，无需安装。"
-      fi
-      return
-      ;;
-    newer)
-      op result result "更新结果" "当前版本高于目标版本，已跳过以避免降级；需要降级时使用 --allow-downgrade。"
-      return
-      ;;
-    upgrade) op check info "准备更新" "从 ${current_version} 更新到 ${resolved_version}" ;;
-    downgrade) warn "按显式参数从 ${current_version} 降级到 ${resolved_version}" ;;
-    replace) op check info "准备安装" "重新安装 ${resolved_version}" ;;
-  esac
-  fetch "${release_base}/SHA256SUMS" "${temporary_dir}/SHA256SUMS" false "${max_release_api_size}" "下载清单" || die "下载校验清单失败"
-  select_asset "${temporary_dir}/SHA256SUMS" "${architecture}"
-  fetch "${release_base}/${selected_asset}" "${temporary_dir}/${selected_asset}" true "${max_binary_size}" "下载程序" || die "下载程序失败"
-  op check step "校验文件" "sha256sum --check …"
-  if [[ "${debug}" == true ]]; then
-    op "" info "命令详情" "sha256sum --check --status -"
-  fi
-  printf '%s  %s\n' "${selected_checksum}" "${selected_asset}" |
-    (cd "${temporary_dir}" && sha256sum --check --status -) || die "SHA-256 校验失败"
-  op check result "校验结果" "通过"
-  if [[ "${debug}" == true ]]; then
-    op "" info "命令详情" "$(quote_command chmod 0755 "${temporary_dir}/${selected_asset}")"
-  fi
-  chmod 0755 "${temporary_dir}/${selected_asset}" || die "无法设置候选程序权限"
-  verify_binary "${temporary_dir}/${selected_asset}" || die "下载的程序无法运行或版本不匹配，原程序已保留"
-  staged_path=$(mktemp "${install_dir}/.proxydock.new.XXXXXX") || die "无法创建安装候选文件"
-  if [[ "${debug}" == true ]]; then
-    op "" info "命令详情" "$(quote_command install -m 0755 "${temporary_dir}/${selected_asset}" "${staged_path}")"
-  fi
-  install -m 0755 "${temporary_dir}/${selected_asset}" "${staged_path}" || die "无法写入安装候选文件"
-  if [[ -e "${install_path}" ]]; then
-    backup_path=$(mktemp "${install_dir}/.proxydock.old.XXXXXX") || die "无法创建原程序备份"
-    cp -p -- "${install_path}" "${backup_path}" || die "无法备份原程序"
-    op backup step "备份原程序" "${install_path}"
-    op backup info "备份位置" "${backup_path}"
-    if [[ "${debug}" == true ]]; then
-      op "" info "命令详情" "$(quote_command cp -p -- "${install_path}" "${backup_path}")"
+    if resolve_latest_version "${release_base}"; then
+      release_base="https://github.com/${repository}/releases/download/${resolved_version}"
+    else
+      die "无法通过 GitHub Releases API 或 version 文件读取最新正式版本"
     fi
   fi
-  replacement_pending=true
-  if [[ "${debug}" == true ]]; then
-    op "" info "命令详情" "$(quote_command mv -f -- "${staged_path}" "${install_path}")"
+
+  installation_action="install"
+  if [[ -n "${resolved_version}" ]]; then
+    classify_installation
+    print_release_summary "${architecture}"
+    if [[ "${installation_action}" == "current" ]]; then
+      if [[ "${requested_version}" == "latest" ]]; then
+        result "更新结果" "当前已是最新正式版本，无需更新。"
+      else
+        result "安装结果" "当前已是指定版本，无需安装。"
+      fi
+      return
+    fi
+    if [[ "${installation_action}" == "newer" ]]; then
+      result "更新结果" "当前版本高于目标版本，已跳过以避免降级。"
+      return
+    fi
+    if [[ "${installation_action}" == "upgrade" ]]; then
+      info "版本更新范围" "${current_version} → ${resolved_version}"
+    elif [[ "${installation_action}" == "replace" ]]; then
+      warn "版本识别警告" "无法识别当前版本 ${current_version}，将重新安装 ${resolved_version}"
+    fi
   fi
-  mv -f -- "${staged_path}" "${install_path}" || die "无法原子替换程序，正在恢复原程序"
+
+  step "校验发布文件" "读取发布清单与 SHA-256"
+  info "读取发布清单" "Linux/${architecture}"
+  download "${release_base}/SHA256SUMS" "${temporary_dir}/SHA256SUMS"
+  select_asset "${temporary_dir}/SHA256SUMS" "${architecture}"
+  if [[ -n "${resolved_version}" ]]; then
+    local preferred_asset="proxydock_linux_${architecture}_${resolved_version}"
+    local legacy_asset="proxydock_${resolved_version}_linux_${architecture}"
+    [[ "${selected_asset}" == "${preferred_asset}" || "${selected_asset}" == "${legacy_asset}" ]] || \
+      die "version 与校验清单中的二进制文件名不一致"
+  fi
+
+  info "下载发布文件" "${selected_asset}"
+  download "${release_base}/${selected_asset}" "${temporary_dir}/${selected_asset}" true
+  printf '%s  %s\n' "${selected_checksum}" "${selected_asset}" |
+    (cd "${temporary_dir}" && sha256sum --check --status -) || die "SHA-256 校验失败"
+  result "文件校验结果" "SHA-256 校验通过"
+
+  step "写入程序文件" "${install_path}（原子替换）"
+  if [[ ! -d "${install_dir}" ]]; then
+    install -d -m 0755 "${install_dir}"
+  fi
+  staged_path="${install_dir}/.proxydock.new.$$"
+  install -m 0755 "${temporary_dir}/${selected_asset}" "${staged_path}"
+  mv -f -- "${staged_path}" "${install_path}"
   staged_path=""
-  op apply step "写入程序" "${install_path}"
-  verify_binary "${install_path}" || die "安装后验证失败，正在恢复原程序"
-  replacement_pending=false
-  local result_name="安装结果" result_detail="已安装 ${resolved_version}"
-  case "${installation_action}" in
-    upgrade) result_name="更新结果"; result_detail="已更新到 ${resolved_version}" ;;
-    downgrade) result_name="更新结果"; result_detail="已降级到 ${resolved_version}" ;;
-    replace) result_name="安装结果"; result_detail="已重新安装 ${resolved_version}" ;;
-  esac
-  op result result "${result_name}" "${result_detail}"
-  printf 'proxydock %s\n' "${resolved_version}"
+
+  "${install_path}" --version
   print_completion
-  op result info "后续操作" "运行 sudo ${install_path} 管理 Docker 代理；Xray 镜像升级使用 proxydock upgrade。"
 }
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then

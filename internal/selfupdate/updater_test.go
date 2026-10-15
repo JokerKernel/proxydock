@@ -15,14 +15,15 @@ import (
 )
 
 type runnerStub struct {
-	command, path, body string
-	args                []string
-	input               io.Reader
-	err                 error
+	command, path, body, version string
+	args                         []string
+	input                        io.Reader
+	err                          error
 }
 
 func (r *runnerStub) Run(_ context.Context, input io.Reader, stdout, _ io.Writer, command string, args ...string) error {
 	r.command, r.path, r.args, r.input = command, args[0], append([]string(nil), args...), input
+	r.version = os.Getenv("PROXYDOCK_VERSION")
 	content, err := os.ReadFile(r.path)
 	if err != nil {
 		return err
@@ -44,13 +45,16 @@ func TestRunEmbeddedInstallerWithSeparateArgumentsAndAttachedOutput(t *testing.T
 	var output bytes.Buffer
 	input := strings.NewReader("yes\n")
 	u := Updater{Runner: runner, Stdin: input, Stdout: &output}
-	if err := u.Run(context.Background(), Options{Version: "v1.2.3", Repository: "JokerKernel/proxydock", Force: true, AllowDowngrade: true, AssumeYes: true}); err != nil {
+	if err := u.Run(context.Background(), Options{Version: "v1.2.3", AssumeYes: true}); err != nil {
 		t.Fatal(err)
 	}
 	if runner.command != "bash" || runner.body != scripts.Installer || runner.input != input {
 		t.Fatal("updater did not use the embedded installer and attached input")
 	}
-	want := []string{"update", "--yes", "--version", "v1.2.3", "--repository", "JokerKernel/proxydock", "--force", "--allow-downgrade"}
+	if runner.version != "v1.2.3" {
+		t.Fatalf("PROXYDOCK_VERSION=%q", runner.version)
+	}
+	want := []string{"--yes"}
 	if !reflect.DeepEqual(runner.args[1:], want) {
 		t.Fatalf("arguments=%v, want %v", runner.args[1:], want)
 	}
@@ -72,23 +76,6 @@ func TestUninstallRetainsConfirmationUnlessExplicitlySkipped(t *testing.T) {
 		if yes {
 			want = append(want, "--yes")
 		}
-		if !reflect.DeepEqual(runner.args[1:], want) {
-			t.Fatalf("arguments=%v, want %v", runner.args[1:], want)
-		}
-	}
-}
-
-func TestDebugIsForwardedForUpdateAndUninstall(t *testing.T) {
-	for _, uninstall := range []bool{false, true} {
-		runner := &runnerStub{}
-		if err := (Updater{Runner: runner}).Run(context.Background(), Options{Uninstall: uninstall, Debug: true}); err != nil {
-			t.Fatal(err)
-		}
-		action := "update"
-		if uninstall {
-			action = "uninstall"
-		}
-		want := []string{action, "--debug"}
 		if !reflect.DeepEqual(runner.args[1:], want) {
 			t.Fatalf("arguments=%v, want %v", runner.args[1:], want)
 		}

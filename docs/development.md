@@ -42,7 +42,7 @@ make cross
 
 `make check` 执行 Go race 测试、`go vet`、Shell 语法和安装流程检查。测试使用模拟 Docker、模拟下载和临时目录，不操作系统安装或真实容器。
 
-`scripts/embed.go` 嵌入 `install.sh`，`internal/selfupdate` 负责暂存和执行它。安装脚本处理版本发现、校验、安装与回滚；程序更新和卸载命令由 CLI 层管理。
+`scripts/embed.go` 嵌入 `install.sh`，`internal/selfupdate` 负责暂存和执行它。安装脚本处理版本发现、校验和原子替换；程序更新和卸载命令由 CLI 层管理。
 
 ## 真实运行验收
 

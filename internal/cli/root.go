@@ -60,7 +60,6 @@ func managementCommand(action string, update func(context.Context, selfupdate.Op
 		Use: action, Short: short, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			opts.AssumeYes, _ = cmd.Root().PersistentFlags().GetBool("yes")
-			opts.Debug, _ = cmd.Root().PersistentFlags().GetBool("debug")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return update(ctx, opts)
@@ -68,9 +67,6 @@ func managementCommand(action string, update func(context.Context, selfupdate.Op
 	}
 	if !opts.Uninstall {
 		cmd.Flags().StringVar(&opts.Version, "version", "", "固定 ProxyDock 程序版本，例如 v1.0.0；缺省 latest")
-		cmd.Flags().StringVar(&opts.Repository, "repository", "", "程序发布仓库，缺省 JokerKernel/proxydock")
-		cmd.Flags().BoolVar(&opts.Force, "force", false, "同版本重新安装程序")
-		cmd.Flags().BoolVar(&opts.AllowDowngrade, "allow-downgrade", false, "允许显式降级程序")
 	}
 	return cmd
 }

@@ -3,7 +3,6 @@ set -euo pipefail
 
 readonly test_root=$(mktemp -d /tmp/proxydock-installer-tests.XXXXXX)
 trap 'rm -rf -- "${test_root}"' EXIT
-export PROXYDOCK_INSTALL_DIR="${test_root}/bin"
 
 readonly script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
@@ -15,19 +14,20 @@ fail() {
 test_automatic_mode_skips_when_already_current() (
   source "${script_dir}/install.sh"
   require_root() { return; }
-  detect_current_version() { current_version=v1.2.3; }
+  detect_current_version() { current_version=v1.2.3; current_installed=true; }
   download() {
     local url=$1 output=$2
     [[ "${url}" == "${latest_release_api}" ]] || fail "unexpected download: ${url}"
     printf '{"tag_name":"v1.2.3"}\n' > "${output}"
   }
+  download_direct() { fail "direct download used for the current version"; }
 
   local output
   output=$(main)
   [[ "${output}" == *"╭─ ProxyDock"* ]] || fail "missing installer header"
-  [[ "${output}" == *"当前版本：v1.2.3"* ]] || fail "missing current version summary"
-  [[ "${output}" == *"目标版本：v1.2.3"* ]] || fail "missing target version summary"
-  [[ "${output}" == *"当前已是最新正式版本，无需更新"* ]] || fail "missing up-to-date result"
+  [[ "${output}" == *"当前版本"* && "${output}" == *"v1.2.3"* ]] || fail "missing current version summary"
+  [[ "${output}" == *"目标版本"* && "${output}" == *"v1.2.3"* ]] || fail "missing target version summary"
+  [[ "${output}" == *"当前已是最新正式版本，无需更新。"* ]] || fail "missing up-to-date result"
   [[ "${output}" == *"更新结果"* ]] || fail "missing update result label"
   [[ "${output}" != *$'\033['* ]] || fail "redirected output contains ANSI controls"
   [[ "${output}" != *"SHA256SUMS"* ]] || fail "downloaded release files for current version"
@@ -39,20 +39,15 @@ test_color_controls() (
   source "${script_dir}/install.sh"
 
   local output
-  output=$(op check info "彩色信息" "详情")
+  output=$(info "彩色信息" "详情")
   [[ "${output}" == *$'\033[34m彩色信息\033[0m'* ]] || fail "blue information color was not applied"
   [[ "${output}" == *$'\033[0m'*' │ 详情' ]] || fail "padding was colored: ${output}"
   output=$(print_header)
   [[ "${output}" == *$'\033[1;38;5;208m╭─ ProxyDock\033[0m'* ]] || fail "orange title color was not applied"
-  output=$(op check step "彩色步骤" "详情")
+  output=$(step "彩色步骤" "详情")
   [[ "${output}" == *$'\033[1;38;5;208m彩色步骤\033[0m'* ]] || fail "orange step color was not applied"
-
-  installation_action=install
-  resolved_version=v1.2.3
-  output=$(print_completion)
-  [[ "${output}" == *$'\033[38;5;208m│ 版本：v1.2.3\033[0m'* ]] || fail "completion version line was not fully orange"
-  [[ "${output}" == *$'\033[38;5;208m│ 位置：'"${install_path}"$'\033[0m'* ]] || fail "completion location line was not fully orange"
-  [[ "${output}" == *$'\033[38;5;208m│ 运行命令：sudo '"${install_path}"$'\033[0m'* ]] || fail "run command was not included in the orange completion card"
+  output=$(result "安装结果" "安装完成")
+  [[ "${output}" == *$'\033[1;32m安装结果\033[0m'* ]] || fail "green result color was not applied"
 )
 
 test_no_color_is_respected() (
@@ -61,8 +56,8 @@ test_no_color_is_respected() (
   source "${script_dir}/install.sh"
 
   local output
-  output=$(op result result "纯文本结果" "详情")
-  [[ "${output}" != *$'\033['* && "${output}" == *"纯文本结果"* && "${output}" == *"│ 详情" && "$(operation_column "${output}")" == 17 ]] || fail "NO_COLOR output was decorated: ${output}"
+  output=$(result "纯文本结果" "详情")
+  [[ "${output}" != *$'\033['* && "${output}" == *"纯文本结果"* && "${output}" == *"│ 详情" ]] || fail "NO_COLOR output was decorated: ${output}"
 )
 
 test_version_comparison_and_classification() (
@@ -71,20 +66,33 @@ test_version_comparison_and_classification() (
   compare_versions v1.2.2 v1.2.3
   [[ ${version_order} -eq -1 ]] || fail "older patch version was not lower"
   compare_versions v1.2.3-dirty v1.2.3
-  [[ ${version_order} -eq -1 ]] || fail "dirty build was not lower than release"
+  [[ ${version_order} -eq -1 ]] || fail "prerelease was not lower than release"
   compare_versions v2.0.0 v1.9.9
   [[ ${version_order} -eq 1 ]] || fail "newer major version was not higher"
+  compare_versions v1.0.0-beta.2 v1.0.0-beta.11
+  [[ ${version_order} -eq 1 ]] || fail "prerelease labels were not compared as text"
+  compare_versions v1.0.0+build.1 v1.0.0+build.2
+  [[ ${version_order} -eq 0 ]] || fail "build metadata changed version order"
 
-  detect_current_version() { current_version=v1.2.2; }
+  detect_current_version() { current_version=v1.2.2; current_installed=true; }
   resolved_version=v1.2.3
   classify_installation
   [[ "${installation_action}" == "upgrade" ]] || fail "older installation was not classified as upgrade"
 )
 
-test_update_argument_is_supported() (
+test_arguments() (
   source "${script_dir}/install.sh"
-  parse_arguments update --yes --version v1.2.3
-  [[ "${requested_action}" == update && "${requested_version}" == v1.2.3 && "${assume_yes}" == true ]] || fail "update arguments not parsed"
+  parse_arguments --yes uninstall
+  [[ "${requested_action}" == uninstall ]] || fail "uninstall argument not parsed"
+  requested_action=install
+  parse_arguments --uninstall --yes
+  [[ "${requested_action}" == uninstall ]] || fail "--uninstall argument not parsed"
+
+  local output
+  if output=$(parse_arguments update 2>&1); then fail "update action accepted"; fi
+  [[ "${output}" == *"未知参数"* ]] || fail "wrong argument error: ${output}"
+  if output=$(parse_arguments --version v1.2.3 2>&1); then fail "version flag accepted"; fi
+  [[ "${output}" == *"未知参数"* ]] || fail "version flag error: ${output}"
 )
 
 test_uninstall_removes_only_proxydock_binary() (
@@ -95,10 +103,10 @@ test_uninstall_removes_only_proxydock_binary() (
   remove_proxydock_binary() { installed=false; }
 
   local output
-  output=$(main uninstall --yes)
+  output=$(main uninstall)
   [[ "${output}" == *"自身卸载"* ]] || fail "missing uninstall header"
-  [[ "${output}" == *"ProxyDock 自身已卸载"* ]] || fail "missing uninstall result"
-  [[ "${output}" == *"Docker 容器、镜像、节点配置和管理数据均已保留"* ]] || fail "missing retained data notice"
+  [[ "${output}" == *"ProxyDock 自身已卸载。"* ]] || fail "missing uninstall result"
+  [[ "${output}" == *"Docker 容器、镜像、节点配置和管理数据均已保留。"* ]] || fail "missing retained data notice"
 )
 
 test_uninstall_is_idempotent() (
@@ -112,19 +120,10 @@ test_uninstall_is_idempotent() (
   [[ "${output}" == *"当前未安装，无需卸载"* ]] || fail "missing already-uninstalled result"
 )
 
-test_old_action_flags_are_rejected() (
-  source "${script_dir}/install.sh"
-  local action output
-  for action in --update --uninstall; do
-    if output=$(parse_arguments "${action}" 2>&1); then fail "obsolete action accepted: ${action}"; fi
-    [[ "${output}" == *"未知参数"* ]] || fail "wrong argument error: ${output}"
-  done
-)
-
 test_version_file_fallback() (
   source "${script_dir}/install.sh"
   require_root() { return; }
-  detect_current_version() { current_version=v1.2.3; }
+  detect_current_version() { current_version=v1.2.3; current_installed=true; }
   download() {
     local url=$1 output=$2
     case "${url}" in
@@ -142,15 +141,15 @@ test_version_file_fallback() (
   download_direct() { return 1; }
 
   local output
-  output=$(main --yes)
-  [[ "${output}" == *"警告"* && "${output}" == *"GitHub Releases API 不可用，改用 Release version 文件"* ]] || fail "missing API fallback status"
-  [[ "${output}" == *"最新正式版本：v1.2.3（Release version 文件）"* ]] || fail "version fallback failed"
+  output=$(main)
+  [[ "${output}" == *"切换版本来源"* && "${output}" == *"GitHub Releases API 不可用，改用 Release version 文件"* ]] || fail "missing API fallback status"
+  [[ "${output}" == *"v1.2.3（Release version 文件）"* ]] || fail "version fallback failed"
 )
 
 test_api_failure_retries_without_proxy() (
   source "${script_dir}/install.sh"
   require_root() { return; }
-  detect_current_version() { current_version=v1.2.3; }
+  detect_current_version() { current_version=v1.2.3; current_installed=true; }
   download() {
     [[ "$1" == "${latest_release_api}" ]] || fail "unexpected proxied download: $1"
     return 1
@@ -163,59 +162,27 @@ test_api_failure_retries_without_proxy() (
 
   local output
   output=$(main)
-  [[ "${output}" == *"尝试忽略代理直连"* ]] || fail "missing direct retry notice"
-  [[ "${output}" == *"最新正式版本：v1.2.3（GitHub Releases API 直连）"* ]] || fail "direct API retry failed"
+  [[ "${output}" == *"切换下载方式"* && "${output}" == *"尝试忽略代理直连"* ]] || fail "missing direct retry notice"
+  [[ "${output}" == *"v1.2.3（GitHub Releases API 直连）"* ]] || fail "direct API retry failed"
   [[ "${output}" != *"改用 Release version 文件"* ]] || fail "version fallback ran after successful direct retry"
 )
 
-operation_column() {
-  local plain
-  plain=$(printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g')
-  local prefix=${plain%%│*}
-  display_width "${prefix}"
-}
-
-test_operation_columns_and_debug_commands() (
+test_release_files_do_not_bypass_proxy() (
   source "${script_dir}/install.sh"
-  local name line column
-  for name in "校验 Xray 配置" "Check" "校验 Check"; do
-    line=$(op "" info "${name}" "详情")
-    column=$(operation_column "${line}")
-    [[ "${column}" == 17 ]] || fail "${name} column ${column}: ${line}"
-  done
-  local brief
-  brief=$(brief_command curl --silent --show-error --output /tmp/out https://example.test/file)
-  [[ "${brief}" == "curl … https://example.test/file" ]] || fail "curl brief: ${brief}"
-  brief=$(brief_command sha256sum --check --status -)
-  [[ "${brief}" == "sha256sum --check …" ]] || fail "checksum brief: ${brief}"
-  brief=$(brief_command cp -p -- /src /dst)
-  [[ "${brief}" == "cp … /src /dst" ]] || fail "cp brief: ${brief}"
-  brief=$(brief_command install -m 0755 /src /dst)
-  [[ "${brief}" == "install … /src /dst" ]] || fail "install brief: ${brief}"
-  debug=true
-  line=$(op "" info "命令详情" "$(quote_command curl --output /tmp/out https://example.test/file)")
-  [[ "${line}" == *"命令详情"* && "${line}" == *"curl"* && "${line}" == *"https://example.test/file"* ]] || fail "debug command: ${line}"
-  column=$(operation_column "${line}")
-  [[ "${column}" == 17 ]] || fail "debug column ${column}: ${line}"
-  local status=0 output
-  output=$(die "下载程序失败" 2>&1) || status=$?
-  [[ ${status} -eq 1 && "${output}" == *"操作失败"* && "${output}" == *"│"* && "${output}" == *"下载程序失败"* ]] || fail "download failure format: ${output}"
-  column=$(operation_column "${output}")
-  [[ "${column}" == 17 ]] || fail "failure column ${column}: ${output}"
-  parse_arguments --debug update --yes
-  [[ "${debug}" == true && "${requested_action}" == update && "${assume_yes}" == true ]] || fail "debug flag was not parsed"
-  [[ "$(print_help)" == *"--debug"* ]] || fail "help missing --debug"
-)
+  require_root() { return; }
+  detect_current_version() { current_version=v1.2.2; current_installed=true; }
+  download() {
+    local url=$1 output=$2
+    case "${url}" in
+      "${latest_release_api}") printf '{"tag_name":"v1.2.3"}\n' > "${output}" ;;
+      *) return 1 ;;
+    esac
+  }
+  download_direct() { printf 'direct\n' > "${test_root}/direct"; return 1; }
 
-test_colored_operation_keeps_separator_column() (
-  PROXYDOCK_COLOR=always
-  unset NO_COLOR
-  source "${script_dir}/install.sh"
-  local line plain
-  line=$(op check step "校验 Xray 配置" "通过")
-  plain=$(printf '%s' "${line}" | sed $'s/\033\\[[0-9;]*m//g')
-  [[ "$(operation_column "${plain}")" == 17 ]] || fail "colored column moved: ${line}"
-  [[ "${line}" == *$'\033[1;38;5;208m校验 Xray 配置\033[0m'* ]] || fail "label was not colored after padding: ${line}"
+  # die calls exit, so main must run in its own subshell or it ends this test.
+  if ( main >/dev/null 2>&1 ); then fail "release download failure was ignored"; fi
+  [[ ! -e "${test_root}/direct" ]] || fail "checksum or program download bypassed the proxy"
 )
 
 test_curl_direct_download_bypasses_all_proxies() (
@@ -238,13 +205,11 @@ test_automatic_mode_skips_when_already_current
 test_color_controls
 test_no_color_is_respected
 test_version_comparison_and_classification
-test_update_argument_is_supported
+test_arguments
 test_uninstall_removes_only_proxydock_binary
 test_uninstall_is_idempotent
-test_old_action_flags_are_rejected
 test_api_failure_retries_without_proxy
+test_release_files_do_not_bypass_proxy
 test_curl_direct_download_bypasses_all_proxies
-test_operation_columns_and_debug_commands
-test_colored_operation_keeps_separator_column
 test_version_file_fallback
 printf 'install_test: ok\n'

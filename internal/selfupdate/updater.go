@@ -14,13 +14,9 @@ import (
 )
 
 type Options struct {
-	Uninstall      bool
-	AssumeYes      bool
-	Version        string
-	Repository     string
-	Force          bool
-	AllowDowngrade bool
-	Debug          bool
+	Uninstall bool
+	AssumeYes bool
+	Version   string
 }
 
 type Runner interface {
@@ -37,8 +33,21 @@ func (u Updater) Run(ctx context.Context, opts Options) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if opts.Uninstall && (opts.Version != "" || opts.Repository != "" || opts.Force || opts.AllowDowngrade) {
-		return fmt.Errorf("版本、仓库、重装和降级选项仅用于更新程序")
+	if opts.Uninstall && opts.Version != "" {
+		return fmt.Errorf("版本选项仅用于更新程序")
+	}
+	if opts.Version != "" {
+		previous, existed := os.LookupEnv("PROXYDOCK_VERSION")
+		if err := os.Setenv("PROXYDOCK_VERSION", opts.Version); err != nil {
+			return fmt.Errorf("准备安装脚本: %w", err)
+		}
+		defer func() {
+			if existed {
+				_ = os.Setenv("PROXYDOCK_VERSION", previous)
+				return
+			}
+			_ = os.Unsetenv("PROXYDOCK_VERSION")
+		}()
 	}
 	file, err := os.CreateTemp("", "proxydock-management-*.sh")
 	if err != nil {
@@ -52,28 +61,14 @@ func (u Updater) Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("写入安装脚本: %w", err)
 	}
+	args := []string{file.Name()}
 	action := "update"
 	if opts.Uninstall {
 		action = "uninstall"
+		args = append(args, "uninstall")
 	}
-	args := []string{file.Name(), action}
 	if opts.AssumeYes {
 		args = append(args, "--yes")
-	}
-	if opts.Version != "" {
-		args = append(args, "--version", opts.Version)
-	}
-	if opts.Repository != "" {
-		args = append(args, "--repository", opts.Repository)
-	}
-	if opts.Force {
-		args = append(args, "--force")
-	}
-	if opts.AllowDowngrade {
-		args = append(args, "--allow-downgrade")
-	}
-	if opts.Debug {
-		args = append(args, "--debug")
 	}
 	runner := u.Runner
 	if runner == nil {
@@ -97,8 +92,8 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, input io.Reader, stdout, stderr io.Writer, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = input, stdout, stderr
-	// Send cancellation to the installer and its download/verification children.
-	// SIGTERM lets the shell restore an interrupted replacement before exiting.
+	// Send cancellation to the installer and its download children.
+	// SIGTERM lets the shell remove its temporary files before exiting.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err == syscall.ESRCH {

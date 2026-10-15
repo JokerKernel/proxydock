@@ -18,7 +18,7 @@ ProxyDock 是面向 Linux 的 Docker 代理管理工具，提供中文交互菜�
 curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | sudo bash
 ```
 
-安装脚本从本仓库的 GitHub Release 获取 amd64/arm64 程序，校验 `SHA256SUMS` 和实际版本后原子安装到 `/usr/local/sbin/proxydock`。同版本跳过，默认不降级；安装或更新失败会保留或恢复原程序。Docker Engine 与 Compose 需提前安装。
+安装脚本从本仓库的 GitHub Release 获取 amd64/arm64 程序，校验 `SHA256SUMS` 后原子安装到 `/usr/local/sbin/proxydock`。同版本跳过，当前版本更高时也跳过；替换前失败会保留原程序。Docker Engine 与 Compose 需提前安装。
 
 需要进入管理菜单时再运行 `sudo proxydock`；已是 root 用户时直接运行 `proxydock`。
 
@@ -26,10 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | \
-  sudo bash -s -- --version v1.0.0
+  sudo PROXYDOCK_VERSION=v1.0.0 bash
 ```
 
-版本号应替换为本仓库已发布的版本。完整参数和自定义安装目录见[安装与更新指南](docs/installation.md)。
+版本号应替换为本仓库已发布的版本。安装和卸载见[安装与更新指南](docs/installation.md)。
 
 ## 从源码安装
 
@@ -64,7 +64,7 @@ sudo proxydock remove --yes
 sudo proxydock cleanup --yes
 ```
 
-`update` 更新 ProxyDock 程序，`upgrade` 升级 Xray 镜像。程序更新和卸载通过命令行执行。程序更新使用随二进制内置的安装脚本，安装、校验与回滚行为与一键安装一致。脚本也支持 `sudo bash scripts/install.sh update` 和 `sudo bash scripts/install.sh uninstall --yes`。
+`update` 更新 ProxyDock 程序，`upgrade` 升级 Xray 镜像。程序更新和卸载通过命令行执行。程序更新使用随二进制内置的安装脚本，安装和校验行为与一键安装一致。脚本也支持 `sudo bash scripts/install.sh` 和 `sudo bash scripts/install.sh uninstall`。
 
 ## 文档
 
