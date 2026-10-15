@@ -80,19 +80,6 @@ func (m *Manager) askGenerateUI(ctx context.Context, u *ui, opts model.GenerateO
 		opts.StandardConfig = choice == 2
 		opts.ApplyFallbackPolicy = true
 		if opts.XrayFallbackGuard {
-			fmt.Fprintln(u.out, "\nHTTP 回落域名限制")
-			u.menuChoice("1", "不限制 Host（默认）")
-			u.menuChoice("2", "限制 Host（明文 HTTP 仅放行当前 SNI）")
-			defaultHTTP := 1
-			if opts.XrayFallbackHTTPDomain {
-				defaultHTTP = 2
-			}
-			choice, err = u.chooseNumberCancelable("请选择 HTTP 回落策略", 1, 2, defaultHTTP)
-			if err != nil {
-				return opts, err
-			}
-			opts.XrayFallbackHTTPDomain = choice == 2
-
 			fmt.Fprintln(u.out, "\n严格匹配回落域名")
 			u.menuChoice("1", "允许子域名（默认）")
 			u.menuChoice("2", "严格匹配（仅放行完整域名）")
@@ -105,6 +92,19 @@ func (m *Manager) askGenerateUI(ctx context.Context, u *ui, opts model.GenerateO
 				return opts, err
 			}
 			opts.XrayFallbackExactDomain = choice == 2
+
+			fmt.Fprintln(u.out, "\nHTTP 回落域名限制")
+			u.menuChoice("1", "不限制 Host（默认）")
+			u.menuChoice("2", "限制 Host（明文 HTTP 仅放行当前 SNI）")
+			defaultHTTP := 1
+			if opts.XrayFallbackHTTPDomain {
+				defaultHTTP = 2
+			}
+			choice, err = u.chooseNumberCancelable("请选择 HTTP 回落策略", 1, 2, defaultHTTP)
+			if err != nil {
+				return opts, err
+			}
+			opts.XrayFallbackHTTPDomain = choice == 2
 		} else {
 			opts.XrayFallbackPort = 0
 			opts.XrayFallbackHTTPDomain = false

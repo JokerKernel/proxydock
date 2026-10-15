@@ -34,7 +34,7 @@ func TestAskGenerateRealityFlowMatchesMainline(t *testing.T) {
 		t.Fatalf("identity options=%#v", opts)
 	}
 	for _, want := range []string{
-		"HTTP 回落域名限制", "不限制 Host       -- 默认", "严格匹配回落域名", "允许子域名        -- 默认",
+		"严格匹配回落域名", "允许子域名        -- 默认", "HTTP 回落域名限制", "不限制 Host       -- 默认",
 		"公网地址获取方式", "物理网卡", "api.ipify.org", "监听端口 [443]", "本机 tunnel 回落端口", "用户名称", "入站标签",
 		"REALITY SNI（输入域名；直接回车自动测速候选）", "REALITY SNI 候选检测",
 		"配置确认：REALITY 回落目标", "Target：www.bing.com:443", "确认 SNI 和 REALITY target？",
@@ -45,6 +45,9 @@ func TestAskGenerateRealityFlowMatchesMainline(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "REALITY target:") || strings.Contains(out.String(), "REALITY target 必须为 host:port") {
 		t.Fatalf("target was asked as a blank field:\n%s", out.String())
+	}
+	if exact, httpHost := strings.Index(out.String(), "严格匹配回落域名"), strings.Index(out.String(), "HTTP 回落域名限制"); exact < 0 || httpHost < exact {
+		t.Fatalf("fallback domain prompts are out of order:\n%s", out.String())
 	}
 }
 
@@ -102,7 +105,7 @@ func TestAskGenerateCanRestrictFallbackDomains(t *testing.T) {
 		return []sniCandidate{{Domain: candidates[0], Latency: time.Millisecond, TLSVersion: "1.3"}}, nil
 	}
 	var out bytes.Buffer
-	// protocol, mode, HTTP restrict, exact match, address method, server, port, fallback, user, tag, empty SNI, candidate, confirm
+	// protocol, mode, exact match, HTTP restrict, address method, server, port, fallback, user, tag, empty SNI, candidate, confirm
 	input := "\n\n2\n2\n" + strings.Repeat("\n", 7) + "1\n\n"
 	opts, err := m.askGenerateUI(context.Background(), newUI(strings.NewReader(input), &out), model.GenerateOptions{})
 	if err != nil {
