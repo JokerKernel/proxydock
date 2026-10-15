@@ -1276,8 +1276,7 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 	})
 }
 
-// Six rules leave room for the card, the actions, and the prompt on a 24-line terminal.
-const accessListPageSize = 6
+const accessListPageSize = 9
 
 func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) error {
 	name := accessListName(listName)

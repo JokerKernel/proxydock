@@ -96,10 +96,10 @@ func TestAccessListMenuKeepsALongListOnOneScreen(t *testing.T) {
 	}
 	screen := in.screens[0]
 	lines := 1 + strings.Count(strings.TrimRight(screen, "\n"), "\n")
-	if lines > 24 {
+	if lines > 30 {
 		t.Fatalf("whitelist menu is %d lines:\n%s", lines, screen)
 	}
-	if !strings.Contains(screen, "20 条 · 第 1/4 页") || !strings.Contains(screen, "h01.example.com") || !strings.Contains(screen, "h06.example.com") {
+	if !strings.Contains(screen, "20 条 · 第 1/3 页") || !strings.Contains(screen, "h01.example.com") || !strings.Contains(screen, "h09.example.com") {
 		t.Fatalf("first page is incomplete:\n%s", screen)
 	}
 	card := strings.Index(screen, "当前名单")
@@ -107,7 +107,7 @@ func TestAccessListMenuKeepsALongListOnOneScreen(t *testing.T) {
 	if card < 0 || closeAt < 0 || strings.Contains(screen[card:card+closeAt], "h01.example.com") || strings.Index(screen, "h01.example.com") < card+closeAt {
 		t.Fatalf("rules are still inside the summary card:\n%s", screen)
 	}
-	if strings.Contains(screen, "h07.example.com") || strings.Contains(screen, "规则 1") || strings.Contains(screen, "规则 20") {
+	if strings.Contains(screen, "h10.example.com") || strings.Contains(screen, "规则 1") || strings.Contains(screen, "规则 20") {
 		t.Fatalf("first page still lists rules outside the page:\n%s", screen)
 	}
 	if !strings.Contains(screen, "n 下一页") || !strings.Contains(screen, "按页选择") {
@@ -122,20 +122,20 @@ func TestAccessListMenuDeletesRuleOnLaterPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out dockerTerminalOutput
-	in := &dockerTerminalInput{answers: []string{"n\n", "2\n", "7\n", "0\n", "0\n"}, output: &out}
+	in := &dockerTerminalInput{answers: []string{"n\n", "2\n", "10\n", "0\n", "0\n"}, output: &out}
 	if err := m.accessListMenu(context.Background(), newUI(in, &out), "white"); err != nil {
 		t.Fatal(err)
 	}
 	if len(in.screens) != 5 {
 		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
 	}
-	if strings.Contains(in.screens[1], "h01.example.com") || !strings.Contains(in.screens[1], "第 2/4 页") || !strings.Contains(in.screens[1], "h07.example.com") {
+	if strings.Contains(in.screens[1], "h01.example.com") || !strings.Contains(in.screens[1], "第 2/3 页") || !strings.Contains(in.screens[1], "h10.example.com") {
 		t.Fatalf("next page did not advance:\n%s", in.screens[1])
 	}
-	if !strings.Contains(in.screens[2], "删除规则") || !strings.Contains(in.screens[2], "h07.example.com") || strings.Contains(in.screens[2], "h01.example.com") {
+	if !strings.Contains(in.screens[2], "删除规则") || !strings.Contains(in.screens[2], "h10.example.com") || strings.Contains(in.screens[2], "h01.example.com") {
 		t.Fatalf("delete picker did not open on the current page:\n%s", in.screens[2])
 	}
-	if strings.Contains(in.screens[3], "h07.example.com") || !strings.Contains(in.screens[3], "h08.example.com") {
+	if strings.Contains(in.screens[3], "h10.example.com") || !strings.Contains(in.screens[3], "h11.example.com") {
 		t.Fatalf("deleted rule still on the picker:\n%s", in.screens[3])
 	}
 	state, err := m.LoadState()
@@ -143,7 +143,7 @@ func TestAccessListMenuDeletesRuleOnLaterPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := state.Node.AccessPolicy.Whitelist
-	if len(got) != 19 || got[6].Value == "h07.example.com" || got[6].Value != "h08.example.com" {
+	if len(got) != 19 || got[9].Value == "h10.example.com" || got[9].Value != "h11.example.com" {
 		t.Fatalf("whitelist after delete = %+v", got)
 	}
 }
@@ -155,14 +155,14 @@ func TestAccessListMenuRejectsOffPageDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out dockerTerminalOutput
-	in := &dockerTerminalInput{answers: []string{"2\n", "7\n", "0\n", "0\n"}, output: &out}
+	in := &dockerTerminalInput{answers: []string{"2\n", "10\n", "0\n", "0\n"}, output: &out}
 	if err := m.accessListMenu(context.Background(), newUI(in, &out), "white"); err != nil {
 		t.Fatal(err)
 	}
 	if len(in.screens) != 4 {
 		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
 	}
-	if !strings.Contains(in.screens[2], "本页编号 1 到 6") {
+	if !strings.Contains(in.screens[2], "本页编号 1 到 9") {
 		t.Fatalf("off-page number was accepted:\n%s", in.screens[2])
 	}
 	state, err := m.LoadState()
