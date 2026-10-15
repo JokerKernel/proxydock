@@ -83,7 +83,7 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 		t.Fatal("submenu navigation should return directly without a pause")
 	}
 	rootScreen := in.screens[0]
-	for _, want := range []string{"安装与更新", "部署容器和更新容器", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
+	for _, want := range []string{"安装与更新", "部署容器和更新容器", "生成、修改、查看与服务管理", "4   清理容器", "5   删除实例数据", "6   恢复中断操作"} {
 		if !strings.Contains(rootScreen, want) {
 			t.Fatalf("root menu missing %q: %s", want, rootScreen)
 		}
@@ -91,7 +91,7 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 	if strings.Contains(rootScreen, "4   服务管理") || strings.Contains(rootScreen, "专用运行用户") {
 		t.Fatalf("root menu kept a native-only or old item: %s", rootScreen)
 	}
-	if !strings.Contains(rootScreen, "中转节点配置\n\n  4   移除容器") {
+	if !strings.Contains(rootScreen, "中转节点配置\n\n  4   清理容器") {
 		t.Fatalf("root menu blank line is not between items 3 and 4:\n%s", rootScreen)
 	}
 	if strings.Contains(rootScreen, "保留配置和数据\n\n  5   删除实例数据") {

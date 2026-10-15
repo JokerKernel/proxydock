@@ -52,7 +52,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
-		u.menuChoice("4", "移除容器（保留配置和数据）")
+		u.menuChoice("4", "清理容器（保留配置和数据）")
 		u.menuChoice("5", "删除实例数据（永久删除配置、凭据、证书和备份）")
 		u.menuChoice("6", "恢复中断操作（回滚未完成的配置修改或升级）")
 		u.menuChoice("0/q", "退出")
