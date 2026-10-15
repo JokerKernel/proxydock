@@ -432,11 +432,24 @@ func (m *Manager) confirmRemove(ctx context.Context, u *ui) error {
 }
 
 func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
-	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, confirmSection{title: "将执行", items: []string{"停止并移除本实例容器，再清理实例数据", "停止或移除失败则中止删除", "清理本项目的空闲默认网络"}}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "保留", items: []string{"Docker 镜像、ProxyDock 程序和用户导出配置"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
-	if err := u.confirm("清理本实例容器，并永久删除 Docker Xray 配置、凭据、证书和备份？"); err != nil {
+	lease, err := m.BeginCleanup(ctx)
+	if err != nil {
 		return err
 	}
-	return m.Cleanup(ctx)
+	defer lease.Close()
+	sections := []confirmSection{{title: "将执行", items: []string{"停止并移除本实例容器，再清理实例数据", "停止或移除失败则中止删除", "清理本项目的空闲默认网络"}}, {title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, {title: "保留", items: []string{"Docker 镜像、ProxyDock 程序和用户导出配置"}}, {title: "数据保护", items: []string{"此操作不会创建新备份"}}}
+	prompt := "清理本实例容器，并永久删除 Docker Xray 配置、凭据、证书和备份？"
+	if lease.conflict != nil {
+		sections[0].items[0] = "停止并移除上述同名容器，再清理本实例数据"
+		sections = append([]confirmSection{{title: "同名容器冲突", items: lease.conflictDetails()}}, sections...)
+		prompt = "确认停止并移除上述同名容器，并永久删除本实例数据？"
+	}
+	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, sections...)
+	if err := u.confirm(prompt); err != nil {
+		return err
+	}
+	lease.approveConflict()
+	return lease.Cleanup()
 }
 
 func (m *Manager) instanceRows(status Status) [][2]string {

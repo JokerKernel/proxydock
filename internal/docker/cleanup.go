@@ -9,6 +9,25 @@ import (
 	"syscall"
 )
 
+func (l *CleanupLease) conflictDetails() []string {
+	if l.conflict == nil {
+		return nil
+	}
+	return []string{
+		"同名容器不属于 ProxyDock；确认后会停止并移除该容器",
+		"容器名称：" + Container,
+		"容器 ID：" + l.conflict.ID,
+		"镜像 ID：" + l.conflict.Image,
+		"容器状态：" + containerStateLabel(l.conflict.State.Status),
+	}
+}
+
+func (l *CleanupLease) approveConflict() {
+	if l.conflict != nil {
+		l.approvedContainerID = l.conflict.ID
+	}
+}
+
 const cleanupWritePrefix = ".xray-cleanup-write-"
 
 var cleanupWritePattern = regexp.MustCompile(`^\.xray-cleanup-write-[a-f0-9]{24}$`)

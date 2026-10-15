@@ -555,6 +555,22 @@ func (m *Manager) Remove(ctx context.Context) error {
 	})
 }
 func (m *Manager) CheckCleanup(ctx context.Context) error {
+	return m.checkCleanup(ctx, "")
+}
+
+func (m *Manager) inspectCleanupContainer(ctx context.Context, approvedID string) (*inspection, error) {
+	return m.inspectWithCheck(ctx, func(in *inspection) error {
+		if approvedID != "" && in.ID != approvedID {
+			return fmt.Errorf("同名容器已更换，请重新确认")
+		}
+		if err := m.checkOwned(in); err != nil && (approvedID == "" || in.ID != approvedID) {
+			return err
+		}
+		return nil
+	})
+}
+
+func (m *Manager) checkCleanup(ctx context.Context, approvedID string) error {
 	if err := m.rootCheck(); err != nil {
 		return err
 	}
@@ -570,7 +586,7 @@ func (m *Manager) CheckCleanup(ctx context.Context) error {
 	if err := m.checkProject(ctx); err != nil {
 		return err
 	}
-	in, err := m.inspect(ctx)
+	in, err := m.inspectCleanupContainer(ctx, approvedID)
 	if err != nil {
 		return err
 	}
@@ -623,9 +639,11 @@ func (m *Manager) Cleanup(ctx context.Context) error {
 // CleanupLease holds the Docker lock across entry-layer coordination. The
 // module never calls back into native business code.
 type CleanupLease struct {
-	manager *Manager
-	ctx     context.Context
-	release func()
+	manager             *Manager
+	ctx                 context.Context
+	release             func()
+	conflict            *inspection
+	approvedContainerID string
 }
 
 func (m *Manager) BeginCleanup(ctx context.Context) (*CleanupLease, error) {
@@ -633,6 +651,7 @@ func (m *Manager) BeginCleanup(ctx context.Context) (*CleanupLease, error) {
 	if err != nil {
 		return nil, err
 	}
+	var conflict *inspection
 	if _, err := m.lookPath("docker"); err == nil {
 		if err = m.checkDocker(); err == nil {
 			err = m.reapValidators(ctx)
@@ -641,12 +660,26 @@ func (m *Manager) BeginCleanup(ctx context.Context) (*CleanupLease, error) {
 			release()
 			return nil, err
 		}
+		in, err := m.inspectWithCheck(ctx, func(*inspection) error { return nil })
+		if err != nil {
+			release()
+			return nil, err
+		}
+		if in != nil && m.checkOwned(in) != nil {
+			conflict = in
+		}
 	}
-	if err = m.CheckCleanup(ctx); err != nil {
+	// Eligibility is read-only. A conflicting container still needs explicit
+	// confirmation through this lease before any stop or removal is allowed.
+	conflictID := ""
+	if conflict != nil {
+		conflictID = conflict.ID
+	}
+	if err = m.checkCleanup(ctx, conflictID); err != nil {
 		release()
 		return nil, err
 	}
-	return &CleanupLease{manager: m, ctx: ctx, release: release}, nil
+	return &CleanupLease{manager: m, ctx: ctx, release: release, conflict: conflict}, nil
 }
 func (l *CleanupLease) Close() {
 	if l.release != nil {
@@ -658,12 +691,15 @@ func (l *CleanupLease) Cleanup() error {
 	if l.release == nil {
 		return fmt.Errorf("清理锁已释放")
 	}
-	return l.manager.cleanupLocked(l.ctx)
+	if l.conflict != nil && l.approvedContainerID != l.conflict.ID {
+		return fmt.Errorf("同名容器不属于 ProxyDock，需明确确认后才能清理")
+	}
+	return l.manager.cleanupLocked(l.ctx, l.approvedContainerID)
 }
-func (m *Manager) cleanupLocked(ctx context.Context) error {
+func (m *Manager) cleanupLocked(ctx context.Context, approvedID string) error {
 	m.breakOp()
 	m.op(phaseCheck, levelInfo, "检查清理", "核验实例归属和数据目录")
-	if err := m.CheckCleanup(ctx); err != nil {
+	if err := m.checkCleanup(ctx, approvedID); err != nil {
 		return err
 	}
 	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
@@ -672,7 +708,7 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 		}
 	}
 	if _, err := m.lookPath("docker"); err == nil {
-		in, err := m.inspect(ctx)
+		in, err := m.inspectCleanupContainer(ctx, approvedID)
 		if err != nil {
 			return err
 		}
@@ -681,7 +717,15 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 				if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "container", "stop", in.ID); err != nil {
 					return fmt.Errorf("停止容器失败，未删除实例数据: %w", err)
 				}
-				current, err := m.inspectContainer(ctx, in.ID)
+				current, err := m.inspectContainerWithCheck(ctx, in.ID, func(current *inspection) error {
+					if current.ID != in.ID {
+						return fmt.Errorf("同名容器已更换，请重新确认")
+					}
+					if err := m.checkOwned(current); err != nil && (approvedID == "" || current.ID != approvedID) {
+						return err
+					}
+					return nil
+				})
 				if err != nil {
 					return err
 				}
@@ -692,7 +736,7 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 			if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "移除容器"}, "container", "rm", in.ID); err != nil {
 				return fmt.Errorf("移除容器失败，未删除实例数据: %w", err)
 			}
-			current, err := m.inspect(ctx)
+			current, err := m.inspectCleanupContainer(ctx, approvedID)
 			if err != nil {
 				return err
 			}

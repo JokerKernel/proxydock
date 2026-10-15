@@ -69,6 +69,23 @@ func (m *Manager) Command() *cobra.Command {
 	for _, action := range []string{"remove", "cleanup", "recover"} {
 		action := action
 		cmd.AddCommand(&cobra.Command{Use: action, Short: map[string]string{"remove": "移除容器，保留配置和数据", "cleanup": "移除容器并永久删除本模块配置和数据", "recover": "恢复未完成事务"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+			if action == "cleanup" {
+				lease, err := m.BeginCleanup(cmd.Context())
+				if err != nil {
+					return err
+				}
+				defer lease.Close()
+				prompt := "清理本实例容器，并永久删除 Docker Xray 配置、凭据、证书和备份？"
+				if lease.conflict != nil {
+					terminal.WriteOperation(m.errOut, terminal.LevelWarn, "同名容器冲突", strings.Join(lease.conflictDetails(), "\n"))
+					prompt = "确认停止并移除同名容器 " + lease.conflict.ID + "，并永久删除本实例数据？"
+				}
+				if err := m.confirmInput(cmd.InOrStdin(), yes, prompt); err != nil {
+					return err
+				}
+				lease.approveConflict()
+				return lease.Cleanup()
+			}
 			if action != "recover" {
 				if err := m.confirmInput(cmd.InOrStdin(), yes, "确认执行 Docker "+action+"？"); err != nil {
 					return err
@@ -77,8 +94,6 @@ func (m *Manager) Command() *cobra.Command {
 			switch action {
 			case "remove":
 				return m.Remove(cmd.Context())
-			case "cleanup":
-				return m.Cleanup(cmd.Context())
 			default:
 				return m.Recover(cmd.Context())
 			}

@@ -151,9 +151,12 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 				if f.foreignProject {
 					return []byte("unrelated\n"), nil
 				}
-				if f.container != nil {
+				if f.container != nil && f.container.Config.Labels["com.docker.compose.project"] == Project {
 					return []byte(Container + "\n"), nil
 				}
+				return nil, nil
+			}
+			if contains(a, "label=io.proxydock.instance="+Instance) && f.container != nil && f.container.Config.Labels["io.proxydock.instance"] != Instance {
 				return nil, nil
 			}
 			if f.container != nil {

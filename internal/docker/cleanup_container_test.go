@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -9,6 +10,189 @@ import (
 
 	"proxydock/internal/docker/model"
 )
+
+func foreignCleanupContainer(t *testing.T, running bool) (*Manager, *simulatedDocker) {
+	t.Helper()
+	m, f := deployed(t)
+	foreign := &inspection{ID: strings.Repeat("d", 64), Image: "sha256:" + strings.Repeat("e", 64), Name: "/" + Container}
+	foreign.State.Running = running
+	foreign.State.Status = "created"
+	if running {
+		foreign.State.Status = "running"
+	}
+	f.container, f.calls = foreign, nil
+	return m, f
+}
+
+func TestCleanupForeignContainerRequiresUserConfirmation(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		for _, answer := range []string{"1\n", "0\n", "\n", ""} {
+			t.Run(map[bool]string{false: "created/", true: "running/"}[running]+strings.TrimSpace(answer), func(t *testing.T) {
+				m, f := foreignCleanupContainer(t, running)
+				original := f.container
+				unchanged := savedOperationFiles(t, m)
+				var output bytes.Buffer
+				m.errOut = &output
+				err := m.confirmCleanup(context.Background(), newUI(strings.NewReader(answer), &output))
+				for _, want := range []string{"同名容器冲突", "不属于 ProxyDock", original.ID, original.Image, "确认停止并移除上述同名容器"} {
+					if !strings.Contains(output.String(), want) {
+						t.Fatalf("foreign container confirmation omitted %q:\n%s", want, output.String())
+					}
+				}
+				if answer != "1\n" {
+					if err == nil {
+						t.Fatal("cleanup proceeded without confirmation")
+					}
+					unchanged()
+					requireNoRuntimeChanges(t, f)
+					if f.container != original || f.container.State.Running != running {
+						t.Fatal("cancelled cleanup changed the foreign container")
+					}
+					return
+				}
+				if err != nil || f.container != nil || m.hasData() {
+					t.Fatalf("confirmed cleanup did not remove the named container and instance data: %v", err)
+				}
+				removals, stops := 0, 0
+				for _, call := range f.calls {
+					if call[0] == "container" && (call[1] == "stop" || call[1] == "rm") {
+						if len(call) != 3 || call[2] != original.ID {
+							t.Fatalf("cleanup did not use the confirmed container ID: %v", call)
+						}
+						if call[1] == "rm" {
+							removals++
+						} else {
+							stops++
+						}
+					}
+				}
+				if removals != 1 || running && stops != 1 || !running && stops != 0 {
+					t.Fatalf("unexpected confirmed cleanup calls: stops=%d removals=%d", stops, removals)
+				}
+			})
+		}
+	}
+}
+
+type cleanupConfirmationReader struct {
+	*strings.Reader
+	beforeRead func()
+}
+
+func (r *cleanupConfirmationReader) Read(p []byte) (int, error) {
+	if r.beforeRead != nil {
+		r.beforeRead()
+		r.beforeRead = nil
+	}
+	return r.Reader.Read(p)
+}
+
+func TestCleanupDoesNotRemoveReplacementForConfirmedContainer(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "foreign", true: "managed"}[managed], func(t *testing.T) {
+			m, f := deployed(t)
+			owned := f.container
+			foreign := &inspection{ID: strings.Repeat("d", 64), Image: "sha256:" + strings.Repeat("e", 64), Name: "/" + Container}
+			foreign.State.Status = "created"
+			f.container, f.calls = foreign, nil
+			unchanged := savedOperationFiles(t, m)
+			var output bytes.Buffer
+			input := &cleanupConfirmationReader{Reader: strings.NewReader("1\n"), beforeRead: func() {
+				if !strings.Contains(output.String(), foreign.ID) {
+					t.Fatal("confirmation did not identify the original container")
+				}
+				if managed {
+					f.container = owned
+				} else {
+					replacement := *foreign
+					replacement.ID = strings.Repeat("f", 64)
+					f.container = &replacement
+				}
+			}}
+			if err := m.confirmCleanup(context.Background(), newUI(input, &output)); err == nil || !strings.Contains(err.Error(), "重新确认") {
+				t.Fatalf("replacement container did not require confirmation: %v", err)
+			}
+			unchanged()
+			requireNoRuntimeChanges(t, f)
+		})
+	}
+}
+
+func TestCleanupCommandForeignContainerConfirmation(t *testing.T) {
+	for _, yes := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no-confirmation", true: "yes"}[yes], func(t *testing.T) {
+			m, f := foreignCleanupContainer(t, false)
+			original := f.container
+			unchanged := savedOperationFiles(t, m)
+			var output bytes.Buffer
+			cmd := m.Command()
+			cmd.SetIn(strings.NewReader(""))
+			cmd.SetOut(&output)
+			cmd.SetErr(&output)
+			args := []string{"cleanup"}
+			if yes {
+				args = append(args, "--yes")
+			}
+			cmd.SetArgs(args)
+			err := cmd.ExecuteContext(context.Background())
+			if !strings.Contains(output.String(), original.ID) || !strings.Contains(output.String(), "不属于 ProxyDock") {
+				t.Fatalf("CLI did not identify the conflicting container: %s", output.String())
+			}
+			if !yes {
+				if err == nil || !strings.Contains(err.Error(), "--yes") {
+					t.Fatalf("CLI did not require confirmation: %v", err)
+				}
+				unchanged()
+				requireNoRuntimeChanges(t, f)
+			} else if err != nil || f.container != nil || m.hasData() {
+				t.Fatalf("explicitly confirmed CLI cleanup failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestCleanupConflictingContainerWithoutInstanceData(t *testing.T) {
+	m, f := testManager(t)
+	f.container = &inspection{ID: strings.Repeat("d", 64), Image: "sha256:" + strings.Repeat("e", 64), Name: "/" + Container}
+	f.container.State.Status = "created"
+	if err := m.Cleanup(context.Background()); err == nil {
+		t.Fatal("unconfirmed cleanup removed a conflicting container")
+	}
+	requireNoRuntimeChanges(t, f)
+	var output bytes.Buffer
+	if err := m.confirmCleanup(context.Background(), newUI(strings.NewReader("1\n"), &output)); err != nil {
+		t.Fatal(err)
+	}
+	if f.container != nil || m.hasData() {
+		t.Fatal("confirmed cleanup left a conflicting container without data")
+	}
+}
+
+func TestCleanupForeignConfirmationStillChecksInstanceData(t *testing.T) {
+	for _, invalid := range []string{"owner", "transaction"} {
+		t.Run(invalid, func(t *testing.T) {
+			m, f := foreignCleanupContainer(t, true)
+			original := f.container
+			if invalid == "owner" {
+				if err := saveJSON(m.paths.Owner(), ownership{SchemaVersion: 1, ManagedBy: "other", InstanceID: Instance}); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := m.begin("config", nil); err != nil {
+				t.Fatal(err)
+			}
+			unchanged := savedOperationFiles(t, m)
+			var output bytes.Buffer
+			if err := m.confirmCleanup(context.Background(), newUI(strings.NewReader("1\n"), &output)); err == nil {
+				t.Fatal("foreign container confirmation bypassed instance data checks")
+			}
+			unchanged()
+			requireNoRuntimeChanges(t, f)
+			if f.container != original || !f.container.State.Running {
+				t.Fatal("rejected cleanup changed the foreign container")
+			}
+		})
+	}
+}
 
 type cleanupRunner struct {
 	*auditRuntimeRunner
