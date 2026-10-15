@@ -170,7 +170,7 @@ func TestMaintenanceReclaimsFailedCertificateAfterRecovery(t *testing.T) {
 
 func TestMaintenanceReclaimsStaleTemporaryFiles(t *testing.T) {
 	m, _ := deployed(t)
-	paths := []string{filepath.Join(m.paths.Staging(), "candidate-123456.json"), filepath.Join(m.paths.Staging(), "edit-654321.json"), filepath.Join(filepath.Dir(m.paths.Config()), ".docker-write-123456")}
+	paths := []string{filepath.Join(m.paths.Staging(), "candidate-123456.json"), filepath.Join(m.paths.Staging(), "edit-654321.json"), filepath.Join(filepath.Dir(m.paths.Config()), ".docker-write-"+strings.Repeat("a", 24))}
 	for _, path := range paths {
 		if err := atomicWrite(path, []byte("stale secret"), 0600); err != nil {
 			t.Fatal(err)
@@ -202,14 +202,14 @@ func (r *auditRuntimeRunner) Run(ctx context.Context, name string, args ...strin
 	validatorID := strings.Repeat("d", 64)
 	networkID := strings.Repeat("e", 64)
 	if len(a) > 1 && a[0] == "container" {
-		if a[1] == "ls" && contains(a, "label=io.proxyforge.instance="+Instance) && r.validator {
+		if a[1] == "ls" && contains(a, "label=io.proxydock.instance="+Instance) && r.validator {
 			record()
 			return []byte(validatorID + "\n"), nil
 		}
 		if a[1] == "inspect" && a[2] == validatorID && r.validator {
 			record()
 			in := inspection{ID: validatorID, Name: "/" + Container + "-check-" + strings.Repeat("a", 24)}
-			in.Config.Labels = map[string]string{"io.proxyforge.managed": "true", "io.proxyforge.instance": Instance, "io.proxyforge.role": "validator"}
+			in.Config.Labels = map[string]string{"io.proxydock.managed": "true", "io.proxydock.instance": Instance, "io.proxydock.role": "validator"}
 			if r.foreignValidator {
 				in.Name = "/unrelated-container"
 			}
@@ -334,7 +334,7 @@ func TestMaintenanceDeployRequiresConfirmationBeforeNetworkChange(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if md.Network != "" || f.container.HostConfig.NetworkMode != networkHost {
+	if md.Network != networkHost || f.container.HostConfig.NetworkMode != networkHost {
 		t.Fatal("unconfirmed deploy changed network")
 	}
 	t.Log("unconfirmed deploy leaves network and runtime unchanged")
@@ -346,7 +346,7 @@ func TestMaintenanceResumesCleanupWithoutOwner(t *testing.T) {
 	if err := m.Remove(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveJSON(m.paths.CleanupRecord(), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+	if err := saveJSON(m.paths.CleanupRecord(), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance}); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate interruption while deleting Data: the independent record survives.
@@ -367,7 +367,7 @@ func TestMaintenanceResumesCleanupWithoutOwner(t *testing.T) {
 func TestMaintenanceCleanupRecordBlocksWritesAndRejectsForeignRecord(t *testing.T) {
 	m, _ := deployed(t)
 	before := managedSnapshots(t, m)
-	if err := saveJSON(m.paths.CleanupRecord(), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+	if err := saveJSON(m.paths.CleanupRecord(), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance}); err != nil {
 		t.Fatal(err)
 	}
 	status, err := m.Status(context.Background())
@@ -493,10 +493,10 @@ func TestMaintenancePreservesManualAndImportedCertificateReferences(t *testing.T
 func TestMaintenanceReclaimsInterruptedCertificateCreation(t *testing.T) {
 	m, _ := deployed(t)
 	dir := filepath.Join(m.paths.TLS(), "incomplete")
-	if err := saveJSON(filepath.Join(dir, ".proxydock-certificate.json"), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+	if err := saveJSON(filepath.Join(dir, ".proxydock-certificate.json"), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance}); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(filepath.Join(dir, ".docker-write-998877"), []byte("partial key"), 0600); err != nil {
+	if err := atomicWrite(filepath.Join(dir, ".docker-write-"+strings.Repeat("a", 24)), []byte("partial key"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Recover(context.Background()); err != nil {

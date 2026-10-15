@@ -10,7 +10,7 @@ import (
 )
 
 func TestBriefDockerCommandKeepsActionAndDropsBoilerplate(t *testing.T) {
-	compose := []string{"--host", endpoint, "compose", "--project-name", Project, "--project-directory", "/opt/proxyforge/xray-docker", "--file", "/opt/proxyforge/xray-docker/compose.yaml"}
+	compose := []string{"--host", endpoint, "compose", "--project-name", Project, "--project-directory", "/opt/proxydock/xray-docker", "--file", "/opt/proxydock/xray-docker/compose.yaml"}
 	cases := []struct {
 		want string
 		args []string
@@ -21,7 +21,7 @@ func TestBriefDockerCommandKeepsActionAndDropsBoilerplate(t *testing.T) {
 		{"docker compose … down", append(append([]string{}, compose...), "down")},
 		{"docker compose version --short", []string{"--host", endpoint, "compose", "version", "--short"}},
 		{"docker image pull ghcr.io/xtls/xray-core:latest", []string{"--host", endpoint, "image", "pull", "ghcr.io/xtls/xray-core:latest"}},
-		{"docker run … run -test -config …", []string{"--host", endpoint, "run", "--rm", "--pull", "never", "--name", "check", "--mount", "type=bind,src=/tmp/c.json,dst=/run/proxyforge/config.json,readonly", "sha256:abc", "run", "-test", "-config", "/run/proxyforge/config.json"}},
+		{"docker run … run -test -config …", []string{"--host", endpoint, "run", "--rm", "--pull", "never", "--name", "check", "--mount", "type=bind,src=/tmp/c.json,dst=/run/proxydock/config.json,readonly", "sha256:abc", "run", "-test", "-config", "/run/proxydock/config.json"}},
 		{"docker run … version", []string{"--host", endpoint, "run", "--rm", "sha256:abc", "version"}},
 		{"docker run … x25519", []string{"--host", endpoint, "run", "--rm", "sha256:abc", "x25519"}},
 		{"docker container ls …", []string{"--host", endpoint, "container", "ls", "--all", "--format", "{{.ID}}"}},
@@ -64,7 +64,7 @@ func TestDebugLogsDoNotIncludePrivateKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Reset(context.Background(), model.ResetOptions{}); err != nil {
+	if err = m.Reset(context.Background(), model.ResetOptions{Credentials: true}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := m.LoadState()

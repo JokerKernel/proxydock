@@ -1,9 +1,9 @@
-name: proxyforge-xray
+name: proxydock-xray
 
 services:
   xray:
     image: "{{ .Image }}"
-    container_name: proxyforge-xray
+    container_name: proxydock-xray
     restart: unless-stopped
 {{ .Network }}    command: ["run", "-config", "/usr/local/etc/xray/config.json"]
     user: "0:0"
@@ -34,6 +34,6 @@ services:
         max-file: "3"
     stop_grace_period: 10s
     labels:
-      io.proxyforge.managed: "true"
-      io.proxyforge.core: "xray"
-      io.proxyforge.instance: "xray-docker"
+      io.proxydock.managed: "true"
+      io.proxydock.core: "xray"
+      io.proxydock.instance: "xray-docker"

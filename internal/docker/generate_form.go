@@ -160,7 +160,7 @@ func (m *Manager) askGenerateUI(ctx context.Context, u *ui, opts model.GenerateO
 	if opts.InboundTag == "" {
 		def := strings.TrimSpace(n.InboundTag)
 		if def == "" {
-			def = model.DefaultInboundTag(model.CoreXray)
+			def = model.DefaultInboundTag
 		}
 		opts.InboundTag, err = u.ask("入站标签", def)
 		if err != nil {

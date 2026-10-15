@@ -299,7 +299,7 @@ func TestLogsDoNotDependOnComposeAndStillCheckOwnership(t *testing.T) {
 			t.Fatalf("logs used Compose/environment checks: %v", call)
 		}
 	}
-	fake.container.Config.Labels["io.proxyforge.managed"] = "false"
+	fake.container.Config.Labels["io.proxydock.managed"] = "false"
 	fake.calls = nil
 	if _, err := m.Service(context.Background(), "logs"); err == nil {
 		t.Fatal("logs accepted a foreign container")
@@ -465,7 +465,7 @@ func (r *failedTemporaryContainerRunner) Run(ctx context.Context, name string, a
 			return nil, ctx.Err()
 		}
 		in := inspection{ID: r.temporaryID}
-		in.Config.Labels = map[string]string{"io.proxyforge.instance": Instance, "io.proxyforge.role": "validator"}
+		in.Config.Labels = map[string]string{"io.proxydock.instance": Instance, "io.proxydock.role": "validator"}
 		return json.Marshal([]inspection{in})
 	}
 	if c[0] == "container" && c[1] == "rm" {
@@ -514,7 +514,7 @@ func TestCredentialRotationDoesNotProbeUnchangedTarget(t *testing.T) {
 		called = true
 		return errors.New("target unavailable")
 	}
-	if err := m.Reset(context.Background(), model.ResetOptions{}); err != nil {
+	if err := m.Reset(context.Background(), model.ResetOptions{Credentials: true}); err != nil {
 		t.Fatal(err)
 	}
 	if called {
@@ -525,7 +525,7 @@ func TestCredentialRotationDoesNotProbeUnchangedTarget(t *testing.T) {
 	}
 }
 
-func TestConfigChangeDoesNotRewriteUnchangedSidecars(t *testing.T) {
+func TestConfigChangeStoresOnlyCanonicalState(t *testing.T) {
 	m, _ := deployed(t)
 	var writes []string
 	m.stateWrite = func(path string, data []byte, mode os.FileMode) error {
@@ -539,8 +539,8 @@ func TestConfigChangeDoesNotRewriteUnchangedSidecars(t *testing.T) {
 		t.Fatalf("unrelated sidecar writes: %v", writes)
 	}
 	for _, name := range []string{"access.json", "landings.json", "relays.json", "preferences.json"} {
-		if _, err := os.Stat(filepath.Join(m.paths.Data(), name)); err != nil {
-			t.Fatalf("historical file removed: %s %v", name, err)
+		if _, err := os.Stat(filepath.Join(m.paths.Data(), name)); !os.IsNotExist(err) {
+			t.Fatalf("obsolete sidecar created: %s %v", name, err)
 		}
 	}
 }

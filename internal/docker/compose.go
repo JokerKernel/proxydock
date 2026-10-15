@@ -66,7 +66,7 @@ func validImageID(s string) bool  { return shaPattern.MatchString(s) }
 
 func canonicalNetwork(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", networkHost:
+	case networkHost:
 		return networkHost
 	case networkPublish:
 		return networkPublish
@@ -75,7 +75,7 @@ func canonicalNetwork(value string) string {
 	}
 }
 
-func validNetwork(value string) bool { return canonicalNetwork(value) != "" }
+func validNetwork(value string) bool { return value == networkHost || value == networkPublish }
 
 func normalizeNetwork(value string) (string, error) {
 	mode := canonicalNetwork(value)
@@ -90,13 +90,6 @@ func networkLabel(value string) string {
 		return "端口映射"
 	}
 	return "宿主机网络"
-}
-
-func storedNetwork(mode string) string {
-	if canonicalNetwork(mode) == networkPublish {
-		return networkPublish
-	}
-	return ""
 }
 
 func renderCompose(image, network string, ports []publishedPort) ([]byte, error) {
@@ -116,15 +109,6 @@ func renderCompose(image, network string, ports []publishedPort) ([]byte, error)
 }
 
 func publishedPorts(n model.Node) []publishedPort {
-	return composePorts(n, false)
-}
-
-// legacyPublishedPorts is used only to recognize previously generated files.
-func legacyPublishedPorts(n model.Node) []publishedPort {
-	return composePorts(n, true)
-}
-
-func composePorts(n model.Node, legacy bool) []publishedPort {
 	var ports []publishedPort
 	seen := map[int]bool{}
 	add := func(port int, hostIP string) {
@@ -139,9 +123,6 @@ func composePorts(n model.Node, legacy bool) []publishedPort {
 		if access.Enabled && !access.UsesPrimaryInbound() {
 			add(access.Port, "")
 		}
-	}
-	if legacy && n.XrayFallbackGuard {
-		add(n.XrayFallbackPort, "127.0.0.1")
 	}
 	sort.Slice(ports, func(i, j int) bool {
 		if ports[i].HostIP != ports[j].HostIP {
@@ -216,10 +197,6 @@ func parsePortSpec(spec string) (publishedPort, error) {
 }
 
 func (m *Manager) composeFor(md Metadata, n *model.Node) ([]byte, error) {
-	return m.composeDefinition(md, n, false)
-}
-
-func (m *Manager) composeDefinition(md Metadata, n *model.Node, legacy bool) ([]byte, error) {
 	mode := canonicalNetwork(md.Network)
 	if mode == "" {
 		return nil, fmt.Errorf("网络方式无效，请使用 host 或 publish")
@@ -236,9 +213,6 @@ func (m *Manager) composeDefinition(md Metadata, n *model.Node, legacy bool) ([]
 		}
 		if n != nil {
 			ports = publishedPorts(*n)
-			if legacy {
-				ports = legacyPublishedPorts(*n)
-			}
 		}
 	}
 	return renderCompose(md.ImageRef, mode, ports)

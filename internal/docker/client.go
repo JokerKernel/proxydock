@@ -11,7 +11,7 @@ import (
 
 func (m *Manager) Client(ctx context.Context, format, name string) ([]byte, error) {
 	switch format {
-	case "", "native", "json", "clash", "mihomo", "yaml":
+	case "native", "clash":
 	default:
 		return nil, fmt.Errorf("客户端格式无效，可选 native 或 clash")
 	}
@@ -65,9 +65,9 @@ func (m *Manager) Client(ctx context.Context, format, name string) ([]byte, erro
 			}
 		}
 		switch format {
-		case "", "native", "json":
+		case "native":
 			output, err = m.codec.RenderClient(n)
-		case "clash", "mihomo", "yaml":
+		case "clash":
 			output, err = export.RenderClient(n)
 		}
 		return err

@@ -23,7 +23,7 @@ func TestHostComposeKeepsHostNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if md.Network != "" {
+	if md.Network != networkHost {
 		t.Fatalf("default network = %q", md.Network)
 	}
 }
@@ -263,7 +263,7 @@ func TestNetworkRecoveryAfterComposeRewrite(t *testing.T) {
 				case "host-to-publish":
 					md.Network = networkPublish
 				case "publish-to-host":
-					md.Network = ""
+					md.Network = networkHost
 				case "publish-port":
 					s.Node.Port = 9443
 				}
@@ -297,7 +297,7 @@ func installLegacyPublish(t *testing.T, m *Manager, f *simulatedDocker, running 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Freeze the old generated mappings independently of the compatibility code.
+	// Recreate the old generated mappings to verify they are rejected.
 	b, err := renderCompose(md.ImageRef, networkPublish, []publishedPort{
 		{Host: 8443, Container: 8443},
 		{HostIP: "127.0.0.1", Host: 62000, Container: 62000},
@@ -316,63 +316,24 @@ func installLegacyPublish(t *testing.T, m *Manager, f *simulatedDocker, running 
 	f.container.State.Running = running
 }
 
-func TestLegacyPublishReadOnlyAndMigration(t *testing.T) {
+func TestLegacyPublishIsRejectedWithoutMigration(t *testing.T) {
 	for _, running := range []bool{true, false} {
-		for _, failure := range []string{"none", "compose-config", "recreate", "health"} {
-			if failure == "health" && !running {
-				continue
+		t.Run(fmt.Sprintf("running=%t", running), func(t *testing.T) {
+			m, f := fallbackDeployment(t, networkPublish, running)
+			installLegacyPublish(t, m, f, running)
+			before := managedSnapshots(t, m)
+			f.calls = nil
+			if _, err := m.Status(context.Background()); err == nil {
+				t.Fatal("status accepted legacy compose")
 			}
-			t.Run(fmt.Sprintf("running=%t/%s", running, failure), func(t *testing.T) {
-				m, f := fallbackDeployment(t, networkPublish, running)
-				installLegacyPublish(t, m, f, running)
-				before := managedSnapshots(t, m)
-				if _, err := m.Status(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(before, managedSnapshots(t, m)) {
-					t.Fatal("status migrated legacy compose")
-				}
-				switch failure {
-				case "compose-config":
-					f.failComposeConfig = 1
-				case "recreate":
-					f.failComposeUp = 1
-				case "health":
-					f.healthFailures = 1
-				}
-				oldState := readFile(t, m.paths.State())
-				err := m.SetNetwork(context.Background(), networkPublish)
-				if failure != "none" {
-					if err == nil {
-						t.Fatal("migration failure concealed")
-					}
-					assertRestoredNetwork(t, m, f, before, running)
-					return
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				if strings.Contains(string(readFile(t, m.paths.Compose())), "127.0.0.1:62000:62000") {
-					t.Fatal("legacy mapping remains")
-				}
-				if string(oldState) != string(readFile(t, m.paths.State())) {
-					t.Fatal("migration changed node credentials or state")
-				}
-				if f.container.State.Running != running {
-					t.Fatal("migration changed running state")
-				}
-				md, err := m.metadata()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err = m.checkCompose(md); err != nil {
-					t.Fatal(err)
-				}
-				if _, err = m.inspect(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
+			if err := m.SetNetwork(context.Background(), networkPublish); err == nil {
+				t.Fatal("network change accepted legacy compose")
+			}
+			if !reflect.DeepEqual(before, managedSnapshots(t, m)) || f.container.State.Running != running {
+				t.Fatal("rejecting legacy compose changed files or running state")
+			}
+			requireNoRuntimeChanges(t, f)
+		})
 	}
 }
 
@@ -411,7 +372,7 @@ func TestRecoveryStillRejectsForeignContainer(t *testing.T) {
 			}
 			switch change {
 			case "label":
-				f.container.Config.Labels["io.proxyforge.managed"] = "false"
+				f.container.Config.Labels["io.proxydock.managed"] = "false"
 			case "mount":
 				f.container.Mounts[0].Source = "/foreign/config"
 			case "command":

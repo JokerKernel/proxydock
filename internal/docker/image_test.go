@@ -153,7 +153,7 @@ func TestImageVersionValidation(t *testing.T) {
 }
 
 func TestLatestDeployRequiresLatestPreparedChannel(t *testing.T) {
-	for _, selection := range []string{"latest", "stable", "pre-release"} {
+	for _, selection := range []string{"latest", "pre-release"} {
 		t.Run(selection, func(t *testing.T) {
 			m, fake := prepared(t)
 			fake.calls = nil
@@ -167,14 +167,13 @@ func TestLatestDeployRequiresLatestPreparedChannel(t *testing.T) {
 	}
 }
 
-func TestStableAndPrereleaseUseOfficialTags(t *testing.T) {
+func TestImageSelectionsUseOfficialTags(t *testing.T) {
 	for _, tc := range []struct {
 		selection, tag, channel, version string
 	}{
-		{"stable", Repository + ":latest", "latest", "26.4.1"},
+		{"latest", Repository + ":latest", "latest", "26.4.1"},
 		{"", Repository + ":latest", "latest", "26.4.1"},
-		{"pre-release", Repository + ":pre-release", "prerelease", "26.10.10"},
-		{"prerelease", Repository + ":pre-release", "prerelease", "26.10.10"},
+		{"pre-release", Repository + ":pre-release", "pre-release", "26.10.10"},
 	} {
 		t.Run(tc.selection+"/"+tc.tag, func(t *testing.T) {
 			m, fake := testManager(t)

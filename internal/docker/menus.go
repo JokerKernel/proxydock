@@ -203,10 +203,10 @@ func (m *Manager) deployCardRows(selection, network string) [][2]string {
 	}
 	target := "稳定版（latest）"
 	switch selection {
-	case "pre-release", "prerelease":
+	case "pre-release":
 		target = "pre-release"
 	default:
-		if selection != "" && selection != "stable" && selection != "latest" {
+		if selection != "" && selection != "latest" {
 			target = "指定版本 " + selection
 		}
 	}
@@ -268,7 +268,7 @@ func (m *Manager) chooseDeployChannel(u *ui, selection string) (string, error) {
 	u.menuChoice("2", "pre-release")
 	u.menuChoice("0/q", "返回")
 	def := 1
-	if selection == "pre-release" || selection == "prerelease" {
+	if selection == "pre-release" {
 		def = 2
 	}
 	choice, err := u.chooseNumberCancelable("请选择版本渠道", 1, 2, def)
@@ -345,9 +345,9 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 
 func shownVersion(version string) string {
 	switch strings.ToLower(strings.TrimSpace(version)) {
-	case "", "stable", "latest":
+	case "", "latest":
 		return "稳定版（latest）"
-	case "pre-release", "prerelease":
+	case "pre-release":
 		return "pre-release"
 	default:
 		return "指定版本 " + version
@@ -652,7 +652,7 @@ func (m *Manager) modifyMenu(ctx context.Context, u *ui) error {
 		case choice == 2 && tlsMode:
 			err = m.confirmReset(ctx, u, model.ResetOptions{Credentials: true}, "重置 UUID 会使现有客户端失效，TLS 证书保持不变。")
 		case choice == 2:
-			err = m.confirmReset(ctx, u, model.ResetOptions{}, "轮换凭据会使现有客户端失效，SNI 和 target 保持不变。")
+			err = m.confirmReset(ctx, u, model.ResetOptions{Credentials: true}, "轮换凭据会使现有客户端失效，SNI 和 target 保持不变。")
 		case choice == 3 && tlsMode:
 			err = m.confirmReset(ctx, u, model.ResetOptions{RotateCertificate: true}, "重新生成 TLS 证书后，需要用新指纹更新客户端。")
 		case choice == 3:
@@ -742,7 +742,7 @@ func (m *Manager) resetSNIInteractive(ctx context.Context, u *ui) error {
 	if err = u.confirm("重置节点 SNI 和 target？"); err != nil {
 		return err
 	}
-	return m.Reset(ctx, model.ResetOptions{SNI: sni, Target: target, PreserveCredentials: true})
+	return m.Reset(ctx, model.ResetOptions{SNI: sni, Target: target})
 }
 
 func (m *Manager) dnsMenu(ctx context.Context, u *ui) error {
@@ -760,7 +760,7 @@ func (m *Manager) dnsMenu(ctx context.Context, u *ui) error {
 	defaultChoice := 1
 	for index, profile := range profiles {
 		u.menuChoice(strconv.Itoa(index+1), dnsLabel(profile))
-		if profile == current || (profile == model.DNSProfilePublicCloudflare && current == model.DNSProfileCloudflare) || (profile == model.DNSProfilePublicGoogle && current == model.DNSProfileGoogle) {
+		if profile == current {
 			defaultChoice = index + 1
 		}
 	}

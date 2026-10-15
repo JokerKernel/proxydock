@@ -70,10 +70,10 @@ sudo proxydock cleanup --yes
 
 - [使用指南](docs/usage.md)：部署、配置、服务、升级回滚及文件位置。
 - [安装与更新指南](docs/installation.md)：一键安装、固定版本、程序更新与卸载。
-- [迁移说明](docs/migration.md)：旧命令映射和现有实例兼容。
+- [迁移说明](docs/migration.md)：命令映射及独立部署要求。
 - [开发指南](docs/development.md)：模块边界、测试、构建和发布。
 
-现有部署的目录、Compose 名称、归属标签与状态格式继续沿用 ProxyForge 的历史值，避免迁移数据或重建容器。详见迁移说明。
+运行目录使用 `/opt/proxydock`、`/var/lib/proxydock` 和 `/run/proxydock`，容器及 Compose 项目名称为 `proxydock-xray`，归属标签使用 `io.proxydock.*`。不兼容或自动迁移 ProxyForge 实例，详见迁移说明。
 
 ## 验证
 

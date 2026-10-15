@@ -1,5 +1,4 @@
 // Package docker owns ProxyDock's Xray Docker management.
-// Persistent identifiers retain the original ProxyForge names for compatibility.
 package docker
 
 import (
@@ -16,12 +15,11 @@ import (
 	"proxydock/internal/docker/xray"
 )
 
-// Keep these identifiers and Paths stable so existing deployments and unfinished
-// transactions can be managed without moving data or recreating containers.
+// Identifiers and paths belong exclusively to ProxyDock deployments.
 const Instance = "xray-docker"
-const Project = "proxyforge-xray"
+const Project = "proxydock-xray"
 const Service = "xray"
-const Container = "proxyforge-xray"
+const Container = "proxydock-xray"
 const Repository = "ghcr.io/xtls/xray-core"
 const endpoint = "unix:///var/run/docker.sock"
 
@@ -121,8 +119,8 @@ func (p Paths) resolve(path string) string {
 	}
 	return filepath.Join(p.Root, path[1:])
 }
-func (p Paths) Deploy() string   { return p.resolve("/opt/proxyforge/xray-docker") }
-func (p Paths) Data() string     { return p.resolve("/var/lib/proxyforge/docker/xray") }
+func (p Paths) Deploy() string   { return p.resolve("/opt/proxydock/xray-docker") }
+func (p Paths) Data() string     { return p.resolve("/var/lib/proxydock/docker/xray") }
 func (p Paths) Compose() string  { return filepath.Join(p.Deploy(), "compose.yaml") }
 func (p Paths) Config() string   { return filepath.Join(p.Deploy(), "config/config.json") }
 func (p Paths) TLS() string      { return filepath.Join(p.Deploy(), "tls") }
@@ -135,7 +133,7 @@ func (p Paths) Staging() string  { return filepath.Join(p.Data(), "staging") }
 func (p Paths) CleanupRecord() string {
 	return filepath.Join(filepath.Dir(p.Data()), "xray-cleanup.json")
 }
-func (p Paths) Lock() string { return p.resolve("/run/proxyforge/xray-docker.lock") }
+func (p Paths) Lock() string { return p.resolve("/run/proxydock/xray-docker.lock") }
 
 func checkPortFree(port int) error {
 	if port < 1 || port > 65535 {

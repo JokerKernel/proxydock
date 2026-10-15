@@ -61,13 +61,8 @@ func (*Codec) CurrentDNSProfile(config []byte) (string, error) {
 		if !ok {
 			return "custom", nil
 		}
-		switch address {
-		case "localhost":
+		if address == "localhost" {
 			return model.DNSProfileSystem, nil
-		case "1.1.1.1":
-			return model.DNSProfileCloudflare, nil
-		case "8.8.8.8":
-			return model.DNSProfileGoogle, nil
 		}
 	}
 	return "custom", nil

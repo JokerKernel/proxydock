@@ -105,8 +105,8 @@ func TestSecureDirectoryPinsOperationsAcrossSymlinkReplacement(t *testing.T) {
 
 func TestMaintenancePreservesFilesWithSimilarTemporaryPrefixes(t *testing.T) {
 	m, _ := deployed(t)
-	keep := []string{"candidate-notes.txt", "candidate-123.txt", "candidate-name.json", "edit-backup.json", ".docker-write-notes", ".edit-notes.json.swp"}
-	remove := []string{"candidate-123.json", "edit-456.json", ".edit-456.json.swp", ".docker-write-123", ".docker-write-" + strings.Repeat("a", 24)}
+	keep := []string{"candidate-notes.txt", "candidate-123.txt", "candidate-name.json", "edit-backup.json", ".docker-write-notes", ".docker-write-123", ".edit-notes.json.swp"}
+	remove := []string{"candidate-123.json", "edit-456.json", ".edit-456.json.swp", ".docker-write-" + strings.Repeat("a", 24)}
 	for _, name := range append(append([]string{}, keep...), remove...) {
 		if err := os.WriteFile(filepath.Join(m.paths.Staging(), name), []byte("dummy"), 0600); err != nil {
 			t.Fatal(err)

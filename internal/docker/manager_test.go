@@ -120,7 +120,7 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 	case "container":
 		switch a[1] {
 		case "ls":
-			if contains(a, "label=io.proxyforge.role=validator") {
+			if contains(a, "label=io.proxydock.role=validator") {
 				return nil, nil
 			}
 			joined := strings.Join(a, " ")
@@ -180,7 +180,7 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 			return []byte("Xray " + md.RequestedVersion + " (test build)\n"), nil
 		case "x25519":
 			key := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-			return []byte("PrivateKey: " + key + "\nPassword: " + key + "\nHash32: ignored\n"), nil
+			return []byte("PrivateKey: " + key + "\nPassword (PublicKey): " + key + "\nHash32: ignored\n"), nil
 		case "run":
 			if f.rejectValidation {
 				return nil, errors.New("invalid configuration")
@@ -295,7 +295,7 @@ func (f *simulatedDocker) newContainer(image string) {
 	in.Config.User = "0:0"
 	in.Config.Cmd = []string{"run", "-config", "/usr/local/etc/xray/config.json"}
 	in.Config.Entrypoint = []string{"/usr/local/bin/xray"}
-	in.Config.Labels = map[string]string{"io.proxyforge.managed": "true", "io.proxyforge.instance": Instance, "io.proxyforge.core": "xray", "com.docker.compose.project": Project, "com.docker.compose.service": Service}
+	in.Config.Labels = map[string]string{"io.proxydock.managed": "true", "io.proxydock.instance": Instance, "io.proxydock.core": "xray", "com.docker.compose.project": Project, "com.docker.compose.service": Service}
 	in.HostConfig.NetworkMode = "host"
 	in.HostConfig.ReadonlyRootfs = true
 	if b, err := os.ReadFile(f.manager.paths.Compose()); err == nil {
@@ -544,18 +544,18 @@ func TestCleanupRejectsContainersAndPreservesExternalFiles(t *testing.T) {
 	if err := m.Cleanup(context.Background()); err == nil {
 		t.Fatal("cleanup removed running container data")
 	}
-	f.container.Config.Labels["io.proxyforge.managed"] = "false"
+	f.container.Config.Labels["io.proxydock.managed"] = "false"
 	if err := m.Remove(context.Background()); err == nil {
 		t.Fatal("foreign container removed")
 	}
-	f.container.Config.Labels["io.proxyforge.managed"] = "true"
+	f.container.Config.Labels["io.proxydock.managed"] = "true"
 	if err := m.Remove(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(m.paths.State()); err != nil {
 		t.Fatal("remove erased state")
 	}
-	external := m.paths.resolve("/var/lib/proxyforge/state/xray.json")
+	external := m.paths.resolve("/var/lib/proxydock/state/xray.json")
 	if err := os.MkdirAll(filepath.Dir(external), 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -352,7 +352,7 @@ func TestStatusReportsInterruptedNetworkAsRecoverable(t *testing.T) {
 	if !reflect.DeepEqual(before, managedSnapshots(t, m)) || !bytes.Equal(journal, readFile(t, m.paths.Journal())) {
 		t.Fatal("status changed pending transaction")
 	}
-	f.container.Config.Labels["io.proxyforge.managed"] = "false"
+	f.container.Config.Labels["io.proxydock.managed"] = "false"
 	if _, err = m.Status(context.Background()); err == nil {
 		t.Fatal("pending transaction hid foreign container")
 	}

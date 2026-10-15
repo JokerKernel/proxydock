@@ -348,9 +348,9 @@ func isWideRune(r rune) bool {
 
 func channelLabel(channel string) string {
 	switch channel {
-	case "stable", "latest":
+	case "latest":
 		return "稳定版"
-	case "prerelease":
+	case "pre-release":
 		return "pre-release"
 	case "pinned":
 		return "指定版本"
@@ -371,12 +371,6 @@ func dnsLabel(profile string) string {
 		return "Cloudflare DoH（同时配置 Google）"
 	case model.DNSProfileDoHGoogle:
 		return "Google DoH（同时配置 Cloudflare）"
-	case model.DNSProfileCloudflare:
-		return "Cloudflare DNS（仅 1.1.1.1，旧单地址配置）"
-	case model.DNSProfileGoogle:
-		return "Google DNS（仅 8.8.8.8，旧单地址配置）"
-	case "none":
-		return "未配置内核 DNS（简化模式）"
 	case "implicit-system":
 		return "隐式系统 DNS（尚未写入配置）"
 	case "custom":

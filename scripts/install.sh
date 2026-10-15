@@ -394,9 +394,9 @@ parse_arguments() {
   local action_seen=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      install | update | --update | uninstall | --uninstall)
+      install | update | uninstall)
         [[ "${action_seen}" == false ]] || die "只能指定一个操作：install、update 或 uninstall"
-        requested_action=${1#--}
+        requested_action=$1
         action_seen=true
         shift
         ;;
@@ -602,30 +602,20 @@ resolve_latest_version() {
 select_asset() {
   local manifest=$1 architecture=$2 checksum asset extra
   [[ $(wc -c < "${manifest}") -le ${max_release_api_size} ]] || die "校验清单超过大小限制"
-  local preferred="proxydock_linux_${architecture}_${resolved_version}"
-  local legacy="proxydock_${resolved_version}_linux_${architecture}"
-  local preferred_matches=0 legacy_matches=0 preferred_checksum="" legacy_checksum=""
+  local expected="proxydock_linux_${architecture}_${resolved_version}"
+  local matches=0 expected_checksum=""
   while read -r checksum asset extra || [[ -n "${checksum}" ]]; do
     [[ -z "${extra:-}" && "${checksum}" =~ ^[0-9A-Fa-f]{64}$ ]] || continue
     asset=${asset#\*}
-    if [[ "${asset}" == "${preferred}" ]]; then
-      preferred_checksum=${checksum,,}
-      preferred_matches=$((preferred_matches + 1))
-    elif [[ "${asset}" == "${legacy}" ]]; then
-      legacy_checksum=${checksum,,}
-      legacy_matches=$((legacy_matches + 1))
+    if [[ "${asset}" == "${expected}" ]]; then
+      expected_checksum=${checksum,,}
+      matches=$((matches + 1))
     fi
   done < "${manifest}"
-  [[ ${preferred_matches} -le 1 && ${legacy_matches} -le 1 ]] || die "校验清单包含重复的发布文件"
-  if [[ ${preferred_matches} -eq 1 ]]; then
-    selected_asset=${preferred}
-    selected_checksum=${preferred_checksum}
-  elif [[ ${legacy_matches} -eq 1 ]]; then
-    selected_asset=${legacy}
-    selected_checksum=${legacy_checksum}
-  else
-    die "校验清单缺少 ${resolved_version} Linux/${architecture} 的 ProxyDock 发布文件"
-  fi
+  [[ ${matches} -le 1 ]] || die "校验清单包含重复的发布文件"
+  [[ ${matches} -eq 1 ]] || die "校验清单缺少 ${resolved_version} Linux/${architecture} 的 ProxyDock 发布文件"
+  selected_asset=${expected}
+  selected_checksum=${expected_checksum}
 }
 
 

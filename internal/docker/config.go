@@ -110,7 +110,7 @@ func (m *Manager) prepareDeployment(ctx context.Context, version, network string
 				switch md.Channel {
 				case "latest":
 					keep = "latest"
-				case "prerelease":
+				case "pre-release":
 					keep = "pre-release"
 				default:
 					keep = md.RequestedVersion
@@ -155,13 +155,16 @@ func (m *Manager) Generate(ctx context.Context, opts model.GenerateOptions, star
 		}
 		n := oldState.Node
 		n.Core = model.CoreXray
-		n.ManagedBy = "proxyforge"
+		n.ManagedBy = "proxydock"
 		n.SchemaVersion = 1
 		n.UpdatedAt = m.now().UTC()
 		n.CoreVersion = md.Version
 		security := opts.Security
 		if security == "" && hasOld {
 			security = n.Security
+		}
+		if security == "" {
+			security = model.LandingSecurityReality
 		}
 		n.Security = model.NormalizeLandingSecurity(security)
 		if opts.DropLinks {
@@ -681,6 +684,9 @@ func (m *Manager) updatePolicy(ctx context.Context, change func(model.AccessPoli
 	})
 }
 func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
+	if !opts.Credentials && !opts.RotateCertificate && opts.SNI == "" && opts.Target == "" {
+		return fmt.Errorf("请选择轮换凭据、轮换证书或更新 SNI/target")
+	}
 	if err := validateGenerateInput(model.GenerateOptions{SNI: opts.SNI, Target: opts.Target}); err != nil {
 		return err
 	}
@@ -695,7 +701,7 @@ func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
 		}
 		old := s.Node
 		n := old
-		rotateCredentials := !opts.PreserveCredentials && (opts.Credentials || !opts.RotateCertificate)
+		rotateCredentials := opts.Credentials
 		if rotateCredentials {
 			n.UUID, err = newUUID()
 			if err != nil {

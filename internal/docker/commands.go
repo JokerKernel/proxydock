@@ -32,7 +32,7 @@ func (m *Manager) Command() *cobra.Command {
 			}
 			return m.upgrade(cmd.Context(), version, network)
 		}}
-		sub.Flags().StringVar(&version, "version", "", "stable 或 latest（缺省，官方 latest 标签）、pre-release 或具体版本号")
+		sub.Flags().StringVar(&version, "version", "", "latest（缺省，官方 latest 标签）、pre-release 或具体版本号")
 		networkHelp := "网络方式：host 或 publish，缺省保持当前"
 		if action == "prepare" {
 			networkHelp = "网络方式：host（缺省，宿主机网络）或 publish（端口映射）"
@@ -42,7 +42,7 @@ func (m *Manager) Command() *cobra.Command {
 	}
 	deploy := m.generateCommand("deploy", &yes)
 	var version, network string
-	deploy.Flags().StringVar(&version, "version", "", "首次部署镜像：stable 或 latest（缺省）、pre-release 或具体版本号")
+	deploy.Flags().StringVar(&version, "version", "", "首次部署镜像：latest（缺省）、pre-release 或具体版本号")
 	deploy.Flags().StringVar(&network, "network", "", "网络方式：host（缺省，宿主机网络）或 publish（端口映射）")
 	cmd.AddCommand(deploy)
 	cmd.AddCommand(&cobra.Command{Use: "status", Short: "查看 Docker 实例状态", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
@@ -118,6 +118,7 @@ func (m *Manager) Command() *cobra.Command {
 		if err := m.confirmInput(cmd.InOrStdin(), yes, "重置凭据会使原客户端失效，确认继续？"); err != nil {
 			return err
 		}
+		reset.Credentials = reset.Credentials || !reset.RotateCertificate
 		return m.Reset(cmd.Context(), reset)
 	}}
 	resetCmd.Flags().BoolVar(&reset.RotateCertificate, "rotate-certificate", false, "轮换自签 TLS 证书")

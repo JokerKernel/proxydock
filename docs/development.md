@@ -21,9 +21,11 @@ Go 模块为 `proxydock`。Docker 业务及其测试仅依赖自身子包、标�
 
 分离前的详细事务及归属设计保留在[历史设计记录](archive/proxyforge-docker-design.md)，涉及旧入口的内容以当前指南为准。
 
-## 持久化兼容
+## 持久化与实例归属
 
-运行目录、锁、Compose 模板、容器名称、标签、`managed_by` 和状态 schema 保持历史格式，保证旧部署及未完成事务可直接恢复。请勿通过批量重命名修改这些持久化值，参见[迁移说明](migration.md)。
+运行目录使用 `/opt/proxydock`、`/var/lib/proxydock` 和 `/run/proxydock`。容器与 Compose 项目为 `proxydock-xray`，标签前缀为 `io.proxydock.*`，`managed_by` 为 `proxydock`。不探测旧目录、不接管 ProxyForge 容器，也不接受旧归属记录或旧版 Compose；需重新部署，参见[迁移说明](migration.md)。
+
+状态只使用 `state.json` 和 `deployment.json`，不写历史旁路文件；协议、schema 和网络字段必须明确记录。证书回收要求归属标记，临时文件只识别当前生成格式。镜像渠道只接受 `latest`、`pre-release` 和具体版本，安装器只接受当前发布文件名及位置参数 `install|update|uninstall`。
 
 所有修改使用实例锁、候选配置校验、备份和事务记录；失败恢复文件、镜像及原运行状态。镜像固定官方 digest，停止实例修改或升级后保持停止。清理核验受管容器及临时容器已移除，限定自己的目录，不运行全局 prune。
 

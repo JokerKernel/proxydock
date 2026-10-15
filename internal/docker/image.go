@@ -23,9 +23,9 @@ func normalizeVersion(version string) (string, error) {
 
 func normalizeImageSelection(version string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(version)) {
-	case "", "stable", "latest":
+	case "", "latest":
 		return "latest", nil
-	case "pre-release", "prerelease":
+	case "pre-release":
 		return "pre-release", nil
 	default:
 		return normalizeVersion(version)
@@ -42,7 +42,7 @@ func checkPreparedVersion(md Metadata, version string) error {
 	case "latest":
 		matched = md.Channel == "latest"
 	case "pre-release":
-		matched = md.Channel == "prerelease"
+		matched = md.Channel == "pre-release"
 	default:
 		matched = selection == md.RequestedVersion
 	}
@@ -62,7 +62,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 	case "latest":
 		channel = "latest"
 	case "pre-release":
-		channel = "prerelease"
+		channel = "pre-release"
 	}
 	tag := Repository + ":" + v
 	if err = m.dockerStreamOp(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "拉取镜像"}, m.out, m.errOut, "image", "pull", tag); err != nil {
@@ -122,7 +122,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 	if channel == "pinned" && actualVersion != v {
 		return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
 	}
-	md := Metadata{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance, ImageRef: ref, ImageID: image.ID, Version: line, RequestedVersion: actualVersion, Channel: channel, DesiredState: "stopped", UpdatedAt: m.now().UTC()}
+	md := Metadata{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance, ImageRef: ref, ImageID: image.ID, Version: line, RequestedVersion: actualVersion, Channel: channel, DesiredState: "stopped", UpdatedAt: m.now().UTC()}
 	return md, nil
 }
 func parseKeyPair(b []byte) (model.KeyPair, error) {
@@ -136,11 +136,10 @@ func parseKeyPair(b []byte) (model.KeyPair, error) {
 		if len(values) == 0 {
 			continue
 		}
-		key = strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(key))
 		switch key {
-		case "private", "privatekey":
+		case "PrivateKey":
 			pair.Private = values[0]
-		case "public", "publickey", "password", "password(publickey)":
+		case "Password (PublicKey)":
 			pair.Public = values[0]
 		}
 	}

@@ -73,7 +73,7 @@ func (m *Manager) newCertificate(name string) (model.LandingAccess, error) {
 	if err != nil {
 		return model.LandingAccess{}, err
 	}
-	sni := "pf-" + suffix + ".invalid"
+	sni := "pd-" + suffix + ".invalid"
 	now := m.now().UTC()
 	tmpl := x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: sni, Organization: []string{"ProxyDock"}}, DNSNames: []string{sni}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(10, 0, 0), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
@@ -97,7 +97,7 @@ func (m *Manager) newCertificate(name string) (model.LandingAccess, error) {
 			_ = os.RemoveAll(dir)
 		}
 	}()
-	if err = saveJSON(filepath.Join(dir, ".proxydock-certificate.json"), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance}); err != nil {
+	if err = saveJSON(filepath.Join(dir, ".proxydock-certificate.json"), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance}); err != nil {
 		return model.LandingAccess{}, err
 	}
 	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")

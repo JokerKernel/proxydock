@@ -12,13 +12,22 @@
 | `proxyforge docker service …` | `proxydock service …` |
 | `proxyforge docker cleanup` | `proxydock cleanup` |
 
-ProxyForge 不再提供 Docker 入口；其菜单第 3 项恢复为原生卸载残留清理。原生 `cleanup all` 保留 `/var/lib/proxyforge/docker/`，不依赖 Docker daemon，也不会删除 ProxyDock 的记录。
+上表仅说明命令对应关系。ProxyDock 使用独立的运行目录和实例标识，不接管旧部署。
 
 ## 现有部署
 
-容器名称、Compose 项目、目录、锁、归属标签、状态 schema 和事务格式保持兼容。安装 ProxyDock 后无需重建容器或移动数据，先运行 `sudo proxydock status`；如有未完成事务，运行 `sudo proxydock recover`。
+当前版本不兼容 ProxyForge 实例，也不自动迁移旧目录、容器、凭据、备份或未完成事务。切换前请自行备份需要保留的配置，并使用旧管理程序处理旧实例及事务；随后使用 ProxyDock 重新部署。如继续使用相同监听端口，请先停止旧实例以释放端口。
 
-历史路径和 `managed_by=proxyforge` 是持久化兼容标识，不是源码依赖。现有 Compose 文件的摘要仍有效。不要同时通过旧版 ProxyForge 与 ProxyDock 修改同一实例。测试根目录使用 `PROXYDOCK_ROOT`，替代原入口的 `PROXYFORGE_ROOT`。
+| 资源 | 当前值 |
+| --- | --- |
+| 部署目录 | `/opt/proxydock/xray-docker/` |
+| 数据目录 | `/var/lib/proxydock/docker/xray/` |
+| 实例锁 | `/run/proxydock/xray-docker.lock` |
+| Compose 项目及容器 | `proxydock-xray` |
+| 归属标签前缀 | `io.proxydock.*` |
+| `managed_by` | `proxydock` |
+
+程序不读取 `/opt/proxyforge/`、`/var/lib/proxyforge/` 或 `/run/proxyforge/`。仅移动旧文件无法转换归属和事务记录。测试根目录使用 `PROXYDOCK_ROOT`。
 
 `proxydock update` 更新 ProxyDock 程序；`proxydock upgrade` 主动升级 Xray 镜像。`proxydock uninstall --yes` 只卸载程序，保留容器、配置、镜像和数据；移除实例与删除数据分别使用 `remove` 和 `cleanup`。
 

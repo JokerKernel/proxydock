@@ -108,7 +108,7 @@ func (m *Manager) checkOwned(in *inspection) error {
 
 func (m *Manager) checkOwnedIdentity(in *inspection) error {
 	labels := in.Config.Labels
-	if labels["io.proxyforge.managed"] != "true" || labels["io.proxyforge.instance"] != Instance || labels["io.proxyforge.core"] != "xray" || labels["com.docker.compose.project"] != Project || labels["com.docker.compose.service"] != Service || labels["com.docker.compose.oneoff"] == "True" {
+	if labels["io.proxydock.managed"] != "true" || labels["io.proxydock.instance"] != Instance || labels["io.proxydock.core"] != "xray" || labels["com.docker.compose.project"] != Project || labels["com.docker.compose.service"] != Service || labels["com.docker.compose.oneoff"] == "True" {
 		return fmt.Errorf("同名容器不属于 ProxyDock 的受管 Xray 实例，拒绝操作")
 	}
 	if !in.HostConfig.ReadonlyRootfs || in.Config.User != "0:0" || !reflect.DeepEqual(in.Config.Cmd, []string{"run", "-config", "/usr/local/etc/xray/config.json"}) || !reflect.DeepEqual(in.Config.Entrypoint, []string{"/usr/local/bin/xray"}) {

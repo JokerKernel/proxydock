@@ -155,17 +155,18 @@ test_failed_atomic_replace_restores_original() (
 )
 
 test_bad_manifests_never_replace_original() (
-  for kind in duplicate traversal wrong-version; do
+  for kind in duplicate traversal wrong-version old-asset; do
     (
       fixture
       current_binary v1.2.2
       case "${kind}" in
         duplicate) manifest_extra="${release_checksum}  proxydock_linux_amd64_v1.2.3" ;;
-        traversal | wrong-version)
+        traversal | wrong-version | old-asset)
           download() {
             [[ "$1" == */SHA256SUMS ]] || fail "downloaded program from invalid manifest"
             local name='../../proxydock_linux_amd64_v1.2.3'
             [[ "${kind}" != wrong-version ]] || name=proxydock_linux_amd64_v9.9.9
+            [[ "${kind}" != old-asset ]] || name=proxydock_v1.2.3_linux_amd64
             printf '%s  %s\n' "${release_checksum}" "${name}" > "$2"
           }
           ;;
@@ -197,7 +198,7 @@ test_uninstall_confirmation_and_data_retention() (
   run_installer uninstall --yes > /dev/null
   [[ ! -e "${install_path}" ]] || fail "program not removed"
   [[ $(cat "${fixture_root}/node.json") == 'node credentials' ]] || fail "uninstall changed node data"
-  run_installer --uninstall --yes > /dev/null
+  run_installer uninstall --yes > /dev/null
 )
 
 test_invalid_configuration_is_rejected() (

@@ -2,8 +2,6 @@ package docker
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,12 +14,11 @@ import (
 var backupNamePattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[a-f0-9]{12}$`)
 var validatorNamePattern = regexp.MustCompile(`^/?` + Container + `-check-[a-f0-9]{24}$`)
 var temporaryNamePatterns = map[string]*regexp.Regexp{
-	".docker-write-": regexp.MustCompile("^\\.docker-write-(?:[0-9]+|[a-f0-9]{24})$"),
+	".docker-write-": regexp.MustCompile("^\\.docker-write-[a-f0-9]{24}$"),
 	"candidate-":     regexp.MustCompile("^candidate-[0-9]+\\.json$"),
 	"edit-":          regexp.MustCompile("^edit-[0-9]+\\.json$"),
 	".edit-":         regexp.MustCompile("^\\.edit-[0-9]+\\.json\\.sw[opx]$"),
 }
-var certificateSNIPattern = regexp.MustCompile(`^pf-[a-f0-9]{24}\.invalid$`)
 
 func (m *Manager) cleanupPending() (bool, error) {
 	var record ownership
@@ -30,7 +27,7 @@ func (m *Manager) cleanupPending() (bool, error) {
 	} else if err != nil {
 		return false, err
 	}
-	if record.SchemaVersion != 1 || record.ManagedBy != "proxyforge" || record.InstanceID != Instance {
+	if record.SchemaVersion != 1 || record.ManagedBy != "proxydock" || record.InstanceID != Instance {
 		return false, fmt.Errorf("清理记录归属无效，拒绝继续删除")
 	}
 	return true, nil
@@ -301,8 +298,8 @@ func managedCertificateDirectory(dir string) bool {
 	}
 	var marker ownership
 	markerErr := loadJSON(filepath.Join(dir, ".proxydock-certificate.json"), &marker)
-	marked := markerErr == nil && marker.SchemaVersion == 1 && marker.ManagedBy == "proxyforge" && marker.InstanceID == Instance
-	if markerErr != nil && !os.IsNotExist(markerErr) || markerErr == nil && !marked {
+	marked := markerErr == nil && marker.SchemaVersion == 1 && marker.ManagedBy == "proxydock" && marker.InstanceID == Instance
+	if !marked {
 		return false
 	}
 	for _, entry := range entries {
@@ -313,27 +310,11 @@ func managedCertificateDirectory(dir string) bool {
 			return false
 		}
 	}
-	if marked {
-		return true
-	}
-	cert, err := readPrivate(filepath.Join(dir, "cert.pem"))
-	if err != nil {
-		return false
-	}
-	key, err := readPrivate(filepath.Join(dir, "key.pem"))
-	if err != nil {
-		return false
-	}
-	pair, err := tls.X509KeyPair(cert, key)
-	if err != nil || len(pair.Certificate) != 1 {
-		return false
-	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	return err == nil && len(leaf.Subject.Organization) == 1 && leaf.Subject.Organization[0] == "ProxyDock" && certificateSNIPattern.MatchString(leaf.Subject.CommonName) && leaf.CheckSignature(leaf.SignatureAlgorithm, leaf.RawTBSCertificate, leaf.Signature) == nil
+	return true
 }
 
 func (m *Manager) reapValidators(ctx context.Context) error {
-	b, err := m.docker(ctx, "container", "ls", "--all", "--no-trunc", "--filter", "label=io.proxyforge.managed=true", "--filter", "label=io.proxyforge.instance="+Instance, "--filter", "label=io.proxyforge.role=validator", "--format", "{{.ID}}")
+	b, err := m.docker(ctx, "container", "ls", "--all", "--no-trunc", "--filter", "label=io.proxydock.managed=true", "--filter", "label=io.proxydock.instance="+Instance, "--filter", "label=io.proxydock.role=validator", "--format", "{{.ID}}")
 	if err != nil {
 		return err
 	}
@@ -353,7 +334,7 @@ func (m *Manager) reapValidators(ctx context.Context) error {
 		}
 		in := values[0]
 		labels := in.Config.Labels
-		if in.ID != id || !validatorNamePattern.MatchString(in.Name) || labels["io.proxyforge.managed"] != "true" || labels["io.proxyforge.instance"] != Instance || labels["io.proxyforge.role"] != "validator" {
+		if in.ID != id || !validatorNamePattern.MatchString(in.Name) || labels["io.proxydock.managed"] != "true" || labels["io.proxydock.instance"] != Instance || labels["io.proxydock.role"] != "validator" {
 			return fmt.Errorf("校验容器归属不匹配，拒绝移除: %s", id)
 		}
 		if _, err = m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "清理校验容器"}, "container", "rm", "--force", "--volumes", id); err != nil {

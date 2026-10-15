@@ -15,6 +15,7 @@ const (
 	LandingSecurityReality = "reality"
 	LandingSecurityTLS     = "tls"
 	DefaultUserName        = "one"
+	DefaultInboundTag      = "docker-one"
 	LandingTLSPortMin      = 30000
 	LandingTLSPortMax      = 65000
 	FallbackPortMin        = LandingTLSPortMin
@@ -43,7 +44,7 @@ type LandingAccess struct {
 	Name                       string    `json:"name"`
 	UserName                   string    `json:"user_name"`
 	UUID                       string    `json:"uuid"`
-	Security                   string    `json:"security,omitempty"`
+	Security                   string    `json:"security"`
 	Port                       int       `json:"port,omitempty"`
 	SNI                        string    `json:"sni,omitempty"`
 	CertificateFile            string    `json:"certificate_file,omitempty"`
@@ -55,11 +56,7 @@ type LandingAccess struct {
 }
 
 func NormalizeLandingSecurity(security string) string {
-	security = strings.ToLower(strings.TrimSpace(security))
-	if security == "" {
-		return LandingSecurityReality
-	}
-	return security
+	return strings.ToLower(strings.TrimSpace(security))
 }
 
 func ValidCertificateSHA256(value string) bool {
@@ -91,9 +88,9 @@ type RelayLink struct {
 type Node struct {
 	AccessPolicySniffing    map[string]json.RawMessage `json:"access_policy_sniffing,omitempty"`
 	AccessPolicy            AccessPolicy               `json:"access_policy"`
-	Security                string                     `json:"security,omitempty"`
+	Security                string                     `json:"security"`
 	TLSCertificate          *LandingAccess             `json:"tls_certificate,omitempty"`
-	SchemaVersion           int                        `json:"schema_version,omitempty"`
+	SchemaVersion           int                        `json:"schema_version"`
 	ManagedBy               string                     `json:"managed_by"`
 	Core                    string                     `json:"core"`
 	InboundTag              string                     `json:"inbound_tag"`
@@ -102,7 +99,6 @@ type Node struct {
 	SNI                     string                     `json:"sni"`
 	Target                  string                     `json:"target"`
 	UserName                string                     `json:"user_name"`
-	SimplifiedConfig        bool                       `json:"simplified_config,omitempty"`
 	XrayFallbackGuard       bool                       `json:"xray_fallback_guard,omitempty"`
 	XrayFallbackPort        int                        `json:"xray_fallback_port,omitempty"`
 	XrayFallbackHTTPDomain  bool                       `json:"xray_fallback_http_domain,omitempty"`
@@ -128,7 +124,6 @@ type GenerateOptions struct {
 	UserName                string
 	InboundTag              string
 	StandardConfig          bool
-	SimplifiedConfig        bool
 	XrayFallbackGuard       bool
 	XrayFallbackPort        int
 	XrayFallbackHTTPDomain  bool
@@ -141,17 +136,12 @@ type GenerateOptions struct {
 	DropLinks           bool
 }
 
-func DefaultInboundTag(core string) string { return "docker-one" }
-
 type ResetOptions struct {
 	RotateCertificate bool
 	SNI               string
 	Target            string
 	// Credentials rotates UUID and, for REALITY, its key material and short ID.
-	// Zero value preserves the historical credential-reset behavior.
 	Credentials bool
-	// PreserveCredentials updates SNI or target without rotating UUID or keys.
-	PreserveCredentials bool
 }
 
 type KeyPair struct {
@@ -164,12 +154,11 @@ type ServiceStatus struct {
 	Detail string
 }
 
-// Empty security in historical states means REALITY.
-func (n Node) IsTLS() bool { return NormalizeLandingSecurity(n.Security) == LandingSecurityTLS }
+func (n Node) IsTLS() bool { return n.Security == LandingSecurityTLS }
 
-// A zero-port access shares the primary inbound, including historical REALITY accesses.
+// A zero-port access shares the primary inbound.
 func (a LandingAccess) UsesPrimaryInbound() bool {
-	return NormalizeLandingSecurity(a.Security) == LandingSecurityReality || a.Port == 0
+	return a.Port == 0
 }
 
 // TLSAccesses includes the main certificate for shared file permission handling.

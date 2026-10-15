@@ -20,18 +20,18 @@ func TestCleanupRecordTempsOnlyRemoveOwnedFiles(t *testing.T) {
 				}
 			}
 			parent := filepath.Dir(m.paths.CleanupRecord())
-			owned, err := jsonBytes(ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance})
+			owned, err := jsonBytes(ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance})
 			if err != nil {
 				t.Fatal(err)
 			}
 			remove := map[string][]byte{
 				cleanupWritePrefix + strings.Repeat("a", 24): []byte(`{"schema_version":`),
-				".docker-write-" + strings.Repeat("b", 24):   owned,
-				".docker-write-123":                          owned,
 			}
 			keep := map[string][]byte{
+				".docker-write-" + strings.Repeat("b", 24): owned,
+				".docker-write-123":                        owned,
 				".docker-write-" + strings.Repeat("c", 24): []byte(`{"schema_version":`),
-				".docker-write-" + strings.Repeat("d", 24): []byte(`{"schema_version":1,"managed_by":"proxyforge","instance_id":"other"}`),
+				".docker-write-" + strings.Repeat("d", 24): []byte(`{"schema_version":1,"managed_by":"proxydock","instance_id":"other"}`),
 				".docker-write-" + strings.Repeat("e", 24): append(append([]byte{}, owned...), owned...),
 				".docker-write-notes":                      []byte("user notes"),
 			}
@@ -88,9 +88,6 @@ func TestCleanupRecordTempsOnlyRemoveOwnedFiles(t *testing.T) {
 				if !bytes.Equal(readFile(t, filepath.Join(parent, name)), data) {
 					t.Fatalf("unknown temporary file changed: %s", name)
 				}
-				if name != ".docker-write-notes" && !strings.Contains(output.String(), filepath.Join(parent, name)) {
-					t.Fatalf("retained legacy file not reported: %s\n%s", name, output.String())
-				}
 			}
 			for _, path := range []string{public, symlink, hardlink, directory} {
 				if _, err := os.Lstat(path); err != nil {
@@ -112,7 +109,7 @@ func TestCleanupRecordTempsOnlyRemoveOwnedFiles(t *testing.T) {
 				if !fake.container.State.Running {
 					t.Fatal("temporary recovery stopped container")
 				}
-			} else if m.hasData() || !strings.Contains(output.String(), "保留 7 个无法确认安全删除的残留") {
+			} else if m.hasData() || !strings.Contains(output.String(), "保留 4 个无法确认安全删除的残留") {
 				t.Fatalf("cleanup result hid remaining files: %s", output.String())
 			}
 		})
@@ -145,7 +142,7 @@ func TestCleanupRemovesEmptyParentsAndCanRepeat(t *testing.T) {
 		if err := m.Cleanup(ctx); err != nil {
 			t.Fatalf("cleanup attempt %d: %v", i, err)
 		}
-		for _, path := range []string{m.paths.Deploy(), m.paths.Data(), m.paths.CleanupRecord(), filepath.Dir(m.paths.Deploy()), parent, m.paths.resolve("/var/lib/proxyforge")} {
+		for _, path := range []string{m.paths.Deploy(), m.paths.Data(), m.paths.CleanupRecord(), filepath.Dir(m.paths.Deploy()), parent, m.paths.resolve("/var/lib/proxydock")} {
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
 				t.Fatalf("cleanup left empty directory or data: %s %v", path, err)
 			}
@@ -171,9 +168,9 @@ func TestCleanupPreservesSharedParentContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := []string{
-		m.paths.resolve("/opt/proxyforge/other/config.json"),
-		m.paths.resolve("/var/lib/proxyforge/docker/other/config.json"),
-		m.paths.resolve("/var/lib/proxyforge/state/xray.json"),
+		m.paths.resolve("/opt/proxydock/other/config.json"),
+		m.paths.resolve("/var/lib/proxydock/docker/other/config.json"),
+		m.paths.resolve("/var/lib/proxydock/state/xray.json"),
 	}
 	for _, path := range paths {
 		if err := atomicWrite(path, []byte("other data"), 0600); err != nil {
@@ -193,7 +190,7 @@ func TestCleanupPreservesSharedParentContents(t *testing.T) {
 			t.Fatalf("shared parent contents changed: %s", path)
 		}
 	}
-	for _, parent := range []string{filepath.Dir(m.paths.Deploy()), filepath.Dir(m.paths.Data()), m.paths.resolve("/var/lib/proxyforge")} {
+	for _, parent := range []string{filepath.Dir(m.paths.Deploy()), filepath.Dir(m.paths.Data()), m.paths.resolve("/var/lib/proxydock")} {
 		if !strings.Contains(output.String(), parent+"（包含其他文件）") {
 			t.Fatalf("retained parent not reported: %s", output.String())
 		}

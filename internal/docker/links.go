@@ -29,12 +29,15 @@ func linkName(name string) error {
 	return nil
 }
 func validatePeer(p model.LandingPeer) error {
+	if p.Core != model.CoreXray || p.Flow != model.VisionFlow {
+		return fmt.Errorf("上游节点 core 或 flow 无效")
+	}
 	if !validServer(p.Server) || p.Port < 1 || p.Port > 65535 || !hostname(p.SNI, true) || !uuidPattern.MatchString(p.UUID) {
 		return fmt.Errorf("上游节点地址/端口/SNI/UUID 无效")
 	}
-	security := model.NormalizeLandingSecurity(p.Security)
+	security := p.Security
 	if security == "tls" {
-		if !model.ValidCertificateSHA256(p.CertificateSHA256) {
+		if !model.ValidCertificateSHA256(p.CertificateSHA256) || !model.ValidCertificatePublicKeySHA256(p.CertificatePublicKeySHA256) {
 			return fmt.Errorf("上游 TLS 节点缺少证书固定指纹")
 		}
 	} else if security == "reality" {
@@ -215,9 +218,6 @@ func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingP
 		if err != nil {
 			return err
 		}
-		peer.Core = "xray"
-		peer.Flow = model.VisionFlow
-		peer.Security = model.NormalizeLandingSecurity(peer.Security)
 		next.RelayLinks = append(next.RelayLinks, model.RelayLink{Name: name, UserName: "relay-" + name, UUID: id, Enabled: true, Upstream: peer, UpdatedAt: m.now().UTC()})
 		return m.patchLinks(ctx, md, in, s.Node, next, b)
 	})

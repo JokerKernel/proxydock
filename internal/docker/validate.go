@@ -18,7 +18,7 @@ func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mo
 		return nil, err
 	}
 	name := Container + "-check-" + suffix
-	args := []string{"run", "--rm", "--pull", "never", "--name", name, "--label", "io.proxyforge.managed=true", "--label", "io.proxyforge.instance=" + Instance, "--label", "io.proxyforge.role=validator", "--network", "host", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--tmpfs", "/usr/local/etc/xray:rw,noexec,nosuid,nodev,size=1m,mode=0700", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--tmpfs", "/var/log/xray:rw,noexec,nosuid,nodev,size=16m,mode=0700"}
+	args := []string{"run", "--rm", "--pull", "never", "--name", name, "--label", "io.proxydock.managed=true", "--label", "io.proxydock.instance=" + Instance, "--label", "io.proxydock.role=validator", "--network", "host", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--tmpfs", "/usr/local/etc/xray:rw,noexec,nosuid,nodev,size=1m,mode=0700", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--tmpfs", "/var/log/xray:rw,noexec,nosuid,nodev,size=16m,mode=0700"}
 	args = append(args, mounts...)
 	args = append(args, imageID)
 	args = append(args, command...)
@@ -35,7 +35,7 @@ func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mo
 			return
 		}
 		var ins []inspection
-		if json.Unmarshal(b, &ins) == nil && len(ins) == 1 && ins[0].Config.Labels["io.proxyforge.instance"] == Instance && ins[0].Config.Labels["io.proxyforge.role"] == "validator" {
+		if json.Unmarshal(b, &ins) == nil && len(ins) == 1 && ins[0].Config.Labels["io.proxydock.instance"] == Instance && ins[0].Config.Labels["io.proxydock.role"] == "validator" {
 			_, _ = m.docker(cleanupCtx, "container", "rm", "--force", "--volumes", ins[0].ID)
 		}
 	}()
@@ -74,7 +74,7 @@ func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte
 			return err
 		}
 	}
-	_, err = m.coreRun(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}, imageID, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxyforge/config.json,readonly", "--mount", "type=bind,src=" + m.paths.TLS() + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxyforge/config.json")
+	_, err = m.coreRun(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}, imageID, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + m.paths.TLS() + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
 	if err != nil {
 		m.op(phaseCheck, levelError, "校验结果", err.Error())
 		return fmt.Errorf("Docker Xray 配置校验失败: %w", err)

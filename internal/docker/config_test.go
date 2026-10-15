@@ -160,7 +160,7 @@ func TestApplyConfigPrintsEachStep(t *testing.T) {
 		"docker run … run -test -config …",
 		"命令详情",
 		"docker --host " + endpoint,
-		"run -test -config /run/proxyforge/config.json",
+		"run -test -config /run/proxydock/config.json",
 		"校验结果",
 		"通过",
 		"备份原配置",
@@ -197,7 +197,7 @@ func TestIndependentPolicyKeepsRelayAndFallbackPriority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := model.LandingPeer{Name: "upstream", Server: "upstream.example.com", Port: 443, SNI: "www.example.com", Security: "reality", UUID: s.Node.UUID, PublicKey: s.Node.PublicKey, ShortID: s.Node.ShortID}
+	peer := model.LandingPeer{Name: "upstream", Core: model.CoreXray, Flow: model.VisionFlow, Server: "upstream.example.com", Port: 443, SNI: "www.example.com", Security: "reality", UUID: s.Node.UUID, PublicKey: s.Node.PublicKey, ShortID: s.Node.ShortID}
 	if err = m.AddRelay(ctx, "relay-one", peer); err != nil {
 		t.Fatal(err)
 	}
@@ -475,13 +475,11 @@ func TestStateWriteFailureRestoresAllSnapshots(t *testing.T) {
 	for _, path := range m.managedFiles() {
 		before[path] = readFile(t, path)
 	}
-	wrotePolicy := false
+	sawCandidate := false
 	m.stateWrite = func(path string, data []byte, mode os.FileMode) error {
 		if path == m.paths.State() {
+			sawCandidate = !bytes.Equal(before[m.paths.Config()], readFile(t, m.paths.Config()))
 			return errors.New("simulated state disk failure")
-		}
-		if filepath.Base(path) == "access.json" {
-			wrotePolicy = true
 		}
 		return atomicWrite(path, data, mode)
 	}
@@ -493,8 +491,8 @@ func TestStateWriteFailureRestoresAllSnapshots(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "已恢复") {
 		t.Fatalf("state failure not recovered: %v", err)
 	}
-	if !wrotePolicy {
-		t.Fatal("test did not exercise partial sidecar writes")
+	if !sawCandidate {
+		t.Fatal("test did not exercise a partial configuration commit")
 	}
 	for path, data := range before {
 		if !bytes.Equal(data, readFile(t, path)) {

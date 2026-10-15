@@ -17,11 +17,11 @@ ProxyDock 只检测 Docker/Compose 是否可用，不会自动安装 Docker，�
 
 首次准备、升级需要访问官方镜像仓库。镜像版本支持三种选择：
 
-- `latest` 或省略 `--version`：直接拉取官方 `ghcr.io/xtls/xray-core:latest`；`stable` 是兼容别名。
+- `latest` 或省略 `--version`：直接拉取官方 `ghcr.io/xtls/xray-core:latest`。
 - `pre-release`：拉取官方 `ghcr.io/xtls/xray-core:pre-release`，选择开发版。
 - 具体版本号：拉取对应官方镜像，核对实际内核版本。
 
-三种方式均记录实际内核版本并固定 digest，不查询 GitHub Releases API。标签按官方镜像仓库选择；只有再次主动升级才会拉取标签的新镜像。
+只接受 `latest`、`pre-release` 或具体版本号，不接受 `stable`、`prerelease` 等别名。Xray 密钥生成输出须使用当前官方格式 `PrivateKey` 和 `Password (PublicKey)`。三种方式均记录实际内核版本并固定 digest，不查询 GitHub Releases API。标签按官方镜像仓库选择；只有再次主动升级才会拉取标签的新镜像。
 
 ## 首次部署
 
@@ -46,7 +46,7 @@ sudo proxydock deploy --version latest \
   --security tls --server YOUR_SERVER_IP --port 8443
 ```
 
-默认 `host` 网络与宿主机共享端口，因此原生内核、Docker 实例和其他服务必须使用不同的监听端口。`--network publish` 改为端口映射，监听端口仍使用同一个端口号，REALITY 回落仅容器内使用。已部署实例可以用 `proxydock config set network host` 或 `publish` 切换，切换时会重建容器并保持原来的运行或停止状态。旧版 publish 配置可再次执行 `proxydock config set network publish`，通过事务移除旧的回落端口映射；只读操作不会改写配置。
+默认 `host` 网络与宿主机共享端口，因此原生内核、Docker 实例和其他服务必须使用不同的监听端口。`--network publish` 改为端口映射，监听端口仍使用同一个端口号，REALITY 回落仅容器内使用。已部署实例可以用 `proxydock config set network host` 或 `publish` 切换，切换时会重建容器并保持原来的运行或停止状态。只接受当前程序生成的 Compose，不转换旧的回落端口映射。
 
 REALITY 默认启用专用回落防护；`--standard-config` 可选择普通配置，`--fallback-port` 可指定内部回落端口。
 
@@ -162,7 +162,7 @@ sudo proxydock recover
 
 镜像更新仍会拉取选定标签确认 digest；镜像未变化时跳过能力探测和容器重建。重复设置相同策略、启动已运行实例或停止已停止实例时，会跳过不必要的校验和事务。日志直接从已核验归属的容器读取，不依赖 Compose 文件是否完整。
 
-历史状态旁路文件继续保留，内容未变化时不重复写入。
+节点、名单和线路统一保存在 `state.json`，镜像选择和网络方式保存在 `deployment.json`；不再生成独立的 `access.json`、`landings.json`、`relays.json` 或 `preferences.json`。节点协议、schema 版本和网络方式必须明确记录，不补全旧状态的缺省字段。
 
 ## 移除与清理
 
@@ -175,27 +175,27 @@ sudo proxydock cleanup --yes
 
 `recover`、`remove` 和 `cleanup` 会处理归属核验通过的遗留校验容器；`remove` 和 `cleanup` 还会删除本 Compose 项目未被任何容器使用的默认网络。其他容器、网络和镜像不参与回收。
 
-完整清理开始前会写入 `/var/lib/proxyforge/docker/xray-cleanup.json`。删除中途失败或进程中断时，记录保留，状态显示“清理未完成”；修复故障后再次执行 `proxydock cleanup --yes` 即可继续，完成后记录自动删除。清理尚未完成时拒绝部署及配置写入，请勿手动删除这份记录。
+完整清理开始前会写入 `/var/lib/proxydock/docker/xray-cleanup.json`。删除中途失败或进程中断时，记录保留，状态显示“清理未完成”；修复故障后再次执行 `proxydock cleanup --yes` 即可继续，完成后记录自动删除。清理尚未完成时拒绝部署及配置写入，请勿手动删除这份记录。
 
-清理记录使用专属临时文件名 `.xray-cleanup-write-<随机值>`，`recover` 和 `cleanup` 会回收安全属性符合要求的中断残片。旧 `.docker-write-*` 残片还须包含完整且属于本实例的清理记录；无法确认归属的文件保留并显示路径。清理完成后，仅回收为空的 `/opt/proxyforge`、`/var/lib/proxyforge/docker` 和 `/var/lib/proxyforge` 父目录，有其他数据的目录保留。实例锁文件保留以维持并发保护，管理程序、Docker 镜像和用户导出的配置也保留；清理结果会显示这些保留项及原因。
+清理记录使用专属临时文件名 `.xray-cleanup-write-<随机值>`，`recover` 和 `cleanup` 会回收安全属性符合要求的中断残片。共享父目录中其他命名的文件不参与回收。清理完成后，仅回收为空的 `/opt/proxydock`、`/var/lib/proxydock/docker` 和 `/var/lib/proxydock` 父目录，有其他数据的目录保留。实例锁文件保留以维持并发保护，管理程序、Docker 镜像和用户导出的配置也保留；清理结果会显示这些保留项及原因。
 
-ProxyDock 只清理自己的 Docker 实例，不协调原生内核清理。ProxyForge 的 `cleanup all` 保留历史 Docker 数据，由 `proxydock cleanup` 单独清理。Docker daemon 不可达且无法完成归属检查时，ProxyDock 拒绝清理。
+ProxyDock 只清理自己的 Docker 实例和目录，不处理 ProxyForge 的容器或旧目录。Docker daemon 不可达且无法完成归属检查时，ProxyDock 拒绝清理。
 
 不自动删除 Docker Engine、共享镜像或其他容器，不运行全局 prune。
 
 ## 文件位置
 
-为接管已有实例，以下路径、Compose 项目/容器名称 `proxyforge-xray`、`io.proxyforge.*` 标签及 `managed_by=proxyforge` 归属字段继续沿用历史值。新部署也使用同一布局；不需要迁移数据，不要同时用旧版 ProxyForge 管理同一实例。程序名、Go 模块、安装产物及发布流程使用 `proxydock`。
+以下目录由 ProxyDock 独立管理，Compose 项目/容器名称为 `proxydock-xray`，标签前缀为 `io.proxydock.*`，归属字段为 `managed_by=proxydock`。不兼容旧 ProxyForge 路径和实例，不执行自动迁移；需重新部署。
 
 | 内容 | 路径 |
 | --- | --- |
-| Compose | `/opt/proxyforge/xray-docker/compose.yaml` |
-| 服务配置 | `/opt/proxyforge/xray-docker/config/config.json` |
-| 证书 | `/opt/proxyforge/xray-docker/tls/` |
-| 自有状态和部署记录 | `/var/lib/proxyforge/docker/xray/` |
-| 备份 | `/var/lib/proxyforge/docker/xray/backups/` |
-| 事务记录 | `/var/lib/proxyforge/docker/xray/transaction.json` |
-| 实例锁 | `/run/proxyforge/xray-docker.lock` |
+| Compose | `/opt/proxydock/xray-docker/compose.yaml` |
+| 服务配置 | `/opt/proxydock/xray-docker/config/config.json` |
+| 证书 | `/opt/proxydock/xray-docker/tls/` |
+| 自有状态和部署记录 | `/var/lib/proxydock/docker/xray/` |
+| 备份 | `/var/lib/proxydock/docker/xray/backups/` |
+| 事务记录 | `/var/lib/proxydock/docker/xray/transaction.json` |
+| 实例锁 | `/run/proxydock/xray-docker.lock` |
 
 目录归属由 `owner.json` 标记，部署和节点 JSON 也有独立的实例标识与 schema。管理目录为 `0700`，配置、证书和管理文件为 `0600`。容器以 UID/GID `0:0` 读取只读挂载，仅保留绑定低端口所需的 capability。
 

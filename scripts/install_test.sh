@@ -83,7 +83,7 @@ test_version_comparison_and_classification() (
 
 test_update_argument_is_supported() (
   source "${script_dir}/install.sh"
-  parse_arguments --update --yes --version v1.2.3
+  parse_arguments update --yes --version v1.2.3
   [[ "${requested_action}" == update && "${requested_version}" == v1.2.3 && "${assume_yes}" == true ]] || fail "update arguments not parsed"
 )
 
@@ -108,19 +108,17 @@ test_uninstall_is_idempotent() (
   remove_proxydock_binary() { fail "remove called for absent binary"; }
 
   local output
-  output=$(main --uninstall --yes)
+  output=$(main uninstall --yes)
   [[ "${output}" == *"当前未安装，无需卸载"* ]] || fail "missing already-uninstalled result"
 )
 
-test_uninstall_aliases_are_equivalent() (
+test_old_action_flags_are_rejected() (
   source "${script_dir}/install.sh"
-  require_root() { return; }
-  proxydock_binary_exists() { return 1; }
-
-  local positional_output flag_output
-  positional_output=$(main uninstall --yes)
-  flag_output=$(main --uninstall --yes)
-  [[ "${positional_output}" == "${flag_output}" ]] || fail "uninstall aliases produced different output"
+  local action output
+  for action in --update --uninstall; do
+    if output=$(parse_arguments "${action}" 2>&1); then fail "obsolete action accepted: ${action}"; fi
+    [[ "${output}" == *"未知参数"* ]] || fail "wrong argument error: ${output}"
+  done
 )
 
 test_version_file_fallback() (
@@ -243,7 +241,7 @@ test_version_comparison_and_classification
 test_update_argument_is_supported
 test_uninstall_removes_only_proxydock_binary
 test_uninstall_is_idempotent
-test_uninstall_aliases_are_equivalent
+test_old_action_flags_are_rejected
 test_api_failure_retries_without_proxy
 test_curl_direct_download_bypasses_all_proxies
 test_operation_columns_and_debug_commands

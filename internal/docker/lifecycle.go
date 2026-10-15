@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -41,7 +40,7 @@ func (m *Manager) ensureOwner() error {
 			return fmt.Errorf("目录含未受管文件，拒绝接管: %s", path)
 		}
 	}
-	return saveJSON(m.paths.Owner(), ownership{SchemaVersion: 1, ManagedBy: "proxyforge", InstanceID: Instance})
+	return saveJSON(m.paths.Owner(), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance})
 }
 
 type ownership struct {
@@ -55,7 +54,7 @@ func (m *Manager) checkOwner() error {
 	if err := loadJSON(m.paths.Owner(), &o); err != nil {
 		return err
 	}
-	if o.SchemaVersion != 1 || o.ManagedBy != "proxyforge" || o.InstanceID != Instance {
+	if o.SchemaVersion != 1 || o.ManagedBy != "proxydock" || o.InstanceID != Instance {
 		return fmt.Errorf("Docker 目录归属记录无效")
 	}
 	return nil
@@ -123,7 +122,7 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 		if err != nil {
 			return err
 		}
-		md.Network = storedNetwork(mode)
+		md.Network = mode
 		if err = m.probeCapabilities(ctx, md); err != nil {
 			return err
 		}
@@ -148,29 +147,12 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 		if err = saveJSON(m.paths.Metadata(), md); err != nil {
 			return fail(err)
 		}
-		if err = m.savePreferences(md); err != nil {
-			return fail(err)
-		}
 		if err = m.commit(j); err != nil {
 			return fail(err)
 		}
 		m.op(phaseResult, levelResult, "准备结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
 		return nil
 	})
-}
-func (m *Manager) savePreferences(md Metadata) error {
-	path := filepath.Join(m.paths.Data(), "preferences.json")
-	data, err := jsonBytes(struct {
-		Channel string `json:"channel"`
-		Version string `json:"version"`
-	}{md.Channel, md.RequestedVersion})
-	if err != nil {
-		return err
-	}
-	if old, err := readPrivate(path); err == nil && bytes.Equal(old, data) {
-		return nil
-	}
-	return atomicWrite(path, data, 0600)
 }
 func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	keys, err := m.keyPair(ctx, md.ImageID)
@@ -185,7 +167,7 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	if err != nil {
 		return err
 	}
-	n := model.Node{Core: "xray", ManagedBy: "proxyforge", Security: "reality", InboundTag: "docker-one", Server: "example.com", Port: 443, SNI: "example.com", Target: "example.com:443", UUID: uuid, UserName: "one", PrivateKey: keys.Private, PublicKey: keys.Public, ShortID: short, XrayFallbackGuard: true, XrayFallbackPort: 62000}
+	n := model.Node{Core: "xray", ManagedBy: "proxydock", SchemaVersion: model.StateSchemaVersion, Security: "reality", InboundTag: "docker-one", Server: "example.com", Port: 443, SNI: "example.com", Target: "example.com:443", UUID: uuid, UserName: "one", PrivateKey: keys.Private, PublicKey: keys.Public, ShortID: short, XrayFallbackGuard: true, XrayFallbackPort: 62000}
 	server, err := m.codec.RenderServer(n)
 	if err != nil {
 		return err
@@ -247,7 +229,7 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 			return err
 		}
 		if requested == networkHost {
-			md.Network = ""
+			md.Network = networkHost
 		} else if requested == networkPublish {
 			md.Network = networkPublish
 		} else {
@@ -276,9 +258,6 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 				}
 				md.UpdatedAt = m.now().UTC()
 				if err = saveJSON(m.paths.Metadata(), md); err != nil {
-					return m.rollback(j, err)
-				}
-				if err = m.savePreferences(md); err != nil {
 					return m.rollback(j, err)
 				}
 				if err = m.commit(j); err != nil {
@@ -364,9 +343,6 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 		if err = saveJSON(m.paths.Metadata(), md); err != nil {
 			return fail(err)
 		}
-		if err = m.savePreferences(md); err != nil {
-			return fail(err)
-		}
 		if err = m.commit(j); err != nil {
 			return fail(err)
 		}
@@ -437,9 +413,6 @@ func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspectio
 	if err = saveJSON(m.paths.Metadata(), md); err != nil {
 		return fail(err)
 	}
-	if err = m.savePreferences(md); err != nil {
-		return fail(err)
-	}
 	return m.commit(j)
 }
 
@@ -468,7 +441,7 @@ func (m *Manager) SetNetwork(ctx context.Context, network string) error {
 			}
 		}
 		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
-		md.Network = storedNetwork(mode)
+		md.Network = mode
 		if err = m.refreshCompose(ctx, md, in); err != nil {
 			return err
 		}
@@ -555,7 +528,7 @@ func (m *Manager) CheckCleanup(ctx context.Context) error {
 	if in != nil {
 		return fmt.Errorf("Docker Xray 容器仍存在，请先移除容器")
 	}
-	b, err := m.docker(ctx, "container", "ls", "--all", "--filter", "label=io.proxyforge.instance="+Instance, "--format", "{{.ID}}")
+	b, err := m.docker(ctx, "container", "ls", "--all", "--filter", "label=io.proxydock.instance="+Instance, "--format", "{{.ID}}")
 	if err != nil {
 		return err
 	}

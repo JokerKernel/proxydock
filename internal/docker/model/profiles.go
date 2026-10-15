@@ -6,8 +6,6 @@ const (
 	DNSProfilePublicGoogle     = "public-google"
 	DNSProfileDoHCloudflare    = "doh-cloudflare"
 	DNSProfileDoHGoogle        = "doh-google"
-	DNSProfileCloudflare       = "cloudflare"
-	DNSProfileGoogle           = "google"
 	OutboundIPPreferIPv4       = "prefer-ipv4"
 	OutboundIPPreferIPv6       = "prefer-ipv6"
 	OutboundIPIPv4Only         = "ipv4-only"
