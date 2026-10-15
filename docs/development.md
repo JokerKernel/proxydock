@@ -52,7 +52,7 @@ make cross
 
 CI 运行 Go 和安装脚本检查，并构建 Linux amd64/arm64 程序。
 
-仓库为 `JokerKernel/proxydock`。推送 `v` 开头的语义版本标签触发 Release；也可手动选择已有标签。发布前运行 `make check`，随后构建 Linux amd64/arm64 程序，核验版本与标签一致。带预发布后缀的标签发布为 GitHub prerelease，避免进入默认最新正式版选择。发布产物为：
+仓库为 `JokerKernel/proxydock`。推送 `v` 开头的语义版本标签触发 Release。手动运行时 Tag 可以留空，这时只做测试和普通构建，不创建 GitHub Release；填写已有标签则发布该标签。发布前运行 `make check`，随后构建 Linux amd64/arm64 程序，核验版本与标签一致。带预发布后缀的标签发布为 GitHub prerelease，避免进入默认最新正式版选择。发布产物为：
 
 ```text
 proxydock_linux_amd64_v1.0.0

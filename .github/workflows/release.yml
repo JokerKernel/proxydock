@@ -7,58 +7,71 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing Git tag to publish, for example v1.0.0
-        required: true
+        description: 可选 Tag。留空时执行普通构建
+        required: false
         type: string
+
+run-name: ${{ (github.event_name == 'workflow_dispatch' && inputs.tag == '' && '手动测试、构建') || format('发布 {0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ (github.event_name == 'push' && github.ref_name) || inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || (github.event_name == 'push' && github.ref_name || '') }}
 
 jobs:
   metadata:
-    name: Prepare release metadata
+    name: Prepare metadata
     runs-on: ubuntu-latest
     outputs:
+      publish: ${{ steps.metadata.outputs.publish }}
+      tag: ${{ steps.metadata.outputs.tag }}
       commit: ${{ steps.metadata.outputs.commit }}
       build_date: ${{ steps.metadata.outputs.build_date }}
     steps:
-      - name: Check out release tag
+      - name: Check out source
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Read release metadata
+      - name: Read metadata
         id: metadata
         shell: bash
         run: |
-          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "release tag must use semantic version form such as v1.2.3 or v1.2.3-rc.1" >&2
-            exit 1
+          tag="${RELEASE_TAG}"
+          tag="${tag#"${tag%%[![:space:]]*}"}"
+          tag="${tag%"${tag##*[![:space:]]}"}"
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "release tag must use semantic version form such as v1.2.3 or v1.2.3-rc.1" >&2
+              exit 1
+            fi
+            if ! git show-ref --verify --quiet "refs/tags/${tag}"; then
+              echo "release tag does not exist: ${tag}" >&2
+              exit 1
+            fi
+            printf 'publish=true\n' >> "${GITHUB_OUTPUT}"
+          else
+            printf 'publish=false\n' >> "${GITHUB_OUTPUT}"
           fi
-          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
-            echo "release tag does not exist: ${RELEASE_TAG}" >&2
-            exit 1
-          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
           printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
           printf 'build_date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
 
   validate:
-    name: Validate release source
+    name: Run checks
     needs: metadata
     runs-on: ubuntu-latest
     steps:
-      - name: Check out release tag
+      - name: Check out source
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.metadata.outputs.publish == 'true' && needs.metadata.outputs.tag || github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -75,9 +88,10 @@ jobs:
     needs: [metadata, validate]
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      VERSION: ${{ needs.metadata.outputs.tag }}
       COMMIT: ${{ needs.metadata.outputs.commit }}
       BUILD_DATE: ${{ needs.metadata.outputs.build_date }}
+      PUBLISH: ${{ needs.metadata.outputs.publish }}
     strategy:
       fail-fast: false
       matrix:
@@ -85,10 +99,10 @@ jobs:
           - amd64
           - arm64
     steps:
-      - name: Check out release tag
+      - name: Check out source
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.metadata.outputs.publish == 'true' && needs.metadata.outputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -105,33 +119,40 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           mkdir -p dist
-          OUTPUT="dist/proxydock_linux_${{ matrix.arch }}_${VERSION}" ./scripts/build.sh
+          if [[ "${PUBLISH}" == "true" ]]; then
+            OUTPUT="dist/proxydock_linux_${GOARCH}_${VERSION}" ./scripts/build.sh
+          else
+            OUTPUT="dist/proxydock-linux-${GOARCH}" ./scripts/build.sh
+          fi
 
       - name: Verify embedded version
-        if: matrix.arch == 'amd64'
+        if: matrix.arch == 'amd64' && needs.metadata.outputs.publish == 'true'
         run: |
           version_output=$(dist/proxydock_linux_${{ matrix.arch }}_${VERSION} --version)
           [[ "${version_output%%$'\n'*}" == "proxydock ${VERSION}" ]]
 
-      - name: Upload release artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-linux-${{ matrix.arch }}
-          path: dist/proxydock_linux_${{ matrix.arch }}_*
+          name: ${{ needs.metadata.outputs.publish == 'true' && format('release-linux-{0}', matrix.arch) || format('proxydock-linux-{0}', matrix.arch) }}
+          path: dist/proxydock*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ needs.metadata.outputs.publish == 'true' && 7 || 14 }}
 
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [metadata, build]
+    if: needs.metadata.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
     steps:
       - name: Check out release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.metadata.outputs.tag }}
           fetch-depth: 0
 
       - name: Download binaries

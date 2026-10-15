@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -293,15 +294,37 @@ func TestDockerMenuResultsWaitBeforeRedraw(t *testing.T) {
 
 func TestDockerMenuPipedInputHasNoTerminalControls(t *testing.T) {
 	t.Setenv("TERM", "xterm")
+	// Color follows stdout. This writer is a terminal, so an operation error may
+	// contain SGR codes. Those are not screen controls.
+	withoutEnv(t, "NO_COLOR")
+	withoutEnv(t, "PROXYDOCK_COLOR")
 	m, _ := testManager(t)
 	var out dockerTerminalOutput
 	m.out, m.errOut = &out, &out
 	if err := m.Menu(context.Background(), strings.NewReader("2\n2\n0\n0\n")); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "\033") || strings.Contains(out.String(), "按 Enter") {
-		t.Fatal("piped input must not clear screens or consume pause answers")
+	text := out.String()
+	for _, control := range []string{"\033[H", "\033[2J", "\033[1A", "按 Enter"} {
+		if strings.Contains(text, control) {
+			t.Fatalf("piped input must not clear screens or consume pause answers:\n%s", text)
+		}
 	}
+}
+
+func withoutEnv(t *testing.T, key string) {
+	t.Helper()
+	value, ok := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if !ok {
+			os.Unsetenv(key)
+			return
+		}
+		os.Setenv(key, value)
+	})
 }
 
 func TestDockerMenuDumbTerminalHasNoTerminalControls(t *testing.T) {
