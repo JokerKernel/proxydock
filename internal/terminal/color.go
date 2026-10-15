@@ -50,6 +50,16 @@ func NewColorWriter(output io.Writer, enabled bool) io.Writer {
 	return &colorWriter{output: output, enabled: true, atLineStart: true}
 }
 
+// RawWriter bypasses color formatting for external programs that manage their
+// own terminal output. Returning the underlying *os.File also lets os/exec
+// inherit its terminal descriptor instead of creating a forwarding pipe.
+func RawWriter(output io.Writer) io.Writer {
+	if w, ok := output.(*colorWriter); ok {
+		return RawWriter(w.output)
+	}
+	return output
+}
+
 func terminalColorEnabled(output io.Writer) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("PROXYDOCK_COLOR"))) {
 	case "always", "1", "true", "yes":

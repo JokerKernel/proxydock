@@ -151,8 +151,8 @@ func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
 		for {
 			cmd := exec.CommandContext(ctx, editor, path)
 			cmd.Stdin = os.Stdin
-			cmd.Stdout = m.out
-			cmd.Stderr = m.errOut
+			cmd.Stdout = terminal.RawWriter(m.out)
+			cmd.Stderr = terminal.RawWriter(m.errOut)
 			if err = cmd.Run(); err != nil {
 				return err
 			}
