@@ -382,7 +382,7 @@ func outboundLabel(strategy string) string {
 	case model.OutboundIPIPv6Only:
 		return "仅 IPv6"
 	case model.OutboundIPUnset:
-		return "未设置（双栈）"
+		return "默认（先 IPv4，300ms 后竞速 IPv6）"
 	case "custom":
 		return "自定义出站 IP 策略"
 	default:
@@ -401,13 +401,8 @@ func outboundChoice(strategy string) string {
 		hint = "只使用 IPv4"
 	case model.OutboundIPIPv6Only:
 		hint = "只使用 IPv6"
-	case model.OutboundIPUnset:
-		hint = "先 IPv4，300ms 后竞速 IPv6"
 	}
 	title := outboundLabel(strategy)
-	if strategy == model.OutboundIPUnset {
-		title = "默认"
-	}
 	if hint == "" {
 		return title
 	}

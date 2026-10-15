@@ -171,10 +171,13 @@ func TestDockerModifyMenuMatchesXrayCore(t *testing.T) {
 		t.Fatalf("modify menu was not shown: %d prompts", len(in.screens))
 	}
 	screen := in.screens[2]
-	for _, want := range []string{"2   重置节点凭证", "3   重置 SNI/target", "4   出站 IP", "REALITY SNI 候选检测"} {
+	for _, want := range []string{"2   重置节点凭证", "3   重置 SNI/target", "4   出站 IP", "REALITY SNI 候选检测", "默认  -- 先 IPv4，300ms 后竞速 IPv6"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("modify menu missing %q: %s", want, screen)
 		}
+	}
+	if strings.Contains(screen, "未设置") {
+		t.Fatalf("modify menu still describes the default address policy as unset: %s", screen)
 	}
 	if strings.Contains(screen, "专用运行用户") {
 		t.Fatalf("modify menu included the native service user item: %s", screen)

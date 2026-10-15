@@ -540,12 +540,12 @@ func (m *Manager) printConfigCard(u *ui) {
 		return cardText(dnsLabel(profile)), err
 	})}, [2]string{"出站 IP", read(func() (string, error) {
 		strategy, err := m.codec.CurrentOutboundIPStrategy(cfg)
-		return outboundLabel(strategy), err
+		return cardText(outboundLabel(strategy)), err
 	})})
 	if hasNode && node.XrayFallbackGuard {
 		rows = append(rows, [2]string{"回落 IP", read(func() (string, error) {
 			strategy, err := m.codec.CurrentFallbackIPStrategy(cfg)
-			return outboundLabel(strategy), err
+			return cardText(outboundLabel(strategy)), err
 		})})
 	}
 	if hasNode && node.IsTLS() {
@@ -850,7 +850,7 @@ func (m *Manager) strategyMenu(ctx context.Context, u *ui, setting string) error
 		title = "回落 IP"
 	}
 	u.pageHeader("Xray（Docker）", title)
-	fmt.Fprintf(u.out, "当前生效：%s\n\n", outboundLabel(current))
+	fmt.Fprintf(u.out, "当前生效：%s\n\n", cardText(outboundLabel(current)))
 	defaultChoice := -1
 	for index, strategy := range strategies {
 		label := outboundChoice(strategy)
@@ -870,10 +870,10 @@ func (m *Manager) strategyMenu(ctx context.Context, u *ui, setting string) error
 	}
 	selected := strategies[choice-1]
 	if selected == current {
-		fmt.Fprintf(u.out, "[提示] %s 已经是 %s，无需修改。\n", title, outboundLabel(selected))
+		fmt.Fprintf(u.out, "[提示] %s 已经是 %s，无需修改。\n", title, cardText(outboundLabel(selected)))
 		return nil
 	}
-	u.confirmationPanel("操作确认：设置"+title, []string{"目标实例：" + Container, "当前生效：" + outboundLabel(current), "新的策略：" + outboundLabel(selected)}, confirmSection{title: "将执行", items: []string{"更新 Xray 地址族策略", "使用当前镜像校验候选配置", "备份并原子更新当前服务端配置", "容器正在运行时重建使设置立即生效"}})
+	u.confirmationPanel("操作确认：设置"+title, []string{"目标实例：" + Container, "当前生效：" + cardText(outboundLabel(current)), "新的策略：" + cardText(outboundLabel(selected))}, confirmSection{title: "将执行", items: []string{"更新 Xray 地址族策略", "使用当前镜像校验候选配置", "备份并原子更新当前服务端配置", "容器正在运行时重建使设置立即生效"}})
 	if err = u.confirm("更新" + title + "？"); err != nil {
 		return err
 	}
