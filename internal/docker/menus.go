@@ -1306,7 +1306,15 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 		}
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）", "访问控制", name)
-		u.labeledCard("当前名单", [][2]string{{"名单", name}, {"规则数量", strconv.Itoa(len(entries)) + " 条"}})
+		rows := [][2]string{{"名单", name}, {"规则数量", strconv.Itoa(len(entries)) + " 条"}}
+		if len(entries) == 0 {
+			rows = append(rows, [2]string{"名单内容", "暂无规则"})
+		} else {
+			for i, entry := range entries {
+				rows = append(rows, [2]string{"规则 " + strconv.Itoa(i+1), entry.Value})
+			}
+		}
+		u.labeledCard("当前名单", rows)
 		u.menuChoice("1", "添加规则（支持批量输入）")
 		u.menuChoice("2", "删除规则")
 		u.menuChoice("3", "清空名单")
