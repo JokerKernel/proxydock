@@ -93,6 +93,8 @@ DNS 支持 `system`、`public-cloudflare`、`public-google`、`doh-cloudflare`�
 
 ## 访问控制与线路
 
+菜单“添加规则”和命令行均支持批量添加，用空格、英文逗号或中文逗号分隔域名、IP 和 CIDR，例如 `example.com example.org，1.2.3.4,10.0.0.0/8`。域名统一选择是否包含子域名；重复规则自动去重，任一目标无效时整批不提交。
+
 ```bash
 sudo proxydock config access add white example.com 10.0.0.0/8
 sudo proxydock config access add black blocked.example.com --exact

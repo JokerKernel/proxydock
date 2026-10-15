@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -284,12 +285,18 @@ func (m *Manager) chooseDeployChannel(u *ui, selection string) (string, error) {
 func (m *Manager) askDeployVersion(u *ui) (string, error) {
 	u.clearScreen()
 	u.pageHeader("Xray（Docker）", "部署/升级", "指定版本")
+	fmt.Fprintln(u.out, "请输入官方版本号，例如 26.3.27。")
+	u.menuChoice("0/q", "返回")
+	fmt.Fprintln(u.out)
 	for {
 		value, err := u.ask("版本号", "")
 		if err != nil {
 			return "", err
 		}
-		if strings.TrimSpace(value) == "" {
+		if value == "0" {
+			return "", errCancelled
+		}
+		if value == "" {
 			fmt.Fprintln(u.out, "版本号不能为空。")
 			continue
 		}
@@ -1159,7 +1166,7 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）", "访问控制", name)
 		u.labeledCard("当前名单", [][2]string{{"名单", name}, {"规则数量", strconv.Itoa(len(entries)) + " 条"}})
-		u.menuChoice("1", "添加规则")
+		u.menuChoice("1", "添加规则（支持批量输入）")
 		u.menuChoice("2", "删除规则")
 		u.menuChoice("3", "清空名单")
 		u.menuChoice("0/q", "返回")
@@ -1190,15 +1197,19 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 }
 
 func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) error {
+	fmt.Fprintln(u.out, "\n支持多个目标，用空格、英文逗号或中文逗号分隔；输入 0/q 返回。")
 	value, err := u.ask("域名、IP 或 CIDR", "")
 	if err != nil {
 		return err
 	}
-	entry, err := model.ParseAccessEntry(value, false)
+	if value == "0" {
+		return errCancelled
+	}
+	entries, err := model.ParseAccessEntries(value, false)
 	if err != nil {
 		return err
 	}
-	if entry.Type == model.AccessEntryDomain {
+	if slices.ContainsFunc(entries, func(entry model.AccessEntry) bool { return entry.Type == model.AccessEntryDomain }) {
 		u.menuChoice("1", "域名及其全部子域名（默认）")
 		u.menuChoice("2", "仅完整域名")
 		u.menuChoice("0/q", "返回")
@@ -1206,18 +1217,17 @@ func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) er
 		if chooseErr != nil {
 			return chooseErr
 		}
-		if choice == 2 {
-			entry, err = model.ParseAccessEntry(value, true)
-			if err != nil {
-				return err
+		for i := range entries {
+			if entries[i].Type == model.AccessEntryDomain {
+				entries[i].IncludeSubdomains = choice != 2
 			}
 		}
 	}
 	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
 		if listName == "black" {
-			policy.Blacklist = append(policy.Blacklist, entry)
+			policy.Blacklist = append(policy.Blacklist, entries...)
 		} else {
-			policy.Whitelist = append(policy.Whitelist, entry)
+			policy.Whitelist = append(policy.Whitelist, entries...)
 		}
 		return policy, nil
 	})

@@ -131,6 +131,33 @@ func TestDockerVersionMenuUsesLatestAndPrerelease(t *testing.T) {
 	}
 }
 
+func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
+	for _, cancel := range []string{"0", "q", " Q "} {
+		t.Run(cancel, func(t *testing.T) {
+			t.Setenv("TERM", "xterm")
+			m, _ := testManager(t)
+			var out dockerTerminalOutput
+			m.out, m.errOut = &out, &out
+			in := &dockerTerminalInput{answers: []string{"1\n", "3\n", "26.3.27\n", "3\n", cancel + "\n", "0\n", "0\n"}, output: &out}
+			if err := m.Menu(context.Background(), in); err != nil {
+				t.Fatal(err)
+			}
+			if len(in.screens) != 7 {
+				t.Fatalf("return did not reach parent menu: %d prompts\n%s", len(in.screens), out.String())
+			}
+			if !strings.Contains(in.screens[4], "0/q 返回") || !strings.Contains(in.screens[4], "版本号:") {
+				t.Fatalf("version page omitted return instructions:\n%s", in.screens[4])
+			}
+			if !strings.Contains(in.screens[5], "指定版本 26.3.27") || !strings.Contains(in.screens[5], "1   部署/更新") {
+				t.Fatalf("return changed selected version or missed parent menu:\n%s", in.screens[5])
+			}
+			if strings.Contains(out.String(), "版本格式无效") || strings.Contains(out.String(), "按 Enter") {
+				t.Fatalf("return was treated as invalid input or paused:\n%s", out.String())
+			}
+		})
+	}
+}
+
 func TestDockerModifyMenuMatchesXrayCore(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := deployed(t)
