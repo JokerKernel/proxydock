@@ -18,7 +18,15 @@ func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mo
 		return nil, err
 	}
 	name := Container + "-check-" + suffix
-	args := []string{"run", "--rm", "--pull", "never", "--name", name, "--label", "io.proxydock.managed=true", "--label", "io.proxydock.instance=" + Instance, "--label", "io.proxydock.role=validator", "--network", "host", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--tmpfs", "/usr/local/etc/xray:rw,noexec,nosuid,nodev,size=1m,mode=0700", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--tmpfs", "/var/log/xray:rw,noexec,nosuid,nodev,size=16m,mode=0700"}
+	id, err := m.containerIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"run", "--rm", "--pull", "never", "--name", name, "--label", "io.proxydock.managed=true", "--label", "io.proxydock.instance=" + Instance, "--label", "io.proxydock.role=validator", "--network", "host", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true"}
+	if id.pinRoot {
+		args = append(args, "--user", "0:0")
+	}
+	args = append(args, "--tmpfs", tmpfsOption("/usr/local/etc/xray", "1m", id.uid, id.gid), "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777", "--tmpfs", tmpfsOption("/var/log/xray", "16m", id.uid, id.gid))
 	args = append(args, mounts...)
 	args = append(args, imageID)
 	args = append(args, command...)
@@ -64,6 +72,9 @@ func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte
 		err = e
 	}
 	if err != nil {
+		return err
+	}
+	if err = m.grantImageUser(ctx, path, m.paths.TLS()); err != nil {
 		return err
 	}
 	for _, path := range []string{path, m.paths.TLS()} {

@@ -131,19 +131,26 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 	selection := ""
 	network := ""
+	runAsRoot := false
+	runAsRootSet := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		shownRoot := m.savedRunAsRoot()
+		if runAsRootSet {
+			shownRoot = runAsRoot
+		}
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）", "部署/升级")
-		u.labeledCard("当前内核", m.deployCardRows(selection, network))
+		u.labeledCard("当前内核", m.deployCardRows(selection, network, shownRoot))
 		u.menuChoice("1", "部署/更新")
 		u.menuChoice("2", "选择版本")
 		u.menuChoice("3", "指定版本")
 		u.menuChoice("4", "网络方式（宿主机网络或端口映射）")
+		u.menuChoice("5", "运行用户（镜像默认或 root）")
 		u.menuChoice("0/q", "返回")
-		choice, err := u.chooseNumber("请选择", 0, 4, -1)
+		choice, err := u.chooseNumber("请选择", 0, 5, -1)
 		if err != nil {
 			return err
 		}
@@ -151,7 +158,7 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 		case 0:
 			return errBack
 		case 1:
-			return m.confirmDeploy(ctx, u, selection, network)
+			return m.confirmDeploy(ctx, u, selection, network, shownRoot)
 		case 2:
 			next, chooseErr := m.chooseDeployChannel(u, selection)
 			if errors.Is(chooseErr, errCancelled) {
@@ -186,11 +193,28 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 				}
 			}
 			network = next
+		case 5:
+			next, chooseErr := m.chooseRunAsRoot(u, shownRoot, "Xray（Docker）", "部署/升级")
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			if _, metaErr := m.metadata(); metaErr == nil && next != m.savedRunAsRoot() {
+				if err = m.confirmSetRunAsRoot(ctx, u, next); errors.Is(err, errCancelled) {
+					continue
+				} else if err != nil {
+					return err
+				}
+			}
+			runAsRoot = next
+			runAsRootSet = true
 		}
 	}
 }
 
-func (m *Manager) deployCardRows(selection, network string) [][2]string {
+func (m *Manager) deployCardRows(selection, network string, runAsRoot bool) [][2]string {
 	version := "尚未部署"
 	if md, err := m.metadata(); err == nil {
 		switch {
@@ -215,7 +239,44 @@ func (m *Manager) deployCardRows(selection, network string) [][2]string {
 	if mode == "" {
 		mode = m.savedNetwork()
 	}
-	return [][2]string{{"内核", "Xray（Docker）"}, {"版本号", version}, {"安装渠道", target}, {"网络方式", networkLabel(mode)}}
+	return [][2]string{{"内核", "Xray（Docker）"}, {"版本号", version}, {"安装渠道", target}, {"网络方式", networkLabel(mode)}, {"运行用户", runUserLabel(runAsRoot)}}
+}
+
+func (m *Manager) savedRunAsRoot() bool {
+	md, err := m.metadata()
+	if err != nil {
+		return false
+	}
+	return md.RunAsRoot
+}
+
+func (m *Manager) chooseRunAsRoot(u *ui, current bool, crumb ...string) (bool, error) {
+	u.clearScreen()
+	u.pageHeader(append(crumb, "运行用户")...)
+	u.menuChoice("1", "镜像默认（使用官方镜像自带用户）")
+	u.menuChoice("2", "root（以 0:0 启动）")
+	u.menuChoice("0/q", "返回")
+	def := 1
+	if current {
+		def = 2
+	}
+	choice, err := u.chooseNumberCancelable("请选择运行用户", 1, 2, def)
+	if err != nil {
+		return false, err
+	}
+	return choice == 2, nil
+}
+
+func (m *Manager) confirmSetRunAsRoot(ctx context.Context, u *ui, root bool) error {
+	effect := "容器使用镜像自带用户"
+	if root {
+		effect = "容器以 root（0:0）启动"
+	}
+	u.confirmationPanel("操作确认：切换运行用户", []string{"目标实例：" + Container, "运行用户：" + runUserLabel(root)}, confirmSection{title: "将执行", items: []string{"重写 Compose 文件", "重建容器并保持当前运行状态", effect}})
+	if err := u.confirm("切换容器运行用户？"); err != nil {
+		return err
+	}
+	return m.SetRunAsRoot(ctx, root)
 }
 
 func (m *Manager) savedNetwork() string {
@@ -309,17 +370,17 @@ func (m *Manager) askDeployVersion(u *ui) (string, error) {
 	}
 }
 
-func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network string) error {
+func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network string, runAsRoot bool) error {
 	mode := network
 	if mode == "" {
 		mode = m.savedNetwork()
 	}
 	if _, e := m.metadata(); e == nil {
-		u.confirmationPanel("操作确认：升级镜像", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
+		u.confirmationPanel("操作确认：升级镜像", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
 		if err := u.confirm("升级 Xray Docker 镜像？"); err != nil {
 			return err
 		}
-		if err := m.upgrade(ctx, version, network); err != nil {
+		if err := m.upgrade(ctx, version, network, ""); err != nil {
 			return err
 		}
 		if _, stateErr := m.LoadState(); os.IsNotExist(stateErr) {
@@ -333,14 +394,14 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 	} else if !os.IsNotExist(e) {
 		return e
 	}
-	u.confirmationPanel("操作确认：部署实例", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode)}, confirmSection{title: "将执行", items: []string{"准备官方镜像和 Compose 文件", "生成 REALITY 或 TLS 节点配置", "启动容器并检查运行状态"}})
+	u.confirmationPanel("操作确认：部署实例", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"准备官方镜像和 Compose 文件", "生成 REALITY 或 TLS 节点配置", "启动容器并检查运行状态"}})
 	if err := u.confirm("准备官方镜像并部署 Docker Xray？"); err != nil {
 		return err
 	}
 	if strings.TrimSpace(network) == "" {
 		network = defaultNetwork
 	}
-	if err := m.prepareWithNetwork(ctx, version, network); err != nil {
+	if err := m.prepareWithNetwork(ctx, version, network, runAsRoot); err != nil {
 		return err
 	}
 	opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
@@ -386,7 +447,7 @@ func (m *Manager) instanceRows() [][2]string {
 			port = "无法读取"
 		}
 	}
-	rows := [][2]string{{"监听端口", port}, {"网络方式", networkLabel(m.savedNetwork())}, {"运行用户", "0:0"}}
+	rows := [][2]string{{"监听端口", port}, {"网络方式", networkLabel(m.savedNetwork())}, {"运行用户", runUserLabel(m.savedRunAsRoot())}}
 	if md, err := m.metadata(); err == nil {
 		rows = append(rows, [2]string{"更新渠道", "[" + channelLabel(md.Channel) + "]"})
 	}
@@ -529,7 +590,7 @@ func (m *Manager) printConfigCard(u *ui) {
 		}
 		return value
 	}
-	rows := [][2]string{{"运行用户", "0:0"}, {"日志级别", read(func() (string, error) {
+	rows := [][2]string{{"运行用户", runUserLabel(m.savedRunAsRoot())}, {"日志级别", read(func() (string, error) {
 		level, err := m.codec.CurrentLogLevel(cfg)
 		return cardText(logLevelLabel(level)), err
 	})}, {"服务状态", service}}
@@ -894,13 +955,62 @@ func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
 		u.menuChoice("4", "状态（查看容器运行状态）")
 		u.menuChoice("5", "最近日志（查看容器最近记录）")
 		u.menuChoice("6", "实时日志（Ctrl+C 返回）")
+		u.menuChoice("7", "运行用户（镜像默认或 root）")
 		u.menuChoice("0/q", "返回")
-		choice, err := u.chooseNumber("请选择", 0, 6, 4)
+		choice, err := u.chooseNumber("请选择", 0, 7, 4)
 		if err != nil {
 			return err
 		}
 		if choice == 0 {
 			return nil
+		}
+		if choice == 7 {
+			next, chooseErr := m.chooseRunAsRoot(u, m.savedRunAsRoot(), "Xray（Docker）", "服务端配置", "服务管理")
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			if _, metaErr := m.metadata(); os.IsNotExist(metaErr) {
+				fmt.Fprintln(u.out, "请先部署实例。")
+				if err := u.pause(); err != nil {
+					return err
+				}
+				continue
+			} else if metaErr != nil {
+				return metaErr
+			}
+			if next == m.savedRunAsRoot() {
+				fmt.Fprintf(u.out, "[提示] 运行用户已经是 %s，无需修改。\n", runUserLabel(next))
+				if err := u.pause(); err != nil {
+					return err
+				}
+				continue
+			}
+			err = m.confirmSetRunAsRoot(ctx, u, next)
+			if errors.Is(err, errCancelled) {
+				continue
+			}
+			if errors.Is(err, errQuit) || errors.Is(err, io.EOF) {
+				return err
+			}
+			if handled, pause := m.consumeInterrupt(err); pause {
+				err = handled
+			}
+			if err != nil && ctx.Err() == nil {
+				m.printMenuError(err)
+			}
+			if ctx.Err() != nil {
+				if err != nil {
+					return err
+				}
+				return ctx.Err()
+			}
+			if err := u.pause(); err != nil {
+				return err
+			}
+			continue
 		}
 		u.clearScreen()
 		if choice == 6 {

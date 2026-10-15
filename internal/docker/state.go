@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -21,6 +20,8 @@ type Metadata struct {
 	Channel          string    `json:"channel"`
 	Network          string    `json:"network"`
 	ComposeSHA256    string    `json:"compose_sha256"`
+	ImageUser        string    `json:"image_user,omitempty"`
+	RunAsRoot        bool      `json:"run_as_root,omitempty"`
 	DesiredState     string    `json:"desired_state"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -78,18 +79,13 @@ func (m *Manager) saveNode(n model.Node) error {
 	return m.stateWrite(m.paths.State(), data, 0600)
 }
 func (m *Manager) checkCompose(md Metadata) error {
-	b, err := readPrivate(m.paths.Compose())
-	if err != nil {
+	current, _, err := m.classifyCompose(md)
+	if err != nil || current {
 		return err
 	}
-	expected, err := m.composeFor(md, nil)
-	if err != nil {
-		return err
-	}
-	if digest(b) == md.ComposeSHA256 && bytes.Equal(b, expected) {
-		return nil
-	}
-	return fmt.Errorf("Compose 文件已被外部修改，拒绝按未知定义操作容器")
+	// An authentic copy of the previous root pin is still our file. Start,
+	// restart, upgrade, and the next compose rewrite move it to the image user.
+	return nil
 }
 func (m *Manager) managedConfig() (State, []byte, error) {
 	s, err := m.LoadState()

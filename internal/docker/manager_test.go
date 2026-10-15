@@ -290,9 +290,23 @@ func contains(a []string, value string) bool {
 	}
 	return false
 }
+func composeServiceUser(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		trim := strings.TrimSpace(line)
+		if !strings.HasPrefix(trim, "user:") {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(strings.TrimPrefix(trim, "user:")), `"'`)
+	}
+	return ""
+}
 func (f *simulatedDocker) newContainer(image string) {
 	in := &inspection{ID: strings.Repeat("c", 64), Image: image, Name: "/" + Container}
-	in.Config.User = "0:0"
+	in.Config.User = composeServiceUser(f.manager.paths.Compose())
 	in.Config.Cmd = []string{"run", "-config", "/usr/local/etc/xray/config.json"}
 	in.Config.Entrypoint = []string{"/usr/local/bin/xray"}
 	in.Config.Labels = map[string]string{"io.proxydock.managed": "true", "io.proxydock.instance": Instance, "io.proxydock.core": "xray", "com.docker.compose.project": Project, "com.docker.compose.service": Service}
@@ -398,6 +412,9 @@ func TestPreparePinsImageWithoutStarting(t *testing.T) {
 		if !bytes.Contains(b, []byte(part)) {
 			t.Fatalf("compose missing %q", part)
 		}
+	}
+	if bytes.Contains(b, []byte("user:")) {
+		t.Fatalf("compose pins a container user:\n%s", b)
 	}
 	if strings.Contains(string(b), "latest") {
 		t.Fatal("unpinned image")

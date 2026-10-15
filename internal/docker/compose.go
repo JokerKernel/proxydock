@@ -28,8 +28,9 @@ var shaPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var imagePattern = regexp.MustCompile(`^ghcr\.io/xtls/xray-core@sha256:[0-9a-f]{64}$`)
 
 type composeView struct {
-	Image   string
-	Network string
+	Image    string
+	Network  string
+	LogTmpfs string
 }
 
 type publishedPort struct {
@@ -101,7 +102,7 @@ func renderCompose(image, network string, ports []publishedPort) ([]byte, error)
 	if mode == "" {
 		return nil, fmt.Errorf("网络方式无效，请使用 host 或 publish")
 	}
-	view := composeView{Image: image, Network: composeNetworkBlock(mode, ports)}
+	view := composeView{Image: image, Network: composeNetworkBlock(mode, ports), LogTmpfs: logTmpfs(0, 0)}
 	var b bytes.Buffer
 	if err := parsedComposeTemplate.Execute(&b, view); err != nil {
 		return nil, err
@@ -216,7 +217,30 @@ func (m *Manager) composeFor(md Metadata, n *model.Node) ([]byte, error) {
 			ports = publishedPorts(*n)
 		}
 	}
-	return renderCompose(md.ImageRef, mode, ports)
+	uid, gid, ok := parseImageUser(md.ImageUser)
+	if md.ImageUser != "" && !ok {
+		return nil, fmt.Errorf("镜像用户 %q 无法识别", md.ImageUser)
+	}
+	rendered, err := renderCompose(md.ImageRef, mode, ports)
+	if err != nil {
+		return nil, err
+	}
+	if md.RunAsRoot {
+		pinned, ok := pinRootLine(rendered)
+		if !ok {
+			return nil, fmt.Errorf("编排模板无法固定 root 用户")
+		}
+		return pinned, nil
+	}
+	if uid == 0 && gid == 0 {
+		return rendered, nil
+	}
+	old := logTmpfs(0, 0)
+	next := logTmpfs(uid, gid)
+	if !bytes.Contains(rendered, []byte(old)) {
+		return nil, fmt.Errorf("编排模板缺少日志临时目录")
+	}
+	return bytes.Replace(rendered, []byte(old), []byte(next), 1), nil
 }
 
 func (m *Manager) writeManagedCompose(md *Metadata, n *model.Node) (bool, error) {
@@ -238,4 +262,91 @@ func (m *Manager) writeManagedCompose(md *Metadata, n *model.Node) (bool, error)
 	md.ComposeSHA256 = digest(next)
 	m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
 	return true, nil
+}
+
+func logTmpfs(uid, gid int) string {
+	opt := "/var/log/xray:rw,noexec,nosuid,nodev,size=16m,mode=0700"
+	if uid == 0 && gid == 0 {
+		return opt
+	}
+	return fmt.Sprintf("%s,uid=%d,gid=%d", opt, uid, gid)
+}
+
+func parseImageUser(spec string) (uid int, gid int, ok bool) {
+	spec = strings.TrimSpace(spec)
+	switch spec {
+	case "", "0", "root", "0:0", "root:root", "0:root", "root:0":
+		return 0, 0, true
+	}
+	user, group, hasGroup := strings.Cut(spec, ":")
+	uid, err := strconv.Atoi(user)
+	if err != nil || uid < 0 {
+		return 0, 0, false
+	}
+	gid = uid
+	if hasGroup {
+		gid, err = strconv.Atoi(group)
+		if err != nil || gid < 0 {
+			return 0, 0, false
+		}
+	}
+	return uid, gid, true
+}
+
+func normalizeImageUser(spec string) (string, error) {
+	uid, gid, ok := parseImageUser(spec)
+	if !ok {
+		return "", fmt.Errorf("镜像用户 %q 无法识别", spec)
+	}
+	return fmt.Sprintf("%d:%d", uid, gid), nil
+}
+
+// Previous releases pinned the container to root. That exact file is still ours.
+func legacyUserCompose(current []byte) ([]byte, bool) {
+	return pinRootLine(current)
+}
+
+func pinRootLine(compose []byte) ([]byte, bool) {
+	const marker = "    read_only: true\n"
+	const line = "    user: \"0:0\"\n"
+	if bytes.Contains(compose, []byte("\n    user:")) || !bytes.Contains(compose, []byte(marker)) {
+		return nil, false
+	}
+	return bytes.Replace(compose, []byte(marker), []byte(line+marker), 1), true
+}
+
+func (m *Manager) classifyCompose(md Metadata) (current bool, legacy bool, err error) {
+	b, err := readPrivate(m.paths.Compose())
+	if err != nil {
+		return false, false, err
+	}
+	expected, err := m.composeFor(md, nil)
+	if err != nil {
+		return false, false, err
+	}
+	if digest(b) == md.ComposeSHA256 && bytes.Equal(b, expected) {
+		return true, false, nil
+	}
+	previous := md
+	previous.ImageUser = "0:0"
+	previous.RunAsRoot = false
+	base, err := m.composeFor(previous, nil)
+	if err != nil {
+		return false, false, err
+	}
+	old, ok := legacyUserCompose(base)
+	if ok && digest(b) == md.ComposeSHA256 && bytes.Equal(b, old) {
+		return false, true, nil
+	}
+	return false, false, fmt.Errorf("Compose 文件已被外部修改，拒绝按未知定义操作容器")
+}
+
+// Root and the historical 0:0 pin are both managed. Any other user was not written by us.
+func managedContainerUser(user string) bool {
+	switch strings.TrimSpace(user) {
+	case "", "0:0":
+		return true
+	default:
+		return false
+	}
 }

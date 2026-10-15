@@ -274,7 +274,7 @@ func TestMaintenanceRollbackAndRemoveReclaimComposeNetwork(t *testing.T) {
 	r := &auditRuntimeRunner{simulatedDocker: f}
 	m.runner = r
 	ctx := context.Background()
-	if err := m.prepareWithNetwork(ctx, "26.3.27", networkPublish); err != nil {
+	if err := m.prepareWithNetwork(ctx, "26.3.27", networkPublish, false); err != nil {
 		t.Fatal(err)
 	}
 	f.healthFailures = 1

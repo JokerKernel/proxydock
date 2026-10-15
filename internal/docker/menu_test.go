@@ -108,6 +108,29 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 	}
 }
 
+func TestRunUserMenuOffersRoot(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	m, _ := deployed(t)
+	var out dockerTerminalOutput
+	m.out, m.errOut = &out, &out
+	in := &dockerTerminalInput{answers: []string{"1\n", "5\n", "0\n", "0\n", "2\n", "6\n", "7\n", "0\n", "0\n", "0\n"}, output: &out}
+	if err := m.Menu(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.screens) < 8 {
+		t.Fatalf("run-user menus were not shown: %d prompts", len(in.screens))
+	}
+	deploy := in.screens[2]
+	service := in.screens[7]
+	for _, screen := range []string{deploy, service} {
+		for _, want := range []string{"镜像默认", "使用官方镜像自带用户", "root", "以 0:0 启动"} {
+			if !strings.Contains(screen, want) {
+				t.Fatalf("run-user menu missing %q:\n%s", want, screen)
+			}
+		}
+	}
+}
+
 func TestDockerVersionMenuUsesLatestAndPrerelease(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)

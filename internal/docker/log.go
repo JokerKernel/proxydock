@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -69,6 +70,11 @@ func (m *Manager) dockerStreamOp(ctx context.Context, label opLabel, out, errOut
 }
 
 func (m *Manager) composeOp(ctx context.Context, label opLabel, args ...string) ([]byte, error) {
+	if len(args) > 0 && (args[0] == "up" || args[0] == "restart") {
+		if err := m.grantImageUser(ctx, filepath.Dir(m.paths.Config()), m.paths.TLS()); err != nil {
+			return nil, err
+		}
+	}
 	prefix := []string{"compose", "--project-name", Project, "--project-directory", m.paths.Deploy(), "--file", m.paths.Compose()}
 	return m.dockerOp(ctx, label, append(prefix, args...)...)
 }

@@ -22,28 +22,40 @@ func (m *Manager) Command() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&m.traceDocker, "debug", false, "显示完整命令参数")
 	for _, action := range []string{"prepare", "upgrade"} {
 		action := action
-		var version, network string
+		var version, network, runUser string
 		sub := &cobra.Command{Use: action, Short: map[string]string{"prepare": "准备官方镜像和 Compose，不启动代理", "upgrade": "升级镜像，保留凭据并支持回滚"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			if action == "prepare" {
 				if strings.TrimSpace(network) == "" {
 					network = defaultNetwork
 				}
-				return m.prepareWithNetwork(cmd.Context(), version, network)
+				root := false
+				if strings.TrimSpace(runUser) != "" {
+					var err error
+					root, err = parseRunUser(runUser)
+					if err != nil {
+						return err
+					}
+				}
+				return m.prepareWithNetwork(cmd.Context(), version, network, root)
 			}
-			return m.upgrade(cmd.Context(), version, network)
+			return m.upgrade(cmd.Context(), version, network, runUser)
 		}}
 		sub.Flags().StringVar(&version, "version", "", "latest（缺省，官方 latest 标签）、pre-release 或具体版本号")
 		networkHelp := "网络方式：publish 或 host，缺省保持当前"
+		userHelp := "运行用户：default 或 root，缺省保持当前"
 		if action == "prepare" {
 			networkHelp = "网络方式：publish（缺省，端口映射）或 host（宿主机网络）"
+			userHelp = "运行用户：default（缺省，镜像默认）或 root"
 		}
 		sub.Flags().StringVar(&network, "network", "", networkHelp)
+		sub.Flags().StringVar(&runUser, "user", "", userHelp)
 		cmd.AddCommand(sub)
 	}
 	deploy := m.generateCommand("deploy", &yes)
-	var version, network string
+	var version, network, runUser string
 	deploy.Flags().StringVar(&version, "version", "", "首次部署镜像：latest（缺省）、pre-release 或具体版本号")
 	deploy.Flags().StringVar(&network, "network", "", "网络方式：publish（首次缺省，端口映射）或 host（宿主机网络），已有实例沿用当前")
+	deploy.Flags().StringVar(&runUser, "user", "", "运行用户：default（首次缺省，镜像默认）或 root，已有实例沿用当前")
 	cmd.AddCommand(deploy)
 	cmd.AddCommand(&cobra.Command{Use: "status", Short: "查看 Docker 实例状态", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		s, err := m.Status(cmd.Context())
@@ -106,9 +118,16 @@ func (m *Manager) Command() *cobra.Command {
 	}})
 	config.AddCommand(&cobra.Command{Use: "validate", Short: "使用固定镜像校验正式配置", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return m.Validate(cmd.Context()) }})
 	config.AddCommand(&cobra.Command{Use: "edit", Short: "编辑配置副本并事务应用", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return m.Edit(cmd.Context(), cmd.InOrStdin()) }})
-	settings := &cobra.Command{Use: "set <dns|log|outbound-ip|fallback-ip|network> <value>", Short: "修改 DNS、日志、地址族或网络方式", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	settings := &cobra.Command{Use: "set <dns|log|outbound-ip|fallback-ip|network|user> <value>", Short: "修改 DNS、日志、地址族、网络方式或运行用户", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		if args[0] == "network" {
 			return m.SetNetwork(cmd.Context(), args[1])
+		}
+		if args[0] == "user" {
+			root, err := parseRunUser(args[1])
+			if err != nil {
+				return err
+			}
+			return m.SetRunAsRoot(cmd.Context(), root)
 		}
 		return m.PatchSetting(cmd.Context(), args[0], args[1])
 	}}
@@ -188,7 +207,8 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 		if use == "deploy" {
 			version, _ := cmd.Flags().GetString("version")
 			network, _ := cmd.Flags().GetString("network")
-			if err := m.prepareDeployment(cmd.Context(), version, network); err != nil {
+			runUser, _ := cmd.Flags().GetString("user")
+			if err := m.prepareDeployment(cmd.Context(), version, network, runUser); err != nil {
 				return err
 			}
 		}

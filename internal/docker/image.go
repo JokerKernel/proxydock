@@ -80,6 +80,9 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 		RepoDigests  []string
 		Architecture string
 		Os           string
+		Config       struct {
+			User string
+		}
 	}
 	if err = json.Unmarshal(b, &images); err != nil || len(images) != 1 {
 		return Metadata{}, fmt.Errorf("镜像详情无效")
@@ -98,12 +101,16 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 	if ref == "" {
 		return Metadata{}, fmt.Errorf("镜像缺少官方仓库 digest")
 	}
+	imageUser, err := normalizeImageUser(image.Config.User)
+	if err != nil {
+		return Metadata{}, err
+	}
 	if known != nil && image.ID == known.ImageID {
 		if channel == "pinned" && v != known.RequestedVersion {
 			return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
 		}
 		md := *known
-		md.ImageRef, md.Channel = ref, channel
+		md.ImageRef, md.Channel, md.ImageUser = ref, channel, imageUser
 		return md, nil
 	}
 	output, err := m.coreRun(ctx, opLabel{}, image.ID, nil, "version")
@@ -122,7 +129,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 	if channel == "pinned" && actualVersion != v {
 		return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
 	}
-	md := Metadata{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance, ImageRef: ref, ImageID: image.ID, Version: line, RequestedVersion: actualVersion, Channel: channel, DesiredState: "stopped", UpdatedAt: m.now().UTC()}
+	md := Metadata{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance, ImageRef: ref, ImageID: image.ID, Version: line, RequestedVersion: actualVersion, Channel: channel, ImageUser: imageUser, DesiredState: "stopped", UpdatedAt: m.now().UTC()}
 	return md, nil
 }
 func parseKeyPair(b []byte) (model.KeyPair, error) {

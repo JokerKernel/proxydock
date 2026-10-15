@@ -72,7 +72,7 @@ func (m *Manager) checkProject(ctx context.Context) error {
 	return nil
 }
 func stringsFields(b []byte) []string { return strings.Fields(string(b)) }
-func (m *Manager) prepareWithNetwork(ctx context.Context, version, network string) error {
+func (m *Manager) prepareWithNetwork(ctx context.Context, version, network string, runAsRoot bool) error {
 	mode, err := normalizeNetwork(network)
 	if err != nil {
 		return err
@@ -119,6 +119,7 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 			return err
 		}
 		md.Network = mode
+		md.RunAsRoot = runAsRoot
 		if err = m.probeCapabilities(ctx, md); err != nil {
 			return err
 		}
@@ -136,6 +137,7 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 			return fail(err)
 		}
 		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
+		m.op(phaseCheck, levelInfo, "运行用户", runUserLabel(runAsRoot))
 		m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
 		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
 			return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
@@ -177,7 +179,7 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	}
 	return m.validateBytes(ctx, md.ImageID, client)
 }
-func (m *Manager) upgrade(ctx context.Context, version, network string) error {
+func (m *Manager) upgrade(ctx context.Context, version, network, runUser string) error {
 	requested := ""
 	if strings.TrimSpace(network) != "" {
 		mode, err := normalizeNetwork(network)
@@ -185,6 +187,14 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 			return err
 		}
 		requested = mode
+	}
+	var requestedRoot *bool
+	if strings.TrimSpace(runUser) != "" {
+		root, err := parseRunUser(runUser)
+		if err != nil {
+			return err
+		}
+		requestedRoot = &root
 	}
 	if _, err := normalizeImageSelection(version); err != nil {
 		return err
@@ -227,6 +237,9 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 		} else {
 			md.Network = old.Network
 		}
+		if requestedRoot != nil {
+			md.RunAsRoot = *requestedRoot
+		}
 		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {
 			next, composeErr := m.composeFor(md, nil)
 			if composeErr != nil {
@@ -241,6 +254,9 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 					return err
 				}
 				m.op(phaseResult, levelResult, "网络方式", networkLabel(md.Network))
+				if requestedRoot != nil && *requestedRoot != old.RunAsRoot {
+					m.op(phaseResult, levelResult, "运行用户", runUserLabel(md.RunAsRoot))
+				}
 				return nil
 			}
 			if md.Channel != old.Channel {
@@ -295,6 +311,10 @@ func (m *Manager) upgrade(ctx context.Context, version, network string) error {
 			return fail(err)
 		}
 		if err = m.phase(&j, "files-committed"); err != nil {
+			return fail(err)
+		}
+		// Publish the selected user before recreate so file ownership follows it.
+		if err = saveJSON(m.paths.Metadata(), md); err != nil {
 			return fail(err)
 		}
 		if in != nil {
@@ -373,6 +393,10 @@ func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspectio
 	if err = m.phase(&j, "files-committed"); err != nil {
 		return fail(err)
 	}
+	md.UpdatedAt = m.now().UTC()
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		return fail(err)
+	}
 	if in != nil {
 		args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
 		if running {
@@ -401,11 +425,37 @@ func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspectio
 			}
 		}
 	}
-	md.UpdatedAt = m.now().UTC()
-	if err = saveJSON(m.paths.Metadata(), md); err != nil {
-		return fail(err)
-	}
 	return m.commit(j)
+}
+
+func (m *Manager) SetRunAsRoot(ctx context.Context, root bool) error {
+	return m.withLock(ctx, func() error {
+		md, in, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
+		}
+		if md.RunAsRoot == root {
+			next, err := m.composeFor(md, nil)
+			if err != nil {
+				return err
+			}
+			current, err := readPrivate(m.paths.Compose())
+			if err != nil {
+				return err
+			}
+			if string(current) == string(next) {
+				m.op(phaseResult, levelResult, "运行用户", "未变化")
+				return nil
+			}
+		}
+		m.op(phaseCheck, levelInfo, "运行用户", runUserLabel(root))
+		md.RunAsRoot = root
+		if err = m.refreshCompose(ctx, md, in); err != nil {
+			return err
+		}
+		m.op(phaseResult, levelResult, "更新结果", "已切换为"+runUserLabel(root))
+		return nil
+	})
 }
 
 func (m *Manager) SetNetwork(ctx context.Context, network string) error {
@@ -686,6 +736,19 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 		in, err := m.inspect(ctx)
 		if err != nil {
 			return err
+		}
+		// Stop must not recreate a running container. Start and restart move an
+		// authentic root pin onto the image user before they use the container.
+		if action == "start" || action == "restart" {
+			migrated, err := m.reconcileContainerUser(ctx, &md, in)
+			if err != nil {
+				return err
+			}
+			if migrated {
+				if in, err = m.inspect(ctx); err != nil {
+					return err
+				}
+			}
 		}
 		if action == "restart" && in == nil {
 			return fmt.Errorf("容器已移除，请先启动")

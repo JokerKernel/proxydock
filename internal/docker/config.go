@@ -77,23 +77,46 @@ func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, 
 	}
 	return md, in, err
 }
-func (m *Manager) prepareDeployment(ctx context.Context, version, network string) error {
+func (m *Manager) prepareDeployment(ctx context.Context, version, network, runUser string) error {
+	if strings.TrimSpace(runUser) != "" {
+		if _, err := parseRunUser(runUser); err != nil {
+			return err
+		}
+	}
 	md, err := m.metadata()
 	if os.IsNotExist(err) {
 		if strings.TrimSpace(network) == "" {
 			network = defaultNetwork
 		}
-		return m.prepareWithNetwork(ctx, version, network)
+		root := false
+		if strings.TrimSpace(runUser) != "" {
+			root, err = parseRunUser(runUser)
+			if err != nil {
+				return err
+			}
+		}
+		return m.prepareWithNetwork(ctx, version, network, root)
 	}
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(network) != "" {
-		mode, err := normalizeNetwork(network)
+	rootChanged := false
+	if strings.TrimSpace(runUser) != "" {
+		root, err := parseRunUser(runUser)
 		if err != nil {
 			return err
 		}
-		if mode != canonicalNetwork(md.Network) {
+		rootChanged = root != md.RunAsRoot
+	}
+	if strings.TrimSpace(network) != "" || rootChanged {
+		mode := ""
+		if strings.TrimSpace(network) != "" {
+			mode, err = normalizeNetwork(network)
+			if err != nil {
+				return err
+			}
+		}
+		if (mode != "" && mode != canonicalNetwork(md.Network)) || rootChanged {
 			keep := version
 			if keep == "" {
 				switch md.Channel {
@@ -105,7 +128,7 @@ func (m *Manager) prepareDeployment(ctx context.Context, version, network string
 					keep = md.RequestedVersion
 				}
 			}
-			if err = m.upgrade(ctx, keep, mode); err != nil {
+			if err = m.upgrade(ctx, keep, mode, runUser); err != nil {
 				return err
 			}
 			md, err = m.metadata()

@@ -10,18 +10,18 @@ import (
 
 // Convenience entry points for exercising manager operations in package tests.
 func (m *Manager) Prepare(ctx context.Context, version string) error {
-	return m.prepareWithNetwork(ctx, version, networkHost)
+	return m.prepareWithNetwork(ctx, version, networkHost, false)
 }
 
 func (m *Manager) Upgrade(ctx context.Context, version string) error {
-	return m.upgrade(ctx, version, "")
+	return m.upgrade(ctx, version, "", "")
 }
 
 func (m *Manager) Deploy(ctx context.Context, version string, opts model.GenerateOptions) error {
 	if err := validateGenerateInput(opts); err != nil {
 		return err
 	}
-	if err := m.prepareDeployment(ctx, version, ""); err != nil {
+	if err := m.prepareDeployment(ctx, version, "", ""); err != nil {
 		return err
 	}
 	return m.Generate(ctx, opts, true)

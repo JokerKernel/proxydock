@@ -30,7 +30,7 @@ func TestNetworkChoiceOrderAndDefaults(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := testManager(t)
 			if tc.saved != "" {
-				if err := m.prepareWithNetwork(context.Background(), "26.3.27", tc.saved); err != nil {
+				if err := m.prepareWithNetwork(context.Background(), "26.3.27", tc.saved, false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -134,7 +134,7 @@ func TestHostComposeKeepsHostNetwork(t *testing.T) {
 
 func TestPublishComposeKeepsFallbackInternal(t *testing.T) {
 	m, f := testManager(t)
-	if err := m.prepareWithNetwork(context.Background(), "26.3.27", networkPublish); err != nil {
+	if err := m.prepareWithNetwork(context.Background(), "26.3.27", networkPublish, false); err != nil {
 		t.Fatal(err)
 	}
 	preparedCompose := string(readFile(t, m.paths.Compose()))
@@ -257,7 +257,7 @@ func TestDamagedComposeDoesNotDecideOwnership(t *testing.T) {
 func fallbackDeployment(t *testing.T, mode string, running bool) (*Manager, *simulatedDocker) {
 	t.Helper()
 	m, f := testManager(t)
-	if err := m.prepareWithNetwork(context.Background(), "26.3.27", mode); err != nil {
+	if err := m.prepareWithNetwork(context.Background(), "26.3.27", mode, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Generate(context.Background(), model.GenerateOptions{Server: "example.com", Port: 8443, SNI: "www.example.com", Target: "www.example.com:443", XrayFallbackPort: 62000}, true); err != nil {
@@ -506,7 +506,7 @@ func TestHostPortChecksFollowNetwork(t *testing.T) {
 	for _, mode := range []string{networkHost, networkPublish} {
 		t.Run(mode, func(t *testing.T) {
 			m, f := testManager(t)
-			if err := m.prepareWithNetwork(context.Background(), "26.3.27", mode); err != nil {
+			if err := m.prepareWithNetwork(context.Background(), "26.3.27", mode, false); err != nil {
 				t.Fatal(err)
 			}
 			var freePorts []int

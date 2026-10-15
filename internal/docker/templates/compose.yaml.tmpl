@@ -6,7 +6,6 @@ services:
     container_name: proxydock-xray
     restart: unless-stopped
 {{ .Network }}    command: ["run", "-config", "/usr/local/etc/xray/config.json"]
-    user: "0:0"
     read_only: true
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
@@ -26,7 +25,7 @@ services:
           create_host_path: false
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-      - /var/log/xray:rw,noexec,nosuid,nodev,size=16m,mode=0700
+      - {{ .LogTmpfs }}
     logging:
       driver: json-file
       options:
