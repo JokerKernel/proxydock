@@ -51,9 +51,9 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
-		u.menuChoice("4", "移除容器（删除容器，保留配置和数据）")
-		u.menuChoice("5", "清理卸载残留（永久删除配置、凭据、证书和备份）")
-		u.menuChoice("6", "恢复未完成事务（回滚中断的配置或升级）")
+		u.menuChoice("4", "移除容器（保留配置和数据）")
+		u.menuChoice("5", "删除实例数据（永久删除配置、凭据、证书和备份）")
+		u.menuChoice("6", "恢复中断操作（回滚未完成的配置修改或升级）")
 		u.menuChoice("0/q", "退出")
 		choice, err := u.chooseNumber("请选择", 0, 6, -1)
 		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
@@ -363,7 +363,7 @@ func (m *Manager) confirmRemove(ctx context.Context, u *ui) error {
 }
 
 func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
-	u.confirmationPanel("危险操作确认：清理卸载残留", []string{"清理目标：" + Instance}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
+	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
 	if err := u.confirm("永久删除 Docker Xray 配置、凭据、证书和备份？"); err != nil {
 		return err
 	}
