@@ -150,6 +150,7 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 		case "stop":
 			if f.container != nil {
 				f.container.State.Running = false
+				f.container.State.Restarting = false
 				f.container.State.Status = "exited"
 			}
 			return nil, nil
@@ -576,12 +577,12 @@ func TestUpgradePreservesCredentialsAndRollsBackImage(t *testing.T) {
 		t.Fatal("successful upgrade changed credentials")
 	}
 }
-func TestCleanupRejectsContainersAndPreservesExternalFiles(t *testing.T) {
+func TestCleanupRejectsForeignContainersAndPreservesExternalFiles(t *testing.T) {
 	m, f := deployed(t)
-	if err := m.Cleanup(context.Background()); err == nil {
-		t.Fatal("cleanup removed running container data")
-	}
 	f.container.Config.Labels["io.proxydock.managed"] = "false"
+	if err := m.Cleanup(context.Background()); err == nil {
+		t.Fatal("cleanup accepted a foreign container")
+	}
 	if err := m.Remove(context.Background()); err == nil {
 		t.Fatal("foreign container removed")
 	}

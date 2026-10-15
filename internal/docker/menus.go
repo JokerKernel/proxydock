@@ -48,7 +48,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）")
 		u.instanceCard(Container, "["+s.Label+"]", s.Version, s.Detail, m.instanceRows())
-		u.menuChoice("1", "安装更新（部署容器和更新容器）")
+		u.menuChoice("1", "安装与更新（部署容器和更新容器）")
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
@@ -421,7 +421,7 @@ func (m *Manager) confirmRemove(ctx context.Context, u *ui) error {
 }
 
 func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
-	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
+	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, confirmSection{title: "将执行", items: []string{"先停止本实例容器，停止失败则中止删除"}}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "保留", items: []string{"已停止的容器及其网络，不移除容器"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
 	if err := u.confirm("永久删除 Docker Xray 配置、凭据、证书和备份？"); err != nil {
 		return err
 	}

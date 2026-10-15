@@ -74,7 +74,7 @@ func TestRemoveCleanupAndRecoverPrintEachStep(t *testing.T) {
 	}
 	for _, want := range []string{
 		"检查清理",
-		"容器已移除，没有未完成事务",
+		"核验实例归属和数据目录",
 		"删除数据",
 		m.paths.Deploy(),
 		m.paths.Data(),

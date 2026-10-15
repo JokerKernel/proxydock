@@ -83,7 +83,7 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 		t.Fatal("submenu navigation should return directly without a pause")
 	}
 	rootScreen := in.screens[0]
-	for _, want := range []string{"安装更新", "部署容器和更新容器", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
+	for _, want := range []string{"安装与更新", "部署容器和更新容器", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
 		if !strings.Contains(rootScreen, want) {
 			t.Fatalf("root menu missing %q: %s", want, rootScreen)
 		}

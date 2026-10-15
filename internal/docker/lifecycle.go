@@ -552,7 +552,7 @@ func (m *Manager) CheckCleanup(ctx context.Context) error {
 		if !m.hasData() {
 			return nil
 		}
-		return fmt.Errorf("存在 Docker 数据但 Docker 不可用，无法确认容器已移除")
+		return fmt.Errorf("存在 Docker 数据但 Docker 不可用，无法确认容器状态")
 	}
 	if err := m.CheckReady(ctx); err != nil {
 		return err
@@ -564,15 +564,14 @@ func (m *Manager) CheckCleanup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if in != nil {
-		return fmt.Errorf("Docker Xray 容器仍存在，请先移除容器")
-	}
-	b, err := m.docker(ctx, "container", "ls", "--all", "--filter", "label=io.proxydock.instance="+Instance, "--format", "{{.ID}}")
+	b, err := m.docker(ctx, "container", "ls", "--all", "--no-trunc", "--filter", "label=io.proxydock.instance="+Instance, "--format", "{{.ID}}")
 	if err != nil {
 		return err
 	}
-	if len(stringsFields(b)) != 0 {
-		return fmt.Errorf("仍存在 Docker Xray 临时/受管容器，请先恢复或移除")
+	for _, id := range stringsFields(b) {
+		if in == nil || id != in.ID {
+			return fmt.Errorf("仍存在 Docker Xray 临时/受管容器，请先恢复或移除")
+		}
 	}
 	if _, err = os.Stat(m.paths.Journal()); err == nil {
 		return fmt.Errorf("存在未完成事务，请先恢复")
@@ -653,7 +652,7 @@ func (l *CleanupLease) Cleanup() error {
 }
 func (m *Manager) cleanupLocked(ctx context.Context) error {
 	m.breakOp()
-	m.op(phaseCheck, levelInfo, "检查清理", "容器已移除，没有未完成事务")
+	m.op(phaseCheck, levelInfo, "检查清理", "核验实例归属和数据目录")
 	if err := m.CheckCleanup(ctx); err != nil {
 		return err
 	}
@@ -663,8 +662,28 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 		}
 	}
 	if _, err := m.lookPath("docker"); err == nil {
-		if err = m.removeManagedNetwork(ctx); err != nil {
+		in, err := m.inspect(ctx)
+		if err != nil {
 			return err
+		}
+		if in == nil {
+			if err := m.removeManagedNetwork(ctx); err != nil {
+				return err
+			}
+		} else {
+			if in.State.Running || in.State.Restarting {
+				if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "container", "stop", in.ID); err != nil {
+					return fmt.Errorf("停止容器失败，未删除实例数据: %w", err)
+				}
+				current, err := m.inspectContainer(ctx, in.ID)
+				if err != nil {
+					return err
+				}
+				if current.State.Running || current.State.Restarting {
+					return fmt.Errorf("容器尚未停止，未删除实例数据")
+				}
+			}
+			m.op(phaseApply, levelInfo, "保留容器", Container+"（已停止，不移除，保留其网络）")
 		}
 	}
 	if m.hasData() {

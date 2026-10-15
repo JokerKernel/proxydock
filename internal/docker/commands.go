@@ -68,7 +68,7 @@ func (m *Manager) Command() *cobra.Command {
 	}})
 	for _, action := range []string{"remove", "cleanup", "recover"} {
 		action := action
-		cmd.AddCommand(&cobra.Command{Use: action, Short: map[string]string{"remove": "移除容器，保留配置和数据", "cleanup": "容器移除后清理本模块数据", "recover": "恢复未完成事务"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		cmd.AddCommand(&cobra.Command{Use: action, Short: map[string]string{"remove": "移除容器，保留配置和数据", "cleanup": "停止容器并删除本模块配置和数据，保留容器", "recover": "恢复未完成事务"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			if action != "recover" {
 				if err := m.confirmInput(cmd.InOrStdin(), yes, "确认执行 Docker "+action+"？"); err != nil {
 					return err
