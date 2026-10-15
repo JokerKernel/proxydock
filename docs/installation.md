@@ -1,6 +1,6 @@
 # 安装、更新与卸载 ProxyDock
 
-官方仓库为 [JokerKernel/proxydock](https://github.com/JokerKernel/proxydock)。程序支持 Linux amd64 / arm64；安装和管理操作需要 root。预编译程序不需要 Go，不依赖宿主机 Xray 或 systemd。Docker 代理运行需要已有本机 rootful Docker 与 Compose。
+程序支持 Linux amd64 / arm64；安装和管理操作需要 root。运行前准备本机 rootful Docker 与 Compose，具体要求见[使用指南](usage.md#环境要求)。
 
 ## 一键安装或更新
 
@@ -8,7 +8,7 @@
 curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | sudo bash
 ```
 
-脚本默认选择 GitHub 最新正式 Release。仓库需要先发布包含当前架构二进制和 `SHA256SUMS` 的版本。没有可用 Release 时会报错，不会自动编译源码或下载其他项目的程序。
+脚本从 [JokerKernel/proxydock](https://github.com/JokerKernel/proxydock) 的最新正式 Release 下载程序，安装到 `/usr/local/sbin/proxydock`。
 
 安装完成后，需要进入管理菜单时再运行 `sudo proxydock`；已是 root 用户时直接运行 `proxydock`。
 
@@ -35,7 +35,7 @@ sudo bash /tmp/proxydock-install.sh --version VERSION --force
 sudo bash /tmp/proxydock-install.sh --version VERSION --allow-downgrade
 ```
 
-默认不会降级，`--force` 只允许同版本重装。版本采用带 `v` 前缀的语义版本，正确比较数字与预发布序号；构建元数据不影响版本顺序。
+版本使用带 `v` 前缀的发布标签。同版本默认跳过，`--force` 可重装；降级必须提供 `--allow-downgrade`。
 
 `PROXYDOCK_VERSION` 可设置默认版本；命令行 `--version` 优先于该环境变量。程序版本与 Xray 镜像版本独立。
 
@@ -52,19 +52,9 @@ sudo proxydock update --version VERSION --allow-downgrade
 
 默认安装目标为 `/usr/local/sbin/proxydock`，即使从源码目录运行 `./proxydock update`，也更新这个目标。自定义安装位置需要在后续更新和卸载时提供同一个 `PROXYDOCK_INSTALL_DIR`。
 
-Xray 镜像升级仍使用：
+`update` 更新管理程序，`upgrade` 升级 Xray 镜像。程序更新和卸载均保留容器、镜像和实例数据。
 
-```bash
-sudo proxydock upgrade --version VERSION
-```
-
-## 校验与失败恢复
-
-脚本先检查系统和权限，再使用安装目录下的 `.proxydock.install.lock` 防止并发安装、更新和卸载。下载优先使用当前代理环境，失败时尝试直连；curl 请求限定 HTTPS 及 HTTPS 重定向，下载设有超时和大小检查。
-
-仅接受 `proxydock_linux_<架构>_<版本>` 格式的发布文件，不识别旧文件名。候选程序必须匹配所选版本与架构的校验清单条目，并通过 SHA-256 和 `--version` 运行检查。校验完成后在安装目录内暂存、备份原程序、原子替换，再次验证已安装程序。失败或收到可处理的中断信号时恢复原程序；首次安装失败则移除未完成的程序。临时下载、候选文件及成功恢复后的备份会清理，安装锁文件保留供后续操作使用。
-
-升级和卸载管理程序不改变容器、镜像、节点凭据、证书、配置及事务记录。
+安装和更新会校验 SHA-256 与程序版本，使用安装锁防止并发操作，再原子替换程序；失败时恢复原程序。
 
 ## 卸载管理程序
 
@@ -89,7 +79,7 @@ sudo PROXYDOCK_INSTALL_DIR=/opt/tools /opt/tools/proxydock update
 sudo PROXYDOCK_INSTALL_DIR=/opt/tools /opt/tools/proxydock uninstall --yes
 ```
 
-默认来源固定为 `JokerKernel/proxydock`。`--repository` 优先于 `PROXYDOCK_REPOSITORY`，替代仓库须提供相同的发布文件格式。安装目录必须为绝对路径；安装目标不能是目录、符号链接或其他特殊文件。
+`--repository` 优先于 `PROXYDOCK_REPOSITORY`，替代仓库须提供相同的发布文件格式。安装目录必须为绝对路径，已有安装目标须为普通文件。
 
 ## 从源码安装
 

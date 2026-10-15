@@ -2,13 +2,13 @@
 
 ProxyDock 是面向 Linux 的 Docker 代理管理工具，提供中文交互菜单和命令行。目前支持一个独立的 Xray Docker Compose 实例，包括 REALITY/TLS、配置管理、客户端导出、访问控制、中转与落地、镜像升级和失败回滚。
 
-使用 Go 编写，单二进制部署。Docker 业务从 ProxyForge 分离，在本仓库独立构建、测试和发布，不需要安装宿主机 Xray 或 systemd 服务。
+使用 Go 编写，单二进制部署，不需要安装宿主机 Xray 或 systemd 服务。
 
 ## 环境
 
 - Linux amd64 / arm64；管理操作需要 root，帮助和版本查询不需要。
 - 已安装并启动的本机 rootful Docker Engine，以及 Compose v2 或更高版本插件。
-- host 网络，端口须与原生代理及其他服务错开。
+- 默认使用 host 网络，也支持端口映射；监听端口须与其他服务错开。
 
 ## 一键安装
 
@@ -70,10 +70,9 @@ sudo proxydock cleanup --yes
 
 - [使用指南](docs/usage.md)：部署、配置、服务、升级回滚及文件位置。
 - [安装与更新指南](docs/installation.md)：一键安装、固定版本、程序更新与卸载。
-- [迁移说明](docs/migration.md)：命令映射及独立部署要求。
 - [开发指南](docs/development.md)：模块边界、测试、构建和发布。
 
-运行目录使用 `/opt/proxydock`、`/var/lib/proxydock` 和 `/run/proxydock`，容器及 Compose 项目名称为 `proxydock-xray`，归属标签使用 `io.proxydock.*`。不兼容或自动迁移 ProxyForge 实例，详见迁移说明。
+运行目录使用 `/opt/proxydock`、`/var/lib/proxydock` 和 `/run/proxydock`，详细文件位置见[使用指南](docs/usage.md#文件位置)。
 
 ## 验证
 

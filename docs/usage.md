@@ -1,19 +1,19 @@
 # ProxyDock 使用指南
 
-ProxyDock 是从 ProxyForge 分离的独立 Docker 代理管理工具，目前管理一个自行创建的 Xray Compose 实例。运行 `sudo proxydock` 进入交互菜单，也可直接使用命令行。
+ProxyDock 管理一个自行创建的 Xray Docker Compose 实例。运行 `sudo proxydock` 进入交互菜单，也可直接使用命令行。
 
-默认输出操作进度，完整 Docker 命令只在添加 `--debug` 时显示，例如 `sudo proxydock --debug`。启动后的稳定性检查每秒查询一次容器，并保留至少 5 秒的观察窗口。
+默认输出操作进度，添加 `--debug` 可查看完整命令，例如 `sudo proxydock --debug`。
 
 Docker 版不依赖宿主机安装的 Xray，也不要求存在 `xray.service`。使用官方镜像 `ghcr.io/xtls/xray-core`，镜像拉取成功后固定为 digest；普通启动和配置修改不会自动更新镜像。
 
 ## 环境要求
 
 - Linux amd64 或 arm64，root 权限。
-- 本机 rootful Docker Engine 和 Docker Compose v2 或更高版本插件（含 v5），daemon 已运行。
+- 本机 rootful Docker Engine 和 Docker Compose v2 或更高版本插件，daemon 已运行。
 - 默认使用宿主机网络。也可以选择端口映射：监听端口按相同端口号发布，REALITY 回落仅容器内使用。
 - 不支持远程 Docker、rootless/userns-remap、Docker Desktop、自定义桥接网络、多实例和接管任意已有容器。
 
-ProxyDock 只检测 Docker/Compose 是否可用，不会自动安装 Docker，也不会执行 Docker 安装脚本。Docker 版不使用原生 app/system/provider/domain 业务代码。
+Docker 和 Compose 需要提前安装。
 
 首次准备、升级需要访问官方镜像仓库。镜像版本支持三种选择：
 
@@ -21,7 +21,7 @@ ProxyDock 只检测 Docker/Compose 是否可用，不会自动安装 Docker，�
 - `pre-release`：拉取官方 `ghcr.io/xtls/xray-core:pre-release`，选择开发版。
 - 具体版本号：拉取对应官方镜像，核对实际内核版本。
 
-只接受 `latest`、`pre-release` 或具体版本号，不接受 `stable`、`prerelease` 等别名。Xray 密钥生成输出须使用当前官方格式 `PrivateKey` 和 `Password (PublicKey)`。三种方式均记录实际内核版本并固定 digest，不查询 GitHub Releases API。标签按官方镜像仓库选择；只有再次主动升级才会拉取标签的新镜像。
+三种方式均记录实际内核版本并固定 digest，只有主动升级才会拉取标签的新镜像。
 
 ## 首次部署
 
@@ -37,16 +37,12 @@ sudo proxydock deploy \
   --sni YOUR_REALITY_SNI \
   --target YOUR_REALITY_TARGET:443
 
-# 指定官方镜像版本（VERSION 替换为实际发行版本号）
-sudo proxydock deploy --version VERSION \
-  --security tls --server YOUR_SERVER_IP --port 8443
-
-# 使用官方 latest 镜像标签
-sudo proxydock deploy --version latest \
+# TLS 节点，自动生成证书；可加 --version 指定镜像版本
+sudo proxydock deploy \
   --security tls --server YOUR_SERVER_IP --port 8443
 ```
 
-默认 `host` 网络与宿主机共享端口，因此原生内核、Docker 实例和其他服务必须使用不同的监听端口。`--network publish` 改为端口映射，监听端口仍使用同一个端口号，REALITY 回落仅容器内使用。已部署实例可以用 `proxydock config set network host` 或 `publish` 切换，切换时会重建容器并保持原来的运行或停止状态。只接受当前程序生成的 Compose，不转换旧的回落端口映射。
+默认 `host` 网络与宿主机共享端口，监听端口须与其他服务错开。`--network publish` 改为端口映射，监听端口按相同端口号发布，REALITY 回落仅容器内使用。切换网络会重建容器，并保持原来的运行或停止状态。
 
 REALITY 默认启用专用回落防护；`--standard-config` 可选择普通配置，`--fallback-port` 可指定内部回落端口。
 
@@ -156,13 +152,7 @@ sudo proxydock recover
 
 配置或升级失败时恢复旧文件和原运行状态。回滚无法完成会保留恢复记录并显示错误；下次写操作会尝试恢复，也可显式执行 `recover`。不要手动删除 `transaction.json` 或它引用的备份。
 
-名单的增加、删除、模式和开关变更会在恢复事务后，基于最新已提交状态执行，防止恢复结果被旧名单覆盖。删除 TLS 落地线路后可以同名重建；重建使用新证书目录，旧证书保留供历史恢复记录使用。
-
-事务提交、成功回滚和恢复后保留最近 3 份程序生成的备份。证书回收会同时检查当前状态、服务端配置和保留备份的引用；无法读取备份时暂停证书回收并显示清理信息。`recover` 也会回收异常退出遗留的受管临时文件和校验容器，不会启动已停止的实例。
-
-镜像更新仍会拉取选定标签确认 digest；镜像未变化时跳过能力探测和容器重建。重复设置相同策略、启动已运行实例或停止已停止实例时，会跳过不必要的校验和事务。日志直接从已核验归属的容器读取，不依赖 Compose 文件是否完整。
-
-节点、名单和线路统一保存在 `state.json`，镜像选择和网络方式保存在 `deployment.json`；不再生成独立的 `access.json`、`landings.json`、`relays.json` 或 `preferences.json`。节点协议、schema 版本和网络方式必须明确记录，不补全旧状态的缺省字段。
+事务完成后保留最近 3 份程序生成的备份，并回收无引用的受管证书。`recover` 还会回收异常退出遗留的临时文件和校验容器。
 
 ## 移除与清理
 
@@ -173,19 +163,13 @@ sudo proxydock cleanup --yes
 
 `remove` 只移除容器，保留配置、凭据、证书、备份和镜像；重新部署可沿用配置。`cleanup` 只有在确认本实例和临时容器均已移除后，才永久删除自有数据。
 
-`recover`、`remove` 和 `cleanup` 会处理归属核验通过的遗留校验容器；`remove` 和 `cleanup` 还会删除本 Compose 项目未被任何容器使用的默认网络。其他容器、网络和镜像不参与回收。
+清理会删除下表中的部署目录、实例数据和无容器使用的本项目默认网络；保留管理程序、Docker、镜像、用户导出文件、锁文件及其他实例的资源。完整卸载程序见[安装指南](installation.md#卸载管理程序)。
 
-完整清理开始前会写入 `/var/lib/proxydock/docker/xray-cleanup.json`。删除中途失败或进程中断时，记录保留，状态显示“清理未完成”；修复故障后再次执行 `proxydock cleanup --yes` 即可继续，完成后记录自动删除。清理尚未完成时拒绝部署及配置写入，请勿手动删除这份记录。
-
-清理记录使用专属临时文件名 `.xray-cleanup-write-<随机值>`，`recover` 和 `cleanup` 会回收安全属性符合要求的中断残片。共享父目录中其他命名的文件不参与回收。清理完成后，仅回收为空的 `/opt/proxydock`、`/var/lib/proxydock/docker` 和 `/var/lib/proxydock` 父目录，有其他数据的目录保留。实例锁文件保留以维持并发保护，管理程序、Docker 镜像和用户导出的配置也保留；清理结果会显示这些保留项及原因。
-
-ProxyDock 只清理自己的 Docker 实例和目录，不处理 ProxyForge 的容器或旧目录。Docker daemon 不可达且无法完成归属检查时，ProxyDock 拒绝清理。
-
-不自动删除 Docker Engine、共享镜像或其他容器，不运行全局 prune。
+清理中断后会保留 `xray-cleanup.json`，再次执行 `proxydock cleanup --yes` 可继续。请勿手动删除该记录；Docker 不可达或归属核验失败时会拒绝清理。
 
 ## 文件位置
 
-以下目录由 ProxyDock 独立管理，Compose 项目/容器名称为 `proxydock-xray`，标签前缀为 `io.proxydock.*`，归属字段为 `managed_by=proxydock`。不兼容旧 ProxyForge 路径和实例，不执行自动迁移；需重新部署。
+Compose 项目和容器名称均为 `proxydock-xray`。部署目录为 `/opt/proxydock/xray-docker/`，实例数据目录为 `/var/lib/proxydock/docker/xray/`。
 
 | 内容 | 路径 |
 | --- | --- |
@@ -193,16 +177,16 @@ ProxyDock 只清理自己的 Docker 实例和目录，不处理 ProxyForge 的�
 | 服务配置 | `/opt/proxydock/xray-docker/config/config.json` |
 | 证书 | `/opt/proxydock/xray-docker/tls/` |
 | 自有状态和部署记录 | `/var/lib/proxydock/docker/xray/` |
+| 节点、凭据、名单和线路 | `/var/lib/proxydock/docker/xray/state.json` |
+| 镜像、网络和部署状态 | `/var/lib/proxydock/docker/xray/deployment.json` |
 | 备份 | `/var/lib/proxydock/docker/xray/backups/` |
 | 事务记录 | `/var/lib/proxydock/docker/xray/transaction.json` |
+| 临时配置 | `/var/lib/proxydock/docker/xray/staging/` |
+| 清理恢复记录 | `/var/lib/proxydock/docker/xray-cleanup.json` |
 | 实例锁 | `/run/proxydock/xray-docker.lock` |
 
-目录归属由 `owner.json` 标记，部署和节点 JSON 也有独立的实例标识与 schema。管理目录为 `0700`，配置、证书和管理文件为 `0600`。容器以 UID/GID `0:0` 读取只读挂载，仅保留绑定低端口所需的 capability。
+管理目录权限为 `0700`，配置、证书和管理文件为 `0600`。
 
 Compose 由程序生成并校验摘要；外部直接修改 Compose 后，程序会拒绝按未知定义操作。通过菜单和命令选择版本及修改代理配置。
-
-## 当前验收范围
-
-已提供模拟 Docker 的单元测试、独立命令入口和依赖边界检查。真实 Docker、官方镜像、端到端代理连接及 VM 重启验收需在已安装 Docker 的 Linux 环境完成；开发过程中未自动安装 Docker。
 
 [开发指南](development.md) · [返回项目首页](../README.md)
