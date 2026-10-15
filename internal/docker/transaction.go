@@ -75,7 +75,8 @@ func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr e
 	if err != nil {
 		return journal{}, err
 	}
-	dir := filepath.Join(m.paths.Backups(), m.now().UTC().Format("20060102T150405.000000000Z")+"-"+id)
+	name := m.now().UTC().Format("20060102T150405.000000000Z") + "-" + id
+	dir := filepath.Join(m.paths.Transactions(), name)
 	if err = privateDir(dir); err != nil {
 		return journal{}, err
 	}
@@ -98,6 +99,13 @@ func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr e
 	if err = saveJSON(filepath.Join(dir, "snapshot.json"), snapshots); err != nil {
 		return journal{}, err
 	}
+	for _, snapshot := range snapshots {
+		if snapshot.Path == m.paths.Config() && snapshot.Exists {
+			if err = m.saveConfigBackup(name, snapshot.Data); err != nil {
+				return journal{}, err
+			}
+		}
+	}
 	j := journal{SchemaVersion: 1, InstanceID: Instance, Kind: kind, Phase: "prepared", Backup: dir}
 	if in != nil {
 		j.HadContainer = true
@@ -106,7 +114,7 @@ func (m *Manager) begin(kind string, in *inspection) (result journal, beginErr e
 	if err = saveJSON(m.paths.Journal(), j); err != nil {
 		return j, err
 	}
-	m.logBackup(dir, snapshots)
+	m.logBackup(filepath.Join(m.paths.Backups(), name), snapshots)
 	return j, nil
 }
 func (m *Manager) phase(j *journal, phase string) error {
@@ -134,25 +142,15 @@ func (m *Manager) rollback(j journal, cause error) error {
 	return fmt.Errorf("%w；已恢复旧配置与运行状态", cause)
 }
 func (m *Manager) restoreTransaction(ctx context.Context, j journal) error {
-	if j.SchemaVersion != 1 || j.InstanceID != Instance || filepath.Dir(j.Backup) != m.paths.Backups() {
+	if j.SchemaVersion != 1 || j.InstanceID != Instance || filepath.Dir(j.Backup) != m.paths.Transactions() {
 		return fmt.Errorf("事务恢复记录标识/路径无效")
 	}
 	var snaps []fileSnapshot
 	if err := loadSnapshot(filepath.Join(j.Backup, "snapshot.json"), &snaps); err != nil {
 		return err
 	}
-	allowed := map[string]bool{}
-	for _, p := range m.managedFiles() {
-		allowed[p] = true
-	}
-	if len(snaps) != len(allowed) {
-		return fmt.Errorf("事务快照文件集合无效")
-	}
-	for _, s := range snaps {
-		if !allowed[s.Path] {
-			return fmt.Errorf("快照引用非受管路径")
-		}
-		delete(allowed, s.Path)
+	if err := m.checkSnapshotFiles(snaps); err != nil {
+		return err
 	}
 	m.op(phaseBackup, levelInfo, "读取快照", filepath.Join(j.Backup, "snapshot.json"))
 	// The on-disk Compose may already describe the new network while the

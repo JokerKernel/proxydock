@@ -52,6 +52,9 @@ func (m *Manager) maintainFiles() {
 }
 
 func (m *Manager) maintainFilesLocked() error {
+	if err := m.cleanupTransactionSnapshots(); err != nil {
+		return err
+	}
 	refs := map[string]bool{}
 	for _, path := range []string{m.paths.State(), m.paths.Config()} {
 		data, err := readPrivate(path)
@@ -186,53 +189,74 @@ func removeTemporaryFiles(dir string, prefixes ...string) error {
 	return nil
 }
 
-// Validate snapshots one at a time and retain only certificate names, never the
-// full contents of all historical backups. Imported snapshots are not pruned.
+// Keep three generated configuration backups. Read only config.json; imported
+// configuration backups are retained and also protect certificate references.
 func (m *Manager) pruneBackups() (map[string]bool, error) {
 	if err := safePath(m.paths.Backups()); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(m.paths.Backups())
 	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
+		entries = nil
+	} else if err != nil {
 		return nil, err
 	}
-	var backups, generated []string
+	type record struct {
+		name      string
+		generated bool
+		refs      map[string]bool
+	}
+	var records []record
+	var generated []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		dir := filepath.Join(m.paths.Backups(), entry.Name())
-		isGenerated := backupNamePattern.MatchString(entry.Name())
-		if isGenerated {
+		item := record{name: entry.Name(), generated: backupNamePattern.MatchString(entry.Name()), refs: map[string]bool{}}
+		if item.generated {
 			if err := removeTemporaryFiles(dir, ".docker-write-"); err != nil {
 				return nil, err
 			}
 		}
-		info, err := os.Lstat(filepath.Join(dir, "snapshot.json"))
+		data, err := readPrivate(filepath.Join(dir, "config.json"))
 		if os.IsNotExist(err) {
-			contents, err := os.ReadDir(dir)
-			if err != nil {
-				return nil, err
-			}
-			if isGenerated && len(contents) == 0 {
-				if err := os.Remove(dir); err != nil {
-					return nil, err
-				}
-			}
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("备份快照不是普通文件: %s", dir)
+		if !json.Valid(data) {
+			return nil, fmt.Errorf("备份配置损坏，保留证书: %s", dir)
 		}
-		backups = append(backups, entry.Name())
-		if isGenerated {
-			generated = append(generated, entry.Name())
+		if err := m.certificateReferences(data, item.refs); err != nil {
+			return nil, err
+		}
+		records = append(records, item)
+		if item.generated {
+			generated = append(generated, item.name)
+		}
+	}
+	// First deployment has no previous config. Save its completed config once.
+	if len(generated) == 0 {
+		data, err := readPrivate(m.paths.Config())
+		if err == nil {
+			refs := map[string]bool{}
+			if err := m.certificateReferences(data, refs); err != nil {
+				return nil, err
+			}
+			id, err := randomHex(6)
+			if err != nil {
+				return nil, err
+			}
+			name := m.now().UTC().Format("20060102T150405.000000000Z") + "-" + id
+			if err := m.saveConfigBackup(name, data); err != nil {
+				return nil, err
+			}
+			records = append(records, record{name: name, generated: true, refs: refs})
+			generated = append(generated, name)
+		} else if !os.IsNotExist(err) {
+			return nil, err
 		}
 	}
 	sort.Strings(generated)
@@ -241,49 +265,20 @@ func (m *Manager) pruneBackups() (map[string]bool, error) {
 		keep[name] = true
 	}
 	refs := map[string]bool{}
-	var obsolete []string
-	for _, name := range backups {
-		dir := filepath.Join(m.paths.Backups(), name)
-		var snapshots []fileSnapshot
-		if err := loadSnapshot(filepath.Join(dir, "snapshot.json"), &snapshots); err != nil {
-			return nil, err
-		}
-		allowed := map[string]bool{}
-		for _, path := range m.managedFiles() {
-			allowed[path] = true
-		}
-		if len(snapshots) != len(allowed) {
-			return nil, fmt.Errorf("备份快照文件集合无效: %s", dir)
-		}
-		retained := keep[name] || !backupNamePattern.MatchString(name)
-		for _, snap := range snapshots {
-			if !allowed[snap.Path] {
-				return nil, fmt.Errorf("备份引用非受管路径: %s", dir)
+	// Validate all records before deleting any backup.
+	for _, item := range records {
+		if item.generated && !keep[item.name] {
+			dir := filepath.Join(m.paths.Backups(), item.name)
+			if err := safePath(dir); err != nil {
+				return nil, err
 			}
-			delete(allowed, snap.Path)
-			if snap.Exists && (snap.Path == m.paths.State() || snap.Path == m.paths.Config()) {
-				if !json.Valid(snap.Data) {
-					return nil, fmt.Errorf("备份配置损坏，保留证书: %s", dir)
-				}
-				if retained {
-					if err := m.certificateReferences(snap.Data, refs); err != nil {
-						return nil, err
-					}
-				}
+			if err := os.RemoveAll(dir); err != nil {
+				return nil, err
 			}
+			continue
 		}
-		if !retained {
-			obsolete = append(obsolete, name)
-		}
-	}
-	// Do not delete anything if any snapshot above failed validation.
-	for _, name := range obsolete {
-		dir := filepath.Join(m.paths.Backups(), name)
-		if err := safePath(dir); err != nil {
-			return nil, err
-		}
-		if err := os.RemoveAll(dir); err != nil {
-			return nil, err
+		for name := range item.refs {
+			refs[name] = true
 		}
 	}
 	return refs, nil

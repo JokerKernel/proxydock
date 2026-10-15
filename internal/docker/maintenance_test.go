@@ -122,16 +122,14 @@ func TestMaintenanceOldCertificatesFollowBackupReferences(t *testing.T) {
 	}
 	refs := map[string]bool{filepath.Dir(state.Node.TLSCertificate.CertificateFile): true}
 	for _, backup := range backups {
-		var snaps []fileSnapshot
-		if err = loadSnapshot(filepath.Join(m.paths.Backups(), backup.Name(), "snapshot.json"), &snaps); err != nil {
+		data, err := readPrivate(filepath.Join(m.paths.Backups(), backup.Name(), "config.json"))
+		if err != nil {
 			t.Fatal(err)
 		}
-		for _, snap := range snaps {
-			for _, certDir := range certDirs {
-				full := filepath.Join(m.paths.TLS(), certDir.Name())
-				if strings.Contains(string(snap.Data), full) || strings.Contains(string(snap.Data), "/etc/xray/tls/"+certDir.Name()+"/") {
-					refs[full] = true
-				}
+		for _, certDir := range certDirs {
+			full := filepath.Join(m.paths.TLS(), certDir.Name())
+			if strings.Contains(string(data), full) || strings.Contains(string(data), "/etc/xray/tls/"+certDir.Name()+"/") {
+				refs[full] = true
 			}
 		}
 	}
@@ -425,7 +423,7 @@ func TestMaintenancePreservesPendingTransactionArtifacts(t *testing.T) {
 	}
 }
 
-func TestMaintenancePreservesManualAndImportedCertificateReferences(t *testing.T) {
+func TestMaintenancePreservesManualAndImportedConfigurationReferences(t *testing.T) {
 	m, _ := deployed(t)
 	live, err := m.newCertificate("manual-live")
 	if err != nil {
@@ -459,18 +457,9 @@ func TestMaintenancePreservesManualAndImportedCertificateReferences(t *testing.T
 	if err = m.saveNode(s.Node); err != nil {
 		t.Fatal(err)
 	}
-	snaps := managedSnapshots(t, m)
-	s.Node.TLSCertificate = &imported
-	stateBytes, err := jsonBytes(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range snaps {
-		if snaps[i].Path == m.paths.State() {
-			snaps[i].Data = stateBytes
-		}
-	}
-	if err = saveJSON(filepath.Join(m.paths.Backups(), "imported", "snapshot.json"), snaps); err != nil {
+	backupConfig := configRoot(t, data)
+	backupConfig["certificateReference"] = imported.CertificateFile
+	if err = saveJSON(filepath.Join(m.paths.Backups(), "imported", "config.json"), backupConfig); err != nil {
 		t.Fatal(err)
 	}
 	unknown := filepath.Join(m.paths.TLS(), "unmanaged", "notes.txt")
@@ -513,7 +502,7 @@ func TestMaintenanceInvalidBackupStopsCertificateCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = atomicWrite(filepath.Join(m.paths.Backups(), "imported", "snapshot.json"), []byte("damaged"), 0600); err != nil {
+	if err = atomicWrite(filepath.Join(m.paths.Backups(), "imported", "config.json"), []byte("damaged"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err = m.Recover(context.Background()); err != nil {

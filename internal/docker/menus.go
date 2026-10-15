@@ -48,7 +48,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）")
 		u.instanceCard(Container, "["+s.Label+"]", s.Version, s.Detail, m.instanceRows())
-		u.menuChoice("1", "部署/升级（准备镜像或升级版本）")
+		u.menuChoice("1", "容器拉取（容器更新）")
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
@@ -99,7 +99,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		if cancelled {
 			switch choice {
 			case 1:
-				fmt.Fprintln(m.out, "已取消部署/升级。")
+				fmt.Fprintln(m.out, "已取消"+m.containerImageMenu()+"。")
 			case 4:
 				fmt.Fprintln(m.out, "已取消移除容器。")
 			case 5:
@@ -142,9 +142,9 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 			shownRoot = runAsRoot
 		}
 		u.clearScreen()
-		u.pageHeader("Xray（Docker）", "部署/升级")
+		u.pageHeader("Xray（Docker）", m.containerImageMenu())
 		u.labeledCard("当前内核", m.deployCardRows(selection, network, shownRoot))
-		u.menuChoice("1", "部署/更新")
+		u.menuChoice("1", m.containerImageMenu())
 		u.menuChoice("2", "选择版本")
 		u.menuChoice("3", "指定版本")
 		u.menuChoice("4", "网络方式（宿主机网络或端口映射）")
@@ -194,7 +194,7 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 			}
 			network = next
 		case 5:
-			next, chooseErr := m.chooseRunAsRoot(u, shownRoot, "Xray（Docker）", "部署/升级")
+			next, chooseErr := m.chooseRunAsRoot(u, shownRoot, "Xray（Docker）", m.containerImageMenu())
 			if errors.Is(chooseErr, errCancelled) {
 				continue
 			}
@@ -289,7 +289,7 @@ func (m *Manager) savedNetwork() string {
 
 func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
 	u.clearScreen()
-	u.pageHeader("Xray（Docker）", "部署/升级", "网络方式")
+	u.pageHeader("Xray（Docker）", m.containerImageMenu(), "网络方式")
 	u.menuChoice("1", "端口映射（发布监听端口，回落仅容器内使用）")
 	u.menuChoice("2", "宿主机网络（容器直接使用宿主机网络栈）")
 	u.menuChoice("0/q", "返回")
@@ -325,7 +325,7 @@ func (m *Manager) confirmSetNetwork(ctx context.Context, u *ui, network string) 
 
 func (m *Manager) chooseDeployChannel(u *ui, selection string) (string, error) {
 	u.clearScreen()
-	u.pageHeader("Xray（Docker）", "部署/升级", "选择版本")
+	u.pageHeader("Xray（Docker）", m.containerImageMenu(), "选择版本")
 	u.menuChoice("1", "稳定版（latest）")
 	u.menuChoice("2", "pre-release")
 	u.menuChoice("0/q", "返回")
@@ -345,7 +345,7 @@ func (m *Manager) chooseDeployChannel(u *ui, selection string) (string, error) {
 
 func (m *Manager) askDeployVersion(u *ui) (string, error) {
 	u.clearScreen()
-	u.pageHeader("Xray（Docker）", "部署/升级", "指定版本")
+	u.pageHeader("Xray（Docker）", m.containerImageMenu(), "指定版本")
 	fmt.Fprintln(u.out, "请输入官方版本号，例如 26.3.27。")
 	u.menuChoice("0/q", "返回")
 	fmt.Fprintln(u.out)
@@ -376,42 +376,29 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 		mode = m.savedNetwork()
 	}
 	if _, e := m.metadata(); e == nil {
-		u.confirmationPanel("操作确认：升级镜像", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
-		if err := u.confirm("升级 Xray Docker 镜像？"); err != nil {
+		u.confirmationPanel("操作确认：容器更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
+		if err := u.confirm("更新容器镜像？"); err != nil {
 			return err
 		}
-		if err := m.upgrade(ctx, version, network, ""); err != nil {
-			return err
-		}
-		if _, stateErr := m.LoadState(); os.IsNotExist(stateErr) {
-			return m.generateAfterPrepare(ctx, u)
-		}
-		return nil
+		return m.upgrade(ctx, version, network, "")
 	} else if !os.IsNotExist(e) {
 		return e
 	}
-	u.confirmationPanel("操作确认：部署实例", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"准备官方镜像和 Compose 文件", "生成 REALITY 或 TLS 节点配置", "启动容器并检查运行状态"}})
-	if err := u.confirm("准备官方镜像并部署 Docker Xray？"); err != nil {
+	u.confirmationPanel("操作确认：容器拉取", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取官方镜像并记录 digest", "校验镜像并写入 Compose 文件"}})
+	if err := u.confirm("拉取官方镜像？"); err != nil {
 		return err
 	}
 	if strings.TrimSpace(network) == "" {
 		network = defaultNetwork
 	}
-	if err := m.prepareWithNetwork(ctx, version, network, runAsRoot); err != nil {
-		return err
-	}
-	return m.generateAfterPrepare(ctx, u)
+	return m.prepareWithNetwork(ctx, version, network, runAsRoot)
 }
 
-// generateAfterPrepare continues into node setup on the same screen as the
-// pull and prepare log. A new page would erase that log before it can be read.
-func (m *Manager) generateAfterPrepare(ctx context.Context, u *ui) error {
-	u.keepLog = true
-	opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
-	if err != nil {
-		return err
+func (m *Manager) containerImageMenu() string {
+	if _, err := m.metadata(); err == nil {
+		return "容器更新"
 	}
-	return m.Generate(ctx, opts, true)
+	return "容器拉取"
 }
 
 func shownVersion(version string) string {

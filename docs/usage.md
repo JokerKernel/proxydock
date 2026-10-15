@@ -152,9 +152,11 @@ sudo proxydock recover
 
 升级先拉取镜像并校验当前配置，再重建容器，保留节点凭据、证书、名单和线路。运行中的实例重建后核验镜像、监听端口和持续运行情况；已停止实例升级后保持停止。
 
-配置或升级失败时恢复旧文件和原运行状态。回滚无法完成会保留恢复记录并显示错误；下次写操作会尝试恢复，也可显式执行 `recover`。不要手动删除 `transaction.json` 或它引用的备份。
+配置或升级失败时恢复旧文件和原运行状态。回滚无法完成会保留恢复记录并显示错误；下次写操作会尝试恢复，也可显式执行 `recover`。不要手动删除 `transaction.json` 或它引用的临时事务记录。
 
-事务完成后保留最近 3 份程序生成的备份，并回收无引用的受管证书。`recover` 还会回收异常退出遗留的临时文件和校验容器。
+`backups/<时间戳>/config.json` 直接保存原始配置文件，不编码，不备份 Compose、管理数据、TLS 证书或私钥。首次部署成功后保存第一份实际配置，后续操作前备份旧配置，保留最近 3 份。
+
+失败回滚所需的配置、状态及部署记录临时保存在 `transactions/`，事务完成后清理；恢复未完成时保留。`recover` 还会回收异常退出遗留的临时文件和校验容器，并清理无引用的受管证书。
 
 ## 移除与清理
 
@@ -183,6 +185,7 @@ Compose 项目和容器名称均为 `proxydock-xray`。部署目录为 `/opt/pro
 | 镜像、网络和部署状态 | `/var/lib/proxydock/docker/xray/deployment.json` |
 | 备份 | `/var/lib/proxydock/docker/xray/backups/` |
 | 事务记录 | `/var/lib/proxydock/docker/xray/transaction.json` |
+| 临时回滚数据 | `/var/lib/proxydock/docker/xray/transactions/` |
 | 临时配置 | `/var/lib/proxydock/docker/xray/staging/` |
 | 清理恢复记录 | `/var/lib/proxydock/docker/xray-cleanup.json` |
 | 实例锁 | `/run/proxydock/xray-docker.lock` |

@@ -121,17 +121,18 @@ func (p Paths) resolve(path string) string {
 	}
 	return filepath.Join(p.Root, path[1:])
 }
-func (p Paths) Deploy() string   { return p.resolve("/opt/proxydock/xray-docker") }
-func (p Paths) Data() string     { return p.resolve("/var/lib/proxydock/docker/xray") }
-func (p Paths) Compose() string  { return filepath.Join(p.Deploy(), "compose.yaml") }
-func (p Paths) Config() string   { return filepath.Join(p.Deploy(), "config/config.json") }
-func (p Paths) TLS() string      { return filepath.Join(p.Deploy(), "tls") }
-func (p Paths) State() string    { return filepath.Join(p.Data(), "state.json") }
-func (p Paths) Metadata() string { return filepath.Join(p.Data(), "deployment.json") }
-func (p Paths) Owner() string    { return filepath.Join(p.Data(), "owner.json") }
-func (p Paths) Journal() string  { return filepath.Join(p.Data(), "transaction.json") }
-func (p Paths) Backups() string  { return filepath.Join(p.Data(), "backups") }
-func (p Paths) Staging() string  { return filepath.Join(p.Data(), "staging") }
+func (p Paths) Deploy() string       { return p.resolve("/opt/proxydock/xray-docker") }
+func (p Paths) Data() string         { return p.resolve("/var/lib/proxydock/docker/xray") }
+func (p Paths) Compose() string      { return filepath.Join(p.Deploy(), "compose.yaml") }
+func (p Paths) Config() string       { return filepath.Join(p.Deploy(), "config/config.json") }
+func (p Paths) TLS() string          { return filepath.Join(p.Deploy(), "tls") }
+func (p Paths) State() string        { return filepath.Join(p.Data(), "state.json") }
+func (p Paths) Metadata() string     { return filepath.Join(p.Data(), "deployment.json") }
+func (p Paths) Owner() string        { return filepath.Join(p.Data(), "owner.json") }
+func (p Paths) Journal() string      { return filepath.Join(p.Data(), "transaction.json") }
+func (p Paths) Backups() string      { return filepath.Join(p.Data(), "backups") }
+func (p Paths) Transactions() string { return filepath.Join(p.Data(), "transactions") }
+func (p Paths) Staging() string      { return filepath.Join(p.Data(), "staging") }
 func (p Paths) CleanupRecord() string {
 	return filepath.Join(filepath.Dir(p.Data()), "xray-cleanup.json")
 }

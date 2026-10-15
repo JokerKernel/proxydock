@@ -3,7 +3,6 @@ package docker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -335,7 +334,7 @@ func TestUnchangedSettingsSkipBackupMaintenance(t *testing.T) {
 	if err := atomicWrite(stale, []byte("stale"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	bad := filepath.Join(m.paths.Backups(), "imported-invalid", "snapshot.json")
+	bad := filepath.Join(m.paths.Backups(), "imported-invalid", "config.json")
 	if err := atomicWrite(bad, []byte("invalid snapshot"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -364,26 +363,16 @@ func TestUnchangedSettingsSkipBackupMaintenance(t *testing.T) {
 	}
 }
 
-func TestBackupPruningRetainsReferencesFromNewestSnapshots(t *testing.T) {
+func TestBackupPruningRetainsReferencesFromNewestConfigurations(t *testing.T) {
 	m, _ := deployed(t)
-	snaps := managedSnapshots(t, m)
+	data := readFile(t, m.paths.Config())
 	// Keep these newer than deployment backups regardless of the calendar date.
 	stamp := m.now().UTC().Add(time.Second)
 	for i := 0; i < 6; i++ {
-		copy := append([]fileSnapshot(nil), snaps...)
-		for j := range copy {
-			if copy[j].Path == m.paths.Config() {
-				config := configRoot(t, copy[j].Data)
-				config["certificateReference"] = fmt.Sprintf("/etc/xray/tls/cert-%d/cert.pem", i)
-				var err error
-				copy[j].Data, err = json.Marshal(config)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
+		config := configRoot(t, data)
+		config["certificateReference"] = fmt.Sprintf("/etc/xray/tls/cert-%d/cert.pem", i)
 		name := stamp.Add(time.Duration(i)*time.Nanosecond).Format("20060102T150405.000000000Z") + "-aaaaaaaaaaaa"
-		if err := saveJSON(filepath.Join(m.paths.Backups(), name, "snapshot.json"), copy); err != nil {
+		if err := saveJSON(filepath.Join(m.paths.Backups(), name, "config.json"), config); err != nil {
 			t.Fatal(err)
 		}
 	}

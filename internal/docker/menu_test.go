@@ -3,7 +3,6 @@ package docker
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -66,10 +65,10 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 		t.Fatalf("unexpected prompts: %d", len(in.screens))
 	}
 	root := func(screen string) bool {
-		return strings.Contains(screen, "部署/升级") && !strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志")
+		return strings.Contains(screen, "容器拉取") && !strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志")
 	}
 	config := func(screen string) bool {
-		return strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志") && !strings.Contains(screen, "部署/升级")
+		return strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志") && !strings.Contains(screen, "容器拉取")
 	}
 	service := func(screen string) bool {
 		return strings.Contains(screen, "实时日志") && !strings.Contains(screen, "生成/更新配置") && strings.Contains(screen, "›  服务端配置  ›  服务管理")
@@ -84,7 +83,7 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 		t.Fatal("submenu navigation should return directly without a pause")
 	}
 	rootScreen := in.screens[0]
-	for _, want := range []string{"准备镜像或升级版本", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
+	for _, want := range []string{"容器拉取", "容器更新", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
 		if !strings.Contains(rootScreen, want) {
 			t.Fatalf("root menu missing %q: %s", want, rootScreen)
 		}
@@ -172,7 +171,7 @@ func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
 			if !strings.Contains(in.screens[4], "0/q 返回") || !strings.Contains(in.screens[4], "版本号:") {
 				t.Fatalf("version page omitted return instructions:\n%s", in.screens[4])
 			}
-			if !strings.Contains(in.screens[5], "指定版本 26.3.27") || !strings.Contains(in.screens[5], "1   部署/更新") {
+			if !strings.Contains(in.screens[5], "指定版本 26.3.27") || !strings.Contains(in.screens[5], "1   容器拉取") {
 				t.Fatalf("return changed selected version or missed parent menu:\n%s", in.screens[5])
 			}
 			if strings.Contains(out.String(), "版本格式无效") || strings.Contains(out.String(), "按 Enter") {
@@ -182,7 +181,7 @@ func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
 	}
 }
 
-func TestUpgradeWithoutStateKeepsPullLogWithGenerateForm(t *testing.T) {
+func TestUpgradeDoesNotOpenGenerateForm(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)
 	if err := m.Prepare(context.Background(), "latest"); err != nil {
@@ -190,50 +189,48 @@ func TestUpgradeWithoutStateKeepsPullLogWithGenerateForm(t *testing.T) {
 	}
 	var out dockerTerminalOutput
 	m.out, m.errOut = &out, &out
-	in := &dockerTerminalInput{answers: []string{"1\n", "0\n"}, output: &out}
+	in := &dockerTerminalInput{answers: []string{"1\n"}, output: &out}
 	u := newUI(in, &out)
 	m.review = u
-	err := m.confirmDeploy(context.Background(), u, "", "", false)
-	if !errors.Is(err, errCancelled) {
+	if err := m.confirmDeploy(context.Background(), u, "", "", false); err != nil {
 		t.Fatal(err)
 	}
-	if len(in.screens) != 2 {
-		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
+	if in.index != 1 {
+		t.Fatalf("update asked for more input: %d\n%s", in.index, out.String())
 	}
-	form := in.screens[1]
-	for _, want := range []string{"拉取镜像", "升级结果", "主节点协议"} {
-		if !strings.Contains(form, want) {
-			t.Fatalf("generate form dropped %q:\n%s", want, form)
+	text := out.String()
+	for _, want := range []string{"拉取镜像", "升级结果"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("update log missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(out.String(), "按 Enter") {
-		t.Fatalf("upgrade asked for another confirmation:\n%s", out.String())
+	if strings.Contains(text, "主节点协议") || strings.Contains(text, "按 Enter") {
+		t.Fatalf("update continued into node setup:\n%s", text)
 	}
 }
 
-func TestDeployKeepsPrepareLogWithGenerateForm(t *testing.T) {
+func TestPullDoesNotOpenGenerateForm(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)
 	var out dockerTerminalOutput
 	m.out, m.errOut = &out, &out
-	in := &dockerTerminalInput{answers: []string{"1\n", "0\n"}, output: &out}
+	in := &dockerTerminalInput{answers: []string{"1\n"}, output: &out}
 	u := newUI(in, &out)
 	m.review = u
-	err := m.confirmDeploy(context.Background(), u, "", "", false)
-	if !errors.Is(err, errCancelled) {
+	if err := m.confirmDeploy(context.Background(), u, "", "", false); err != nil {
 		t.Fatal(err)
 	}
-	if len(in.screens) != 2 {
-		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
+	if in.index != 1 {
+		t.Fatalf("pull asked for more input: %d\n%s", in.index, out.String())
 	}
-	form := in.screens[1]
-	for _, want := range []string{"拉取镜像", "校验结果", "准备结果", "主节点协议"} {
-		if !strings.Contains(form, want) {
-			t.Fatalf("generate form dropped %q:\n%s", want, form)
+	text := out.String()
+	for _, want := range []string{"拉取镜像", "校验结果", "准备结果"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("pull log missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(out.String(), "按 Enter") {
-		t.Fatalf("deploy asked for another confirmation:\n%s", out.String())
+	if strings.Contains(text, "主节点协议") || strings.Contains(text, "按 Enter") {
+		t.Fatalf("pull continued into node setup:\n%s", text)
 	}
 }
 

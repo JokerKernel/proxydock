@@ -19,12 +19,7 @@ func (m *Manager) askGenerateUI(ctx context.Context, u *ui, opts model.GenerateO
 			return
 		}
 		opened = true
-		if u.keepLog {
-			u.keepLog = false
-			fmt.Fprintln(u.out)
-		} else {
-			u.clearScreen()
-		}
+		u.clearScreen()
 		u.pageHeader("Xray（Docker）", "生成服务端配置")
 		fmt.Fprintln(u.out, "提示：输入 q 或 0 可取消并返回上级菜单。")
 	}

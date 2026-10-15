@@ -22,7 +22,6 @@ type ui struct {
 	raw         io.Reader
 	out         io.Writer
 	interactive bool
-	keepLog     bool
 	signals     *commandSignals
 	intrR       *os.File
 }
