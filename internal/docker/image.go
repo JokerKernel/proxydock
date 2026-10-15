@@ -68,9 +68,6 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 	if err = m.dockerStreamOp(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "拉取镜像"}, m.out, m.errOut, "image", "pull", tag); err != nil {
 		return Metadata{}, fmt.Errorf("拉取官方版本镜像失败: %w", err)
 	}
-	if err = m.pauseAfterOutput(); err != nil {
-		return Metadata{}, err
-	}
 	b, err := m.docker(ctx, "image", "inspect", tag)
 	if err != nil {
 		return Metadata{}, err

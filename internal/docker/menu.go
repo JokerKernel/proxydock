@@ -22,6 +22,7 @@ type ui struct {
 	raw         io.Reader
 	out         io.Writer
 	interactive bool
+	keepLog     bool
 	signals     *commandSignals
 	intrR       *os.File
 }
@@ -61,22 +62,6 @@ func (u *ui) pause() error {
 	_, err := u.readLine()
 	if errors.Is(err, errInterrupted) {
 		fmt.Fprintln(u.out)
-		return errQuit
-	}
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	return err
-}
-func (m *Manager) pauseAfterOutput() error {
-	u := m.review
-	if u == nil || !u.interactive {
-		return nil
-	}
-	fmt.Fprint(m.errOut, "\n按 Enter 继续……")
-	_, err := u.readLine()
-	if errors.Is(err, errInterrupted) {
-		fmt.Fprintln(m.errOut)
 		return errQuit
 	}
 	if errors.Is(err, io.EOF) {

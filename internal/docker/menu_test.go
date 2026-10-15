@@ -182,26 +182,29 @@ func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
 	}
 }
 
-func TestDeployPausesOnPrepareResult(t *testing.T) {
+func TestDeployKeepsPrepareLogWithGenerateForm(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)
 	var out dockerTerminalOutput
 	m.out, m.errOut = &out, &out
-	in := &dockerTerminalInput{answers: []string{"1\n", "\n", "\n", "0\n"}, output: &out}
+	in := &dockerTerminalInput{answers: []string{"1\n", "0\n"}, output: &out}
 	u := newUI(in, &out)
 	m.review = u
 	err := m.confirmDeploy(context.Background(), u, "", "", false)
 	if !errors.Is(err, errCancelled) {
 		t.Fatal(err)
 	}
-	if len(in.screens) != 4 {
+	if len(in.screens) != 2 {
 		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
 	}
-	if !strings.Contains(in.screens[2], "准备结果") || !strings.Contains(in.screens[2], "按 Enter 继续") || strings.Contains(in.screens[2], "主节点协议") {
-		t.Fatalf("prepare result was not held:\n%s", in.screens[2])
+	form := in.screens[1]
+	for _, want := range []string{"拉取镜像", "校验结果", "准备结果", "主节点协议"} {
+		if !strings.Contains(form, want) {
+			t.Fatalf("generate form dropped %q:\n%s", want, form)
+		}
 	}
-	if !strings.Contains(in.screens[3], "主节点协议") {
-		t.Fatalf("generate form did not follow Enter:\n%s", in.screens[3])
+	if strings.Contains(out.String(), "按 Enter") {
+		t.Fatalf("deploy asked for another confirmation:\n%s", out.String())
 	}
 }
 

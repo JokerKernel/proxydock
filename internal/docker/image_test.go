@@ -207,72 +207,26 @@ func TestImageSelectionsUseOfficialTags(t *testing.T) {
 	}
 }
 
-func TestPrepareWaitsForEnterAfterPull(t *testing.T) {
+func TestPrepareContinuesAfterPullWithoutPrompt(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)
 	m.traceDocker = true
 	var out dockerTerminalOutput
 	m.out, m.errOut = &out, &out
-	in := &dockerTerminalInput{answers: []string{"\n"}, output: &out}
+	in := &dockerTerminalInput{output: &out}
 	m.review = newUI(in, &out)
 	if err := m.Prepare(context.Background(), "latest"); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
 	pull := strings.Index(text, "image pull ")
-	pause := strings.Index(text, "按 Enter 继续")
 	inspect := strings.Index(text, "image inspect ")
-	if pull < 0 || pause < 0 || inspect < 0 || pull > pause || pause > inspect {
-		t.Fatalf("pause must sit between the pull output and the next docker call:\n%s", text)
+	result := strings.Index(text, "准备结果")
+	if pull < 0 || inspect < 0 || result < 0 || pull > inspect || inspect > result {
+		t.Fatalf("prepare log was split:\n%s", text)
 	}
-	if len(in.screens) != 1 || strings.Contains(in.screens[0], "image inspect ") {
-		t.Fatalf("next step ran before Enter: %q", in.screens)
-	}
-	if in.index != 1 {
-		t.Fatalf("continue input was not consumed: %d", in.index)
-	}
-}
-
-func TestPrepareSkipsPullPauseOutsideMenu(t *testing.T) {
-	m, _ := testManager(t)
-	var plain bytes.Buffer
-	m.out, m.errOut = &plain, &plain
-	if err := m.Prepare(context.Background(), "latest"); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(plain.String(), "按 Enter") {
-		t.Fatalf("command path waited for Enter:\n%s", plain.String())
-	}
-
-	t.Setenv("TERM", "dumb")
-	m, _ = testManager(t)
-	var out dockerTerminalOutput
-	m.out, m.errOut = &out, &out
-	in := &dockerTerminalInput{output: &out}
-	m.review = newUI(in, &out)
-	if err := m.Prepare(context.Background(), "latest"); err != nil {
-		t.Fatal(err)
-	}
-	if in.index != 0 || strings.Contains(out.String(), "按 Enter") {
-		t.Fatalf("dumb terminal waited for Enter: index=%d\n%s", in.index, out.String())
-	}
-}
-
-func TestPrepareContinuesWhenPullPauseHitsEOF(t *testing.T) {
-	t.Setenv("TERM", "xterm")
-	m, _ := testManager(t)
-	var out dockerTerminalOutput
-	m.out, m.errOut = &out, &out
-	in := &dockerTerminalInput{output: &out}
-	m.review = newUI(in, &out)
-	if err := m.Prepare(context.Background(), "latest"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "按 Enter 继续") {
-		t.Fatalf("missing continue prompt:\n%s", out.String())
-	}
-	if _, err := m.metadata(); err != nil {
-		t.Fatal(err)
+	if in.index != 0 || strings.Contains(text, "按 Enter") {
+		t.Fatalf("prepare waited for Enter: index=%d\n%s", in.index, text)
 	}
 }
 
