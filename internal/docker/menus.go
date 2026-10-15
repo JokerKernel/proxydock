@@ -52,11 +52,10 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
-		u.menuChoice("4", "清理容器（保留配置和数据）")
-		u.menuChoice("5", "删除实例数据（清理容器，永久删除配置、凭据、证书和备份）")
-		u.menuChoice("6", "恢复中断操作（回滚未完成的配置修改或升级）")
+		u.menuChoice("4", "删除实例数据（清理容器，永久删除配置、凭据、证书和备份）")
+		u.menuChoice("5", "恢复中断操作（回滚未完成的配置修改或升级）")
 		u.menuChoice("0/q", "退出")
-		choice, err := u.chooseNumber("请选择", 0, 6, -1)
+		choice, err := u.chooseNumber("请选择", 0, 5, -1)
 		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
 			return nil
 		}
@@ -79,10 +78,8 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 			showed, err = m.clientMenu(ctx, u)
 			shouldPause = showed
 		case 4:
-			err = m.confirmRemove(ctx, u)
-		case 5:
 			err = m.confirmCleanup(ctx, u)
-		case 6:
+		case 5:
 			err = m.Recover(ctx)
 		}
 		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
@@ -101,8 +98,6 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 			case 1:
 				fmt.Fprintln(m.out, "已取消"+m.containerImageMenu()+"。")
 			case 4:
-				fmt.Fprintln(m.out, "已取消移除容器。")
-			case 5:
 				fmt.Fprintln(m.out, "已取消清理。")
 			default:
 				fmt.Fprintln(m.out, "已取消。")
@@ -421,14 +416,6 @@ func shownVersion(version string) string {
 	default:
 		return "指定版本 " + version
 	}
-}
-
-func (m *Manager) confirmRemove(ctx context.Context, u *ui) error {
-	u.confirmationPanel("危险操作确认：移除容器", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"停止并移除本实例容器"}}, confirmSection{title: "保留", items: []string{"服务端配置、凭据、证书和备份", "落地接入和中转线路"}}, confirmSection{title: "重要影响", items: []string{"代理会立即停止，再次启动可沿用保留的配置"}})
-	if err := u.confirm("移除本实例容器，保留配置和数据？"); err != nil {
-		return err
-	}
-	return m.Remove(ctx)
 }
 
 func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
