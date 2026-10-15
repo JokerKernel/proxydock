@@ -42,26 +42,22 @@ func runUserLabel(root bool) string {
 	return "镜像默认"
 }
 
-func (m *Manager) resolvedImageUser(ctx context.Context) (int, int, error) {
-	id, err := m.containerIdentity(ctx)
-	return id.uid, id.gid, err
-}
-
-// Before deployment metadata exists, temporary commands run as root so they can
-// read root-owned 0600 files. Afterwards the service user decides. A non-root
-// deployment records the user id read from the container.
+// Compose operations use the committed identity. Candidate validation passes its
+// own metadata to imageIdentity instead of reading the old deployment.
 func (m *Manager) containerIdentity(ctx context.Context) (containerIdentity, error) {
 	md, err := m.metadata()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return containerIdentity{pinRoot: true}, nil
-		}
 		return containerIdentity{}, err
 	}
+	return m.imageIdentity(ctx, md)
+}
+
+func (m *Manager) imageIdentity(ctx context.Context, md Metadata) (containerIdentity, error) {
 	if md.RunAsRoot {
 		return containerIdentity{pinRoot: true}, nil
 	}
 	spec := md.ImageUser
+	var err error
 	if spec == "" && md.ImageID != "" {
 		spec, err = m.inspectImageUser(ctx, md.ImageID)
 		if err != nil {
@@ -88,21 +84,28 @@ func (m *Manager) inspectImageUser(ctx context.Context, imageID string) (string,
 	if err = json.Unmarshal(b, &images); err != nil || len(images) != 1 {
 		return "", fmt.Errorf("镜像详情无效")
 	}
-	return normalizeImageUser(images[0].Config.User)
+	return m.resolveImageUser(ctx, imageID, images[0].Config.User)
 }
 
 func (m *Manager) grantImageUser(ctx context.Context, paths ...string) error {
-	uid, gid, err := m.resolvedImageUser(ctx)
-	if err != nil || uid == 0 && gid == 0 {
+	id, err := m.containerIdentity(ctx)
+	if err != nil {
 		return err
 	}
+	return m.grantContainerIdentity(id, paths...)
+}
+
+func (m *Manager) grantContainerIdentity(id containerIdentity, paths ...string) error {
+	if id.uid == 0 && id.gid == 0 {
+		return nil
+	}
 	for _, path := range paths {
-		if _, err = os.Lstat(path); os.IsNotExist(err) {
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
 			continue
 		} else if err != nil {
 			return err
 		}
-		if err = chownTree(path, uid, gid); err != nil {
+		if err := m.chown(path, id.uid, id.gid); err != nil {
 			return err
 		}
 	}
@@ -127,7 +130,7 @@ func chownTree(root string, uid, gid int) error {
 // defineUserFromContainer stores the container's numeric user as ImageUser and
 // aligns the log tmpfs with that uid. An empty or root user carries no image
 // id. RunAsRoot stays 0:0 even if the container still shows another uid.
-func (m *Manager) defineUserFromContainer(md *Metadata, in *inspection) error {
+func (m *Manager) defineUserFromContainer(ctx context.Context, md *Metadata, in *inspection) error {
 	if in == nil || md == nil || md.RunAsRoot {
 		return nil
 	}
@@ -137,7 +140,11 @@ func (m *Manager) defineUserFromContainer(md *Metadata, in *inspection) error {
 	}
 	uid, gid, ok := parseImageUser(spec)
 	if !ok {
-		return fmt.Errorf("容器用户 %q 无法识别", spec)
+		normalized, err := m.resolveImageUser(ctx, in.Image, spec)
+		if err != nil {
+			return fmt.Errorf("容器用户 %q 无法识别: %w", spec, err)
+		}
+		uid, gid, _ = parseImageUser(normalized)
 	}
 	if uid == 0 && gid == 0 {
 		return nil

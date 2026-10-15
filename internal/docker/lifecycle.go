@@ -153,7 +153,7 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 	})
 }
 func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
-	keys, err := m.keyPair(ctx, md.ImageID)
+	keys, err := m.keyPair(ctx, md)
 	if err != nil {
 		return err
 	}
@@ -170,14 +170,14 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	if err != nil {
 		return err
 	}
-	if err = m.validateBytes(ctx, md.ImageID, server); err != nil {
+	if err = m.validateBytes(ctx, md, server); err != nil {
 		return fmt.Errorf("镜像不支持受管服务端配置: %w", err)
 	}
 	client, err := m.codec.RenderClient(n)
 	if err != nil {
 		return err
 	}
-	return m.validateBytes(ctx, md.ImageID, client)
+	return m.validateBytes(ctx, md, client)
 }
 func (m *Manager) upgrade(ctx context.Context, version, network, runUser string) error {
 	requested := ""
@@ -239,6 +239,8 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 		}
 		if requestedRoot != nil {
 			md.RunAsRoot = *requestedRoot
+		} else {
+			md.RunAsRoot = old.RunAsRoot
 		}
 		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {
 			next, composeErr := m.composeFor(md, nil)
@@ -283,7 +285,7 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 		if s, b, e := m.managedConfig(); e == nil {
 			state = s
 			hasNode = true
-			if err = m.validateBytes(ctx, md.ImageID, b); err != nil {
+			if err = m.validateBytes(ctx, md, b); err != nil {
 				return err
 			}
 		} else if !os.IsNotExist(e) {
@@ -430,7 +432,9 @@ func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspectio
 
 func (m *Manager) SetRunAsRoot(ctx context.Context, root bool) error {
 	return m.withLock(ctx, func() error {
-		md, in, err := m.prepareOperation(ctx)
+		// Selecting root must remain possible even if the current user cannot be
+		// resolved. All ownership, image, mount and Compose checks still apply.
+		md, in, err := m.prepareOperationWithUser(ctx, !root)
 		if err != nil {
 			return err
 		}
@@ -771,7 +775,7 @@ func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
 				m.op(phaseResult, levelResult, "服务结果", "容器已运行")
 				return nil
 			}
-			if err = m.validateBytes(ctx, md.ImageID, b); err != nil {
+			if err = m.validateBytes(ctx, md, b); err != nil {
 				return err
 			}
 		}

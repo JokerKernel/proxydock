@@ -13,6 +13,7 @@ import (
 
 var backupNamePattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[a-f0-9]{12}$`)
 var validatorNamePattern = regexp.MustCompile(`^/?` + Container + `-check-[a-f0-9]{24}$`)
+var validationDirectoryPattern = regexp.MustCompile(`^validation-[0-9]+$`)
 var temporaryNamePatterns = map[string]*regexp.Regexp{
 	".docker-write-": regexp.MustCompile("^\\.docker-write-[a-f0-9]{24}$"),
 	"candidate-":     regexp.MustCompile("^candidate-[0-9]+\\.json$"),
@@ -72,6 +73,9 @@ func (m *Manager) maintainFilesLocked() error {
 	if err := removeTemporaryFiles(m.paths.Staging(), "candidate-", "edit-", ".edit-", ".docker-write-"); err != nil {
 		return err
 	}
+	if err := m.cleanupValidationDirs(); err != nil {
+		return err
+	}
 	backupRefs, err := m.pruneBackups()
 	if err != nil {
 		return err
@@ -104,6 +108,33 @@ func (m *Manager) maintainFilesLocked() error {
 			return err
 		}
 		m.op(phaseApply, levelStep, "回收证书", dir)
+	}
+	return nil
+}
+
+func (m *Manager) cleanupValidationDirs() error {
+	entries, err := os.ReadDir(m.paths.Staging())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !validationDirectoryPattern.MatchString(entry.Name()) {
+			continue
+		}
+		dir := filepath.Join(m.paths.Staging(), entry.Name())
+		var marker ownership
+		if err := loadJSON(filepath.Join(dir, ".proxydock-validation.json"), &marker); err != nil || marker.SchemaVersion != 1 || marker.ManagedBy != "proxydock" || marker.InstanceID != Instance {
+			continue
+		}
+		if err := safePath(dir); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
 	}
 	return nil
 }

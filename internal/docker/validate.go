@@ -4,12 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mounts []string, command ...string) (output []byte, runErr error) {
+func (m *Manager) coreRun(ctx context.Context, label opLabel, md Metadata, mounts []string, command ...string) ([]byte, error) {
+	id, err := m.imageIdentity(ctx, md)
+	if err != nil {
+		return nil, err
+	}
+	return m.coreRunAs(ctx, label, md.ImageID, id, mounts, command...)
+}
+
+func (m *Manager) coreRunAs(ctx context.Context, label opLabel, imageID string, id containerIdentity, mounts []string, command ...string) (output []byte, runErr error) {
 	if !validImageID(imageID) {
 		return nil, fmt.Errorf("无效的本机镜像 ID")
 	}
@@ -18,10 +28,6 @@ func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mo
 		return nil, err
 	}
 	name := Container + "-check-" + suffix
-	id, err := m.containerIdentity(ctx)
-	if err != nil {
-		return nil, err
-	}
 	args := []string{"run", "--rm", "--pull", "never", "--name", name, "--label", "io.proxydock.managed=true", "--label", "io.proxydock.instance=" + Instance, "--label", "io.proxydock.role=validator", "--network", "host", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true"}
 	if id.pinRoot {
 		args = append(args, "--user", "0:0")
@@ -49,7 +55,7 @@ func (m *Manager) coreRun(ctx context.Context, label opLabel, imageID string, mo
 	}()
 	return m.dockerOp(ctx, label, args...)
 }
-func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte) error {
+func (m *Manager) validateBytes(ctx context.Context, md Metadata, data []byte) error {
 	if len(data) == 0 || len(data) > maxConfigSize || !json.Valid(data) {
 		return fmt.Errorf("配置必须是大小合理的有效 JSON")
 	}
@@ -59,25 +65,31 @@ func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte
 	if err := privateDir(m.paths.TLS()); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(m.paths.Staging(), "candidate-*.json")
+	id, err := m.imageIdentity(ctx, md)
 	if err != nil {
 		return err
 	}
-	path := f.Name()
-	defer os.Remove(path)
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(data)
-	}
-	if e := f.Close(); err == nil {
-		err = e
-	}
+	dir, err := os.MkdirTemp(m.paths.Staging(), "validation-")
 	if err != nil {
 		return err
 	}
-	if err = m.grantImageUser(ctx, path, m.paths.TLS()); err != nil {
+	defer os.RemoveAll(dir)
+	if err = saveJSON(filepath.Join(dir, ".proxydock-validation.json"), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance}); err != nil {
 		return err
 	}
-	for _, path := range []string{path, m.paths.TLS()} {
+	path, tls := filepath.Join(dir, "config.json"), filepath.Join(dir, "tls")
+	if err = atomicWrite(path, data, 0600); err != nil {
+		return err
+	}
+	// A new image may use a different uid. Never chown the live certificates
+	// during preflight: the old service still needs them if validation fails.
+	if err = copyValidationTLS(m.paths.TLS(), tls); err != nil {
+		return err
+	}
+	if err = m.grantContainerIdentity(id, path, tls); err != nil {
+		return err
+	}
+	for _, path := range []string{path, tls} {
 		if strings.ContainsAny(path, ",\n\r") {
 			return fmt.Errorf("挂载路径含不支持的字符")
 		}
@@ -85,11 +97,32 @@ func (m *Manager) validateBytes(ctx context.Context, imageID string, data []byte
 			return err
 		}
 	}
-	_, err = m.coreRun(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}, imageID, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + m.paths.TLS() + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
+	_, err = m.coreRunAs(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}, md.ImageID, id, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + tls + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
 	if err != nil {
 		m.op(phaseCheck, levelError, "校验结果", err.Error())
 		return fmt.Errorf("Docker Xray 配置校验失败: %w", err)
 	}
 	m.op(phaseCheck, levelResult, "校验结果", "通过")
 	return nil
+}
+
+func copyValidationTLS(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, rel)
+		if entry.IsDir() {
+			return privateDir(target)
+		}
+		data, err := readPrivate(path)
+		if err != nil {
+			return err
+		}
+		return atomicWrite(target, data, 0600)
+	})
 }

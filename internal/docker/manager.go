@@ -50,6 +50,7 @@ type Manager struct {
 	http             *http.Client
 	codec            *xray.Codec
 	stateWrite       func(string, []byte, os.FileMode) error
+	chown            func(string, int, int) error
 	physicalIPs      func() ([]publicAddress, error)
 	externalIP       func(context.Context) (string, error)
 	probeSNI         func(context.Context, []string, string, int) ([]sniCandidate, error)
@@ -89,6 +90,7 @@ func New(opts Options) *Manager {
 		m.portFree = checkPortFree
 	}
 	m.stateWrite = atomicWrite
+	m.chown = chownTree
 	if m.healthCheck == nil {
 		m.healthCheck = m.waitHealthy
 	}

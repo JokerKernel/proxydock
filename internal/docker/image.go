@@ -98,7 +98,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 	if ref == "" {
 		return Metadata{}, fmt.Errorf("镜像缺少官方仓库 digest")
 	}
-	imageUser, err := normalizeImageUser(image.Config.User)
+	imageUser, err := m.resolveImageUser(ctx, image.ID, image.Config.User)
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -110,7 +110,7 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 		md.ImageRef, md.Channel, md.ImageUser = ref, channel, imageUser
 		return md, nil
 	}
-	output, err := m.coreRun(ctx, opLabel{}, image.ID, nil, "version")
+	output, err := m.coreRun(ctx, opLabel{}, Metadata{ImageID: image.ID, RunAsRoot: true}, nil, "version")
 	if err != nil {
 		return Metadata{}, fmt.Errorf("镜像版本检测失败: %w", err)
 	}
@@ -152,8 +152,8 @@ func parseKeyPair(b []byte) (model.KeyPair, error) {
 	}
 	return pair, nil
 }
-func (m *Manager) keyPair(ctx context.Context, imageID string) (model.KeyPair, error) {
-	b, err := m.coreRun(ctx, opLabel{}, imageID, nil, "x25519")
+func (m *Manager) keyPair(ctx context.Context, md Metadata) (model.KeyPair, error) {
+	b, err := m.coreRun(ctx, opLabel{}, md, nil, "x25519")
 	if err != nil {
 		return model.KeyPair{}, fmt.Errorf("生成 REALITY 密钥失败: %w", err)
 	}

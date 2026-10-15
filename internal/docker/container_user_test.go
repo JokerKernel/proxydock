@@ -256,6 +256,7 @@ func TestImageUserContainerRemainsManaged(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.imageUser = "65532"
+	f.imageUsers[md.ImageID] = "65532"
 	f.newContainer(md.ImageID)
 	f.container.State.Running = true
 	f.container.State.Status = "running"

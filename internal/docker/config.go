@@ -49,6 +49,10 @@ func hostPorts(n model.Node, network string) []int {
 	return ports
 }
 func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, error) {
+	return m.prepareOperationWithUser(ctx, true)
+}
+
+func (m *Manager) prepareOperationWithUser(ctx context.Context, learnUser bool) (Metadata, *inspection, error) {
 	if err := m.CheckReady(ctx); err != nil {
 		return Metadata{}, nil, err
 	}
@@ -80,8 +84,10 @@ func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, 
 	}
 	// The live container is the source of the image user's id. Root remains an
 	// explicit selection and is not overwritten from the container.
-	if err = m.defineUserFromContainer(&md, in); err != nil {
-		return md, in, err
+	if learnUser {
+		if err = m.defineUserFromContainer(ctx, &md, in); err != nil {
+			return md, in, err
+		}
 	}
 	return md, in, nil
 }
@@ -296,7 +302,7 @@ func (m *Manager) Generate(ctx context.Context, opts model.GenerateOptions, star
 				return err
 			}
 			if !n.IsTLS() {
-				keys, e := m.keyPair(ctx, md.ImageID)
+				keys, e := m.keyPair(ctx, md)
 				if e != nil {
 					return e
 				}
@@ -307,7 +313,7 @@ func (m *Manager) Generate(ctx context.Context, opts model.GenerateOptions, star
 				}
 			}
 		} else if !n.IsTLS() && n.PrivateKey == "" {
-			keys, e := m.keyPair(ctx, md.ImageID)
+			keys, e := m.keyPair(ctx, md)
 			if e != nil {
 				return e
 			}
@@ -411,7 +417,7 @@ func (m *Manager) applyConfig(ctx context.Context, md Metadata, in *inspection, 
 			}
 		}
 	}
-	if err := m.validateBytes(ctx, md.ImageID, b); err != nil {
+	if err := m.validateBytes(ctx, md, b); err != nil {
 		return &configurationValidationError{err}
 	}
 	j, err := m.begin("config", in)
@@ -750,7 +756,7 @@ func (m *Manager) Reset(ctx context.Context, opts model.ResetOptions) error {
 				return fmt.Errorf("只有 TLS 节点可以轮换证书")
 			}
 			if rotateCredentials {
-				keys, e := m.keyPair(ctx, md.ImageID)
+				keys, e := m.keyPair(ctx, md)
 				if e != nil {
 					return e
 				}
@@ -825,7 +831,7 @@ func (m *Manager) Validate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return m.validateBytes(ctx, md.ImageID, b)
+		return m.validateBytes(ctx, md, b)
 	})
 }
 func (m *Manager) prepareEditedConfig(data []byte, node model.Node) ([]byte, error) {

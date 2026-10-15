@@ -488,7 +488,7 @@ func TestFailedTemporaryContainerStillCleansUp(t *testing.T) {
 	m.runner = runner
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := m.coreRun(ctx, opLabel{}, md.ImageID, nil, "version"); !errors.Is(err, context.Canceled) {
+	if _, err := m.coreRun(ctx, opLabel{}, md, nil, "version"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("did not preserve cancellation: %v", err)
 	}
 	if !runner.removed || fake.container == nil || !fake.container.State.Running {

@@ -40,6 +40,8 @@ type simulatedDocker struct {
 	blockFollow       bool
 	signalOnFollow    bool
 	imageUser         string
+	imageUsers        map[string]string
+	fileOwners        map[string]containerIdentity
 	latestVersion     string
 	latestImageID     string
 	prereleaseVersion string
@@ -108,6 +110,7 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 			f.images[id] = md
 			f.images[md.ImageRef] = md
 			f.images[tag] = md
+			f.imageUsers[id] = f.imageUser
 			return []byte("pulled\n"), nil
 		}
 		if a[1] == "inspect" {
@@ -115,7 +118,7 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 			if !ok {
 				return nil, errors.New("image missing")
 			}
-			b, _ := json.Marshal([]map[string]any{{"Id": md.ImageID, "RepoDigests": []string{md.ImageRef}, "Architecture": runtime.GOARCH, "Os": "linux", "Config": map[string]any{"User": f.imageUser}}})
+			b, _ := json.Marshal([]map[string]any{{"Id": md.ImageID, "RepoDigests": []string{md.ImageRef}, "Architecture": runtime.GOARCH, "Os": "linux", "Config": map[string]any{"User": f.imageUsers[md.ImageID]}}})
 			return b, nil
 		}
 	case "container":
@@ -158,6 +161,8 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 		if a[1] == "ls" {
 			return nil, nil
 		}
+	case "create":
+		return nil, errors.New("image account files unavailable")
 	case "run":
 		image := ""
 		at := -1
@@ -310,7 +315,7 @@ func (f *simulatedDocker) newContainer(image string) {
 	in.Config.User = composeServiceUser(f.manager.paths.Compose())
 	// Docker copies the image USER when Compose does not set one.
 	if in.Config.User == "" {
-		in.Config.User = f.imageUser
+		in.Config.User = f.imageUsers[image]
 	}
 	in.Config.Cmd = []string{"run", "-config", "/usr/local/etc/xray/config.json"}
 	in.Config.Entrypoint = []string{"/usr/local/bin/xray"}
@@ -338,7 +343,7 @@ func (f *simulatedDocker) newContainer(image string) {
 }
 func testManager(t *testing.T) (*Manager, *simulatedDocker) {
 	t.Helper()
-	f := &simulatedDocker{t: t, images: map[string]Metadata{}}
+	f := &simulatedDocker{t: t, images: map[string]Metadata{}, imageUsers: map[string]string{}, fileOwners: map[string]containerIdentity{}}
 	m := New(Options{Root: t.TempDir(), Runner: f, RootCheck: func() error { return nil }, LookPath: func(string) (string, error) { return "/test/docker", nil }, TargetCheck: func(context.Context, string, string, string) error { return nil }, PortFree: func(int) error { return nil }, HealthCheck: func(_ context.Context, _ []int, image string) error {
 		if f.healthFailures > 0 {
 			f.healthFailures--
@@ -350,6 +355,16 @@ func testManager(t *testing.T) (*Manager, *simulatedDocker) {
 		return nil
 	}})
 	f.manager = m
+	// Docker and root checks are simulated; track intended ownership without
+	// requiring the unit test process to chown files to arbitrary system users.
+	m.chown = func(path string, uid, gid int) error {
+		return filepath.WalkDir(path, func(path string, _ fs.DirEntry, err error) error {
+			if err == nil {
+				f.fileOwners[path] = containerIdentity{uid: uid, gid: gid}
+			}
+			return err
+		})
+	}
 	return m, f
 }
 func prepared(t *testing.T) (*Manager, *simulatedDocker) {
