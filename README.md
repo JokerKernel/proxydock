@@ -8,7 +8,7 @@ ProxyDock 是面向 Linux 的 Docker 代理管理工具，提供中文交互菜�
 
 - Linux amd64 / arm64；管理操作需要 root，帮助和版本查询不需要。
 - 已安装并启动的本机 rootful Docker Engine，以及 Compose v2 或更高版本插件。
-- 默认使用 host 网络，也支持端口映射；监听端口须与其他服务错开。
+- 默认使用端口映射，也支持 host 网络；监听端口须与其他服务错开。
 
 ## 一键安装
 

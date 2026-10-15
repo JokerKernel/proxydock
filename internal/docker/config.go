@@ -81,7 +81,7 @@ func (m *Manager) prepareDeployment(ctx context.Context, version, network string
 	md, err := m.metadata()
 	if os.IsNotExist(err) {
 		if strings.TrimSpace(network) == "" {
-			network = networkHost
+			network = defaultNetwork
 		}
 		return m.prepareWithNetwork(ctx, version, network)
 	}

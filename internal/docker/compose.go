@@ -17,6 +17,7 @@ import (
 const (
 	networkHost    = "host"
 	networkPublish = "publish"
+	defaultNetwork = networkPublish
 )
 
 //go:embed templates/compose.yaml.tmpl

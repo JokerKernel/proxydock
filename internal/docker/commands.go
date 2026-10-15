@@ -26,16 +26,16 @@ func (m *Manager) Command() *cobra.Command {
 		sub := &cobra.Command{Use: action, Short: map[string]string{"prepare": "准备官方镜像和 Compose，不启动代理", "upgrade": "升级镜像，保留凭据并支持回滚"}[action], Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			if action == "prepare" {
 				if strings.TrimSpace(network) == "" {
-					network = networkHost
+					network = defaultNetwork
 				}
 				return m.prepareWithNetwork(cmd.Context(), version, network)
 			}
 			return m.upgrade(cmd.Context(), version, network)
 		}}
 		sub.Flags().StringVar(&version, "version", "", "latest（缺省，官方 latest 标签）、pre-release 或具体版本号")
-		networkHelp := "网络方式：host 或 publish，缺省保持当前"
+		networkHelp := "网络方式：publish 或 host，缺省保持当前"
 		if action == "prepare" {
-			networkHelp = "网络方式：host（缺省，宿主机网络）或 publish（端口映射）"
+			networkHelp = "网络方式：publish（缺省，端口映射）或 host（宿主机网络）"
 		}
 		sub.Flags().StringVar(&network, "network", "", networkHelp)
 		cmd.AddCommand(sub)
@@ -43,7 +43,7 @@ func (m *Manager) Command() *cobra.Command {
 	deploy := m.generateCommand("deploy", &yes)
 	var version, network string
 	deploy.Flags().StringVar(&version, "version", "", "首次部署镜像：latest（缺省）、pre-release 或具体版本号")
-	deploy.Flags().StringVar(&network, "network", "", "网络方式：host（缺省，宿主机网络）或 publish（端口映射）")
+	deploy.Flags().StringVar(&network, "network", "", "网络方式：publish（首次缺省，端口映射）或 host（宿主机网络），已有实例沿用当前")
 	cmd.AddCommand(deploy)
 	cmd.AddCommand(&cobra.Command{Use: "status", Short: "查看 Docker 实例状态", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		s, err := m.Status(cmd.Context())

@@ -10,7 +10,7 @@ Docker 版不依赖宿主机安装的 Xray，也不要求存在 `xray.service`�
 
 - Linux amd64 或 arm64，root 权限。
 - 本机 rootful Docker Engine 和 Docker Compose v2 或更高版本插件，daemon 已运行。
-- 默认使用宿主机网络。也可以选择端口映射：监听端口按相同端口号发布，REALITY 回落仅容器内使用。
+- 默认使用端口映射：监听端口按相同端口号发布，REALITY 回落仅容器内使用。也可以选择宿主机网络。
 - 不支持远程 Docker、rootless/userns-remap、Docker Desktop、自定义桥接网络、多实例和接管任意已有容器。
 
 Docker 和 Compose 需要提前安装。
@@ -42,7 +42,7 @@ sudo proxydock deploy \
   --security tls --server YOUR_SERVER_IP --port 8443
 ```
 
-默认 `host` 网络与宿主机共享端口，监听端口须与其他服务错开。`--network publish` 改为端口映射，监听端口按相同端口号发布，REALITY 回落仅容器内使用。切换网络会重建容器，并保持原来的运行或停止状态。
+新部署默认使用 `publish` 端口映射，监听端口按相同端口号发布，REALITY 回落仅容器内使用。`--network host` 使用宿主机网络栈，监听端口须与其他服务错开。已有实例省略 `--network` 时沿用当前方式；切换网络会重建容器，并保持原来的运行或停止状态。
 
 REALITY 默认启用专用回落防护；`--standard-config` 可选择普通配置，`--fallback-port` 可指定内部回落端口。
 

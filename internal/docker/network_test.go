@@ -1,10 +1,12 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -12,6 +14,108 @@ import (
 
 	"proxydock/internal/docker/model"
 )
+
+func TestNetworkChoiceOrderAndDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name, saved, selected, input, want string
+		defaultChoice                      int
+	}{
+		{"new-default", "", "", "\n", networkPublish, 1},
+		{"publish-first", "", "", "1\n", networkPublish, 1},
+		{"host-second", "", "", "2\n", networkHost, 1},
+		{"saved-host", networkHost, "", "\n", networkHost, 2},
+		{"saved-publish", networkPublish, "", "\n", networkPublish, 1},
+		{"selected-host", networkPublish, networkHost, "\n", networkHost, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := testManager(t)
+			if tc.saved != "" {
+				if err := m.prepareWithNetwork(context.Background(), "26.3.27", tc.saved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out bytes.Buffer
+			got, err := m.chooseDeployNetwork(newUI(strings.NewReader(tc.input), &out), tc.selected)
+			if err != nil || got != tc.want {
+				t.Fatalf("network choice = %q, %v; want %q", got, err, tc.want)
+			}
+			text := out.String()
+			publish, host := strings.Index(text, "1   端口映射"), strings.Index(text, "2   宿主机网络")
+			if publish < 0 || host <= publish || !strings.Contains(text, fmt.Sprintf("请选择 [%d]", tc.defaultChoice)) {
+				t.Fatalf("unexpected network menu:\n%s", text)
+			}
+		})
+	}
+}
+
+func TestCommandsDefaultToPublishedNetwork(t *testing.T) {
+	for _, action := range []string{"prepare", "deploy"} {
+		for _, explicitHost := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/host=%t", action, explicitHost), func(t *testing.T) {
+				m, fake := testManager(t)
+				args := []string{action, "--version", "26.3.27"}
+				want := networkPublish
+				if explicitHost {
+					args = append(args, "--network", "host")
+					want = networkHost
+				}
+				if action == "deploy" {
+					args = append(args, "--security", "tls", "--server", "example.com", "--port", "8443")
+				}
+				cmd := m.Command()
+				cmd.SetIn(strings.NewReader(""))
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				cmd.SetArgs(args)
+				if err := cmd.ExecuteContext(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				md, err := m.metadata()
+				if err != nil || md.Network != want {
+					t.Fatalf("network = %q, %v; want %q", md.Network, err, want)
+				}
+				compose := string(readFile(t, m.paths.Compose()))
+				if strings.Contains(compose, "network_mode: host") != explicitHost {
+					t.Fatalf("wrong compose network:\n%s", compose)
+				}
+				if action == "deploy" {
+					if fake.container == nil || !fake.container.State.Running || (fake.container.HostConfig.NetworkMode == networkHost) != explicitHost {
+						t.Fatalf("wrong deployed network: %+v", fake.container)
+					}
+					if !explicitHost && !strings.Contains(compose, `"8443:8443"`) {
+						t.Fatalf("default deployment did not publish port:\n%s", compose)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCommandsKeepSavedNetworkWhenOmitted(t *testing.T) {
+	for _, mode := range []string{networkHost, networkPublish} {
+		for _, action := range []string{"deploy", "upgrade"} {
+			t.Run(mode+"/"+action, func(t *testing.T) {
+				m, fake := fallbackDeployment(t, mode, true)
+				args := []string{action, "--version", "26.3.27"}
+				if action == "deploy" {
+					args = append(args, "--server", "example.com", "--force")
+				}
+				cmd := m.Command()
+				cmd.SetIn(strings.NewReader(""))
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				cmd.SetArgs(args)
+				if err := cmd.ExecuteContext(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				md, err := m.metadata()
+				if err != nil || md.Network != mode || fake.container == nil || (fake.container.HostConfig.NetworkMode == networkHost) != (mode == networkHost) {
+					t.Fatalf("saved network changed: %+v, container=%+v, error=%v", md, fake.container, err)
+				}
+			})
+		}
+	}
+}
 
 func TestHostComposeKeepsHostNetwork(t *testing.T) {
 	m, _ := prepared(t)

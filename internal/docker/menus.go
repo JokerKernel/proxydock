@@ -220,7 +220,7 @@ func (m *Manager) deployCardRows(selection, network string) [][2]string {
 func (m *Manager) savedNetwork() string {
 	md, err := m.metadata()
 	if err != nil {
-		return networkHost
+		return defaultNetwork
 	}
 	return canonicalNetwork(md.Network)
 }
@@ -228,15 +228,15 @@ func (m *Manager) savedNetwork() string {
 func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
 	u.clearScreen()
 	u.pageHeader("Xray（Docker）", "部署/升级", "网络方式")
-	u.menuChoice("1", "宿主机网络（容器直接使用宿主机网络栈）")
-	u.menuChoice("2", "端口映射（发布监听端口，回落仅容器内使用）")
+	u.menuChoice("1", "端口映射（发布监听端口，回落仅容器内使用）")
+	u.menuChoice("2", "宿主机网络（容器直接使用宿主机网络栈）")
 	u.menuChoice("0/q", "返回")
 	current := selection
 	if current == "" {
 		current = m.savedNetwork()
 	}
 	def := 1
-	if canonicalNetwork(current) == networkPublish {
+	if canonicalNetwork(current) == networkHost {
 		def = 2
 	}
 	choice, err := u.chooseNumberCancelable("请选择网络方式", 1, 2, def)
@@ -244,9 +244,9 @@ func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
 		return "", err
 	}
 	if choice == 2 {
-		return networkPublish, nil
+		return networkHost, nil
 	}
-	return networkHost, nil
+	return networkPublish, nil
 }
 
 func (m *Manager) confirmSetNetwork(ctx context.Context, u *ui, network string) error {
@@ -331,7 +331,7 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 		return err
 	}
 	if strings.TrimSpace(network) == "" {
-		network = networkHost
+		network = defaultNetwork
 	}
 	if err := m.prepareWithNetwork(ctx, version, network); err != nil {
 		return err
