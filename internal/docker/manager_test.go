@@ -37,6 +37,7 @@ type simulatedDocker struct {
 	unavailable       bool
 	healthFailures    int
 	failPull          bool
+	failImageRemove   bool
 	blockFollow       bool
 	signalOnFollow    bool
 	imageUser         string
@@ -73,6 +74,24 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 	case "info":
 		return []byte(`{"OSType":"linux","Architecture":"` + runtime.GOARCH + `","SecurityOptions":["name=seccomp,profile=builtin"]}`), nil
 	case "image":
+		if a[1] == "rm" {
+			if _, err := os.Stat(f.manager.paths.Journal()); !os.IsNotExist(err) {
+				f.t.Fatal("image removal attempted before transaction commit")
+			}
+			if f.failImageRemove || f.container != nil && f.container.Image == a[2] {
+				return nil, errors.New("image is in use")
+			}
+			if _, exists := f.images[a[2]]; !exists {
+				return nil, errors.New("image missing")
+			}
+			for key, md := range f.images {
+				if md.ImageID == a[2] {
+					delete(f.images, key)
+				}
+			}
+			delete(f.imageUsers, a[2])
+			return nil, nil
+		}
 		if a[1] == "pull" {
 			if f.failPull {
 				return nil, errors.New("pull failed")

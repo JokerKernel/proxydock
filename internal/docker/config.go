@@ -59,10 +59,7 @@ func (m *Manager) prepareOperationWithUser(ctx context.Context, learnUser bool) 
 	if err := m.recoverLocked(ctx); err != nil {
 		return Metadata{}, nil, err
 	}
-	if err := m.checkOwner(); err != nil {
-		return Metadata{}, nil, err
-	}
-	md, err := m.metadata()
+	md, err := m.preparedMetadata()
 	if err != nil {
 		return md, nil, err
 	}

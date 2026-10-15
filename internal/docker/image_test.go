@@ -3,8 +3,10 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -133,6 +135,139 @@ func TestLatestUpgradeRefreshesDigestAndRollsBack(t *testing.T) {
 		if contains(call, "pull") {
 			t.Fatalf("start must reuse latest digest: %v", call)
 		}
+	}
+}
+
+func TestUpgradeDeletesOnlyReplacedImageAfterSuccess(t *testing.T) {
+	for _, state := range []string{"running", "stopped", "removed", "prepared"} {
+		t.Run(state, func(t *testing.T) {
+			m, f := prepared(t)
+			ctx := context.Background()
+			if state != "prepared" {
+				if err := m.Generate(ctx, model.GenerateOptions{Security: "tls", Server: "example.com", Port: 8443}, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "stopped" {
+				if _, err := m.Service(ctx, "stop"); err != nil {
+					t.Fatal(err)
+				}
+			} else if state == "removed" {
+				if err := m.Remove(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old, err := m.metadata()
+			if err != nil {
+				t.Fatal(err)
+			}
+			unrelated := "sha256:" + strings.Repeat("e", 64)
+			f.images[unrelated] = Metadata{ImageID: unrelated}
+			f.calls = nil
+			healthChecked := false
+			checkHealth := m.healthCheck
+			m.healthCheck = func(ctx context.Context, ports []int, imageID string) error {
+				for _, call := range f.calls {
+					if call[0] == "image" && call[1] == "rm" {
+						t.Fatal("old image was removed before health verification")
+					}
+				}
+				if err := checkHealth(ctx, ports, imageID); err != nil {
+					return err
+				}
+				healthChecked = true
+				return nil
+			}
+			if err := m.Upgrade(ctx, "26.4.1"); err != nil {
+				t.Fatal(err)
+			}
+			md, err := m.metadata()
+			if err != nil || md.ImageID == old.ImageID {
+				t.Fatalf("upgrade not committed: %+v %v", md, err)
+			}
+			if _, exists := f.images[old.ImageID]; exists {
+				t.Fatal("successful upgrade retained the replaced image")
+			}
+			if _, exists := f.images[md.ImageID]; !exists {
+				t.Fatal("successful upgrade deleted its current image")
+			}
+			if _, exists := f.images[unrelated]; !exists {
+				t.Fatal("successful upgrade deleted an unrelated image")
+			}
+			removals := 0
+			for _, call := range f.calls {
+				if call[0] == "image" && call[1] == "rm" {
+					removals++
+					if len(call) != 3 || call[2] != old.ImageID {
+						t.Fatalf("unsafe image removal: %v", call)
+					}
+				}
+			}
+			if removals != 1 || state == "running" && !healthChecked {
+				t.Fatalf("incorrect successful upgrade cleanup: removals=%d health=%t", removals, healthChecked)
+			}
+		})
+	}
+}
+
+func TestFailedUpgradeDoesNotDeleteRollbackImage(t *testing.T) {
+	for _, failure := range []string{"validation", "recreate", "health", "state-write"} {
+		t.Run(failure, func(t *testing.T) {
+			m, f := deployed(t)
+			old, err := m.metadata()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch failure {
+			case "validation":
+				f.rejectValidation = true
+			case "recreate":
+				f.failComposeUp = 1
+			case "health":
+				f.healthFailures = 1
+			case "state-write":
+				m.stateWrite = func(string, []byte, os.FileMode) error { return errors.New("state write failed") }
+			}
+			f.calls = nil
+			if err := m.Upgrade(context.Background(), "26.4.1"); err == nil {
+				t.Fatal("expected upgrade failure")
+			}
+			if _, exists := f.images[old.ImageID]; !exists {
+				t.Fatal("failed upgrade deleted its rollback image")
+			}
+			if f.container == nil || !f.container.State.Running || f.container.Image != old.ImageID {
+				t.Fatal("failed upgrade did not retain or restore the old container")
+			}
+			for _, call := range f.calls {
+				if call[0] == "image" && call[1] == "rm" {
+					t.Fatalf("failed upgrade attempted image deletion: %v", call)
+				}
+			}
+		})
+	}
+}
+
+func TestImageCleanupFailureDoesNotUndoSuccessfulUpgrade(t *testing.T) {
+	m, f := deployed(t)
+	old, err := m.metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.failImageRemove = true
+	var output bytes.Buffer
+	m.errOut = &output
+	if err := m.Upgrade(context.Background(), "26.4.1"); err != nil {
+		t.Fatalf("image deletion failure undid successful upgrade: %v", err)
+	}
+	md, err := m.metadata()
+	if err != nil || md.ImageID == old.ImageID || f.container.Image != md.ImageID || !f.container.State.Running {
+		t.Fatalf("image deletion failure changed the new deployment: %+v %v", md, err)
+	}
+	if _, exists := f.images[old.ImageID]; !exists {
+		t.Fatal("Docker refusal did not preserve the image")
+	}
+	if !strings.Contains(output.String(), "旧镜像保留") || !strings.Contains(output.String(), "image is in use") {
+		t.Fatalf("image deletion failure was not reported: %s", output.String())
 	}
 }
 

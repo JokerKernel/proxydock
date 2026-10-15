@@ -53,7 +53,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
 		u.menuChoice("4", "清理容器（保留配置和数据）")
-		u.menuChoice("5", "删除实例数据（永久删除配置、凭据、证书和备份）")
+		u.menuChoice("5", "删除实例数据（清理容器，永久删除配置、凭据、证书和备份）")
 		u.menuChoice("6", "恢复中断操作（回滚未完成的配置修改或升级）")
 		u.menuChoice("0/q", "退出")
 		choice, err := u.chooseNumber("请选择", 0, 6, -1)
@@ -383,9 +383,9 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 		mode = m.savedNetwork()
 	}
 	if md, e := m.metadata(); e == nil {
-		items := []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}
+		items := []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态", "更新成功后删除本次替换的旧镜像"}
 		if md.ComposeSHA256 == "" {
-			items = []string{"拉取并校验选定镜像，更新部署参数", "生成节点配置时再写入 Compose 并启动容器"}
+			items = []string{"拉取并校验选定镜像，更新部署参数", "生成节点配置时再写入 Compose 并启动容器", "更新成功后删除本次替换的旧镜像"}
 		}
 		u.confirmationPanel("操作确认：更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: items})
 		if err := u.confirm("确认更新？"); err != nil {
@@ -432,8 +432,8 @@ func (m *Manager) confirmRemove(ctx context.Context, u *ui) error {
 }
 
 func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
-	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, confirmSection{title: "将执行", items: []string{"先停止本实例容器，停止失败则中止删除"}}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "保留", items: []string{"已停止的容器及其网络，不移除容器"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
-	if err := u.confirm("永久删除 Docker Xray 配置、凭据、证书和备份？"); err != nil {
+	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, confirmSection{title: "将执行", items: []string{"停止并移除本实例容器，再清理实例数据", "停止或移除失败则中止删除", "清理本项目的空闲默认网络"}}, confirmSection{title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, confirmSection{title: "保留", items: []string{"Docker 镜像、ProxyDock 程序和用户导出配置"}}, confirmSection{title: "数据保护", items: []string{"此操作不会创建新备份"}})
+	if err := u.confirm("清理本实例容器，并永久删除 Docker Xray 配置、凭据、证书和备份？"); err != nil {
 		return err
 	}
 	return m.Cleanup(ctx)
@@ -546,6 +546,9 @@ func (m *Manager) configMenu(ctx context.Context, u *ui) error {
 }
 
 func (m *Manager) generateInteractive(ctx context.Context, u *ui, deploy bool) error {
+	if _, err := m.preparedMetadata(); err != nil {
+		return err
+	}
 	if _, e := os.Stat(m.paths.Config()); e == nil {
 		u.confirmationPanel("操作确认：生成服务端配置", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"备份当前服务端配置", "完整覆盖现有配置，不合并原配置", "使用当前镜像校验新配置", "应用配置并启动容器，已移除时重新创建"}}, confirmSection{title: "配置保护", items: []string{"未选择清除时，保留已有落地接入和中转线路"}})
 		if err := u.confirm("完整生成会覆盖手动配置，确认继续？"); err != nil {

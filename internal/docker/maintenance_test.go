@@ -20,7 +20,6 @@ func TestMaintenanceCleanupFailureCanRetry(t *testing.T) {
 	}
 	m, f := deployed(t)
 	ctx := context.Background()
-	original := f.container
 	dir := filepath.Dir(m.paths.Config())
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
@@ -31,8 +30,8 @@ func TestMaintenanceCleanupFailureCanRetry(t *testing.T) {
 	} else {
 		t.Logf("first cleanup: %v", err)
 	}
-	if f.container != original || f.container.State.Running {
-		t.Fatal("failed data deletion did not retain the stopped container")
+	if f.container != nil {
+		t.Fatal("container was not removed before deleting data")
 	}
 	if _, err := os.Stat(m.paths.Owner()); err != nil {
 		t.Fatalf("failed deployment cleanup lost owner: %v", err)
@@ -49,8 +48,8 @@ func TestMaintenanceCleanupFailureCanRetry(t *testing.T) {
 	if m.hasData() {
 		t.Fatal("cleanup left data or cleanup record")
 	}
-	if f.container != original || f.container.State.Running {
-		t.Fatal("cleanup retry did not retain the stopped container")
+	if f.container != nil {
+		t.Fatal("cleanup retry recreated the container")
 	}
 }
 

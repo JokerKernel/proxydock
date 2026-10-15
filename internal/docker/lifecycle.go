@@ -236,6 +236,7 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 			if err = m.saveDeploymentParameters(md); err != nil {
 				return err
 			}
+			m.removeReplacedImage(ctx, old, md)
 			m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
 			return nil
 		}
@@ -350,6 +351,7 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 		if err = m.commit(j); err != nil {
 			return fail(err)
 		}
+		m.removeReplacedImage(ctx, old, md)
 		m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("%s → %s", old.RequestedVersion, md.RequestedVersion))
 		return nil
 	})
@@ -674,11 +676,7 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if in == nil {
-			if err := m.removeManagedNetwork(ctx); err != nil {
-				return err
-			}
-		} else {
+		if in != nil {
 			if in.State.Running || in.State.Restarting {
 				if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "container", "stop", in.ID); err != nil {
 					return fmt.Errorf("停止容器失败，未删除实例数据: %w", err)
@@ -691,7 +689,19 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 					return fmt.Errorf("容器尚未停止，未删除实例数据")
 				}
 			}
-			m.op(phaseApply, levelInfo, "保留容器", Container+"（已停止，不移除，保留其网络）")
+			if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "移除容器"}, "container", "rm", in.ID); err != nil {
+				return fmt.Errorf("移除容器失败，未删除实例数据: %w", err)
+			}
+			current, err := m.inspect(ctx)
+			if err != nil {
+				return err
+			}
+			if current != nil {
+				return fmt.Errorf("移除后仍存在容器，未删除实例数据")
+			}
+		}
+		if err := m.removeManagedNetwork(ctx); err != nil {
+			return err
 		}
 	}
 	if m.hasData() {
@@ -717,7 +727,7 @@ func (m *Manager) cleanupLocked(ctx context.Context) error {
 	}
 	m.op(phaseResult, levelInfo, "保留锁文件", m.paths.Lock()+"（并发保护）")
 	m.op(phaseResult, levelInfo, "保留资源", "ProxyDock 程序、Docker 镜像及用户导出配置（超出本次数据清理范围）")
-	result := "实例数据已清理；其他容器和镜像未改动"
+	result := "实例数据已清理，容器已移除；其他容器和镜像未改动"
 	if retained > 0 {
 		result += fmt.Sprintf("；保留 %d 个无法确认安全删除的残留", retained)
 	}

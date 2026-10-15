@@ -244,6 +244,9 @@ func TestSameImageChannelChangeDoesNotRecreateContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireNoRuntimeChanges(t, fake)
+	if count := countDockerCalls(fake, func(c []string) bool { return c[0] == "image" && c[1] == "rm" }); count != 0 {
+		t.Fatal("same-image update attempted to delete its image")
+	}
 	updated, err := m.metadata()
 	if err != nil || updated.Channel != "latest" || updated.ImageID != md.ImageID || updated.DesiredState != "running" {
 		t.Fatalf("same-image channel metadata: %+v %v", updated, err)

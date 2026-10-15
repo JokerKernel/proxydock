@@ -43,6 +43,21 @@ func (m *Manager) metadata() (Metadata, error) {
 	}
 	return md, nil
 }
+
+func (m *Manager) preparedMetadata() (Metadata, error) {
+	md, err := m.metadata()
+	if os.IsNotExist(err) {
+		return md, fmt.Errorf("尚未准备 Xray 镜像和部署参数，请先进入“安装与更新”完成安装")
+	}
+	if err != nil {
+		return md, err
+	}
+	if err := m.checkOwner(); err != nil {
+		return md, fmt.Errorf("实例数据不完整或归属记录无效，拒绝修改配置: %w", err)
+	}
+	return md, nil
+}
+
 func (m *Manager) LoadState() (State, error) {
 	var s State
 	err := loadJSON(m.paths.State(), &s)

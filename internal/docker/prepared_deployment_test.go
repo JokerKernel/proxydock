@@ -27,6 +27,51 @@ func requirePreparedWithoutConfig(t *testing.T, m *Manager, f *simulatedDocker) 
 	}
 }
 
+func TestConfigurationGenerationRequiresInstallation(t *testing.T) {
+	for _, state := range []string{"fresh", "cleaned"} {
+		for _, entry := range []string{"manager", "menu", "command"} {
+			t.Run(state+"/"+entry, func(t *testing.T) {
+				m, f := testManager(t)
+				ctx := context.Background()
+				if state == "cleaned" {
+					if err := m.Prepare(ctx, "26.3.27"); err != nil {
+						t.Fatal(err)
+					}
+					if err := m.Cleanup(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.calls = nil
+				var output bytes.Buffer
+				var err error
+				switch entry {
+				case "manager":
+					err = m.Generate(ctx, model.GenerateOptions{Security: "tls", Server: "example.com", Port: 57807}, true)
+				case "menu":
+					err = m.generateInteractive(ctx, newUI(strings.NewReader(""), &output), false)
+				case "command":
+					cmd := m.Command()
+					cmd.SetIn(strings.NewReader(""))
+					cmd.SetOut(&output)
+					cmd.SetErr(&output)
+					cmd.SetArgs([]string{"config", "generate", "--security", "tls", "--server", "example.com", "--port", "57807"})
+					err = cmd.ExecuteContext(ctx)
+				}
+				if err == nil || !strings.Contains(err.Error(), "安装与更新") || strings.Contains(err.Error(), "open directory") {
+					t.Fatalf("generation did not explain the missing installation: %v", err)
+				}
+				if output.Len() != 0 {
+					t.Fatalf("generation prompted before checking installation: %s", output.String())
+				}
+				requireNoRuntimeChanges(t, f)
+				if m.hasData() || f.container != nil {
+					t.Fatal("generation created an incomplete deployment")
+				}
+			})
+		}
+	}
+}
+
 func TestPreparedParametersApplyToFirstConfiguration(t *testing.T) {
 	m, f := prepared(t)
 	ctx := context.Background()

@@ -13,6 +13,17 @@ import (
 
 var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*$`)
 
+// Called only after the new deployment is committed. Never force removal of
+// an image that Docker still associates with another container or image tag.
+func (m *Manager) removeReplacedImage(ctx context.Context, old, current Metadata) {
+	if old.ImageID == current.ImageID {
+		return
+	}
+	if _, err := m.dockerOp(ctx, opLabel{phase: phaseResult, level: levelStep, name: "清理旧镜像"}, "image", "rm", old.ImageID); err != nil {
+		m.op(phaseResult, levelWarn, "旧镜像保留", "更新已成功，旧镜像清理失败: "+err.Error())
+	}
+}
+
 func normalizeVersion(version string) (string, error) {
 	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if !versionPattern.MatchString(v) {
