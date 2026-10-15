@@ -384,11 +384,7 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 			return err
 		}
 		if _, stateErr := m.LoadState(); os.IsNotExist(stateErr) {
-			opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
-			if err != nil {
-				return err
-			}
-			return m.Generate(ctx, opts, true)
+			return m.generateAfterPrepare(ctx, u)
 		}
 		return nil
 	} else if !os.IsNotExist(e) {
@@ -404,6 +400,12 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 	if err := m.prepareWithNetwork(ctx, version, network, runAsRoot); err != nil {
 		return err
 	}
+	return m.generateAfterPrepare(ctx, u)
+}
+
+// generateAfterPrepare continues into node setup on the same screen as the
+// pull and prepare log. A new page would erase that log before it can be read.
+func (m *Manager) generateAfterPrepare(ctx context.Context, u *ui) error {
 	u.keepLog = true
 	opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
 	if err != nil {

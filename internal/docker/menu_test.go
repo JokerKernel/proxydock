@@ -182,6 +182,35 @@ func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
 	}
 }
 
+func TestUpgradeWithoutStateKeepsPullLogWithGenerateForm(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	m, _ := testManager(t)
+	if err := m.Prepare(context.Background(), "latest"); err != nil {
+		t.Fatal(err)
+	}
+	var out dockerTerminalOutput
+	m.out, m.errOut = &out, &out
+	in := &dockerTerminalInput{answers: []string{"1\n", "0\n"}, output: &out}
+	u := newUI(in, &out)
+	m.review = u
+	err := m.confirmDeploy(context.Background(), u, "", "", false)
+	if !errors.Is(err, errCancelled) {
+		t.Fatal(err)
+	}
+	if len(in.screens) != 2 {
+		t.Fatalf("prompts = %d\n%s", len(in.screens), out.String())
+	}
+	form := in.screens[1]
+	for _, want := range []string{"拉取镜像", "升级结果", "主节点协议"} {
+		if !strings.Contains(form, want) {
+			t.Fatalf("generate form dropped %q:\n%s", want, form)
+		}
+	}
+	if strings.Contains(out.String(), "按 Enter") {
+		t.Fatalf("upgrade asked for another confirmation:\n%s", out.String())
+	}
+}
+
 func TestDeployKeepsPrepareLogWithGenerateForm(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)
