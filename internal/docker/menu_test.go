@@ -65,10 +65,10 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 		t.Fatalf("unexpected prompts: %d", len(in.screens))
 	}
 	root := func(screen string) bool {
-		return strings.Contains(screen, "容器拉取") && !strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志")
+		return strings.Contains(screen, "安装") && strings.Contains(screen, "更新") && !strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志")
 	}
 	config := func(screen string) bool {
-		return strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志") && !strings.Contains(screen, "容器拉取")
+		return strings.Contains(screen, "生成/更新配置") && !strings.Contains(screen, "实时日志") && !strings.Contains(screen, "确认安装") && !strings.Contains(screen, "1   安装")
 	}
 	service := func(screen string) bool {
 		return strings.Contains(screen, "实时日志") && !strings.Contains(screen, "生成/更新配置") && strings.Contains(screen, "›  服务端配置  ›  服务管理")
@@ -83,7 +83,7 @@ func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 		t.Fatal("submenu navigation should return directly without a pause")
 	}
 	rootScreen := in.screens[0]
-	for _, want := range []string{"容器拉取", "容器更新", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
+	for _, want := range []string{"安装更新", "部署容器和更新容器", "生成、修改、查看与服务管理", "4   移除容器", "5   删除实例数据", "6   恢复中断操作"} {
 		if !strings.Contains(rootScreen, want) {
 			t.Fatalf("root menu missing %q: %s", want, rootScreen)
 		}
@@ -171,7 +171,7 @@ func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
 			if !strings.Contains(in.screens[4], "0/q 返回") || !strings.Contains(in.screens[4], "版本号:") {
 				t.Fatalf("version page omitted return instructions:\n%s", in.screens[4])
 			}
-			if !strings.Contains(in.screens[5], "指定版本 26.3.27") || !strings.Contains(in.screens[5], "1   容器拉取") {
+			if !strings.Contains(in.screens[5], "指定版本 26.3.27") || !strings.Contains(in.screens[5], "1   安装") {
 				t.Fatalf("return changed selected version or missed parent menu:\n%s", in.screens[5])
 			}
 			if strings.Contains(out.String(), "版本格式无效") || strings.Contains(out.String(), "按 Enter") {

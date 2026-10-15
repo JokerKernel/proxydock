@@ -48,7 +48,7 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 		u.clearScreen()
 		u.pageHeader("Xray（Docker）")
 		u.instanceCard(Container, "["+s.Label+"]", s.Version, s.Detail, m.instanceRows())
-		u.menuChoice("1", "容器拉取（容器更新）")
+		u.menuChoice("1", "安装更新（部署容器和更新容器）")
 		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
 		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
 		fmt.Fprintln(u.out)
@@ -376,16 +376,16 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 		mode = m.savedNetwork()
 	}
 	if _, e := m.metadata(); e == nil {
-		u.confirmationPanel("操作确认：容器更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
-		if err := u.confirm("更新容器镜像？"); err != nil {
+		u.confirmationPanel("操作确认：更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态"}})
+		if err := u.confirm("确认更新？"); err != nil {
 			return err
 		}
 		return m.upgrade(ctx, version, network, "")
 	} else if !os.IsNotExist(e) {
 		return e
 	}
-	u.confirmationPanel("操作确认：容器拉取", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取官方镜像并记录 digest", "校验镜像并写入 Compose 文件"}})
-	if err := u.confirm("拉取官方镜像？"); err != nil {
+	u.confirmationPanel("操作确认：安装", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取官方镜像并记录 digest", "校验镜像并写入 Compose 文件"}})
+	if err := u.confirm("确认安装？"); err != nil {
 		return err
 	}
 	if strings.TrimSpace(network) == "" {
@@ -396,9 +396,9 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 
 func (m *Manager) containerImageMenu() string {
 	if _, err := m.metadata(); err == nil {
-		return "容器更新"
+		return "更新"
 	}
-	return "容器拉取"
+	return "安装"
 }
 
 func shownVersion(version string) string {
