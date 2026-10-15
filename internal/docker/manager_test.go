@@ -39,6 +39,7 @@ type simulatedDocker struct {
 	failPull          bool
 	blockFollow       bool
 	signalOnFollow    bool
+	imageUser         string
 	latestVersion     string
 	latestImageID     string
 	prereleaseVersion string
@@ -114,7 +115,7 @@ func (f *simulatedDocker) Run(ctx context.Context, name string, args ...string) 
 			if !ok {
 				return nil, errors.New("image missing")
 			}
-			b, _ := json.Marshal([]map[string]any{{"Id": md.ImageID, "RepoDigests": []string{md.ImageRef}, "Architecture": runtime.GOARCH, "Os": "linux"}})
+			b, _ := json.Marshal([]map[string]any{{"Id": md.ImageID, "RepoDigests": []string{md.ImageRef}, "Architecture": runtime.GOARCH, "Os": "linux", "Config": map[string]any{"User": f.imageUser}}})
 			return b, nil
 		}
 	case "container":
@@ -307,6 +308,10 @@ func composeServiceUser(path string) string {
 func (f *simulatedDocker) newContainer(image string) {
 	in := &inspection{ID: strings.Repeat("c", 64), Image: image, Name: "/" + Container}
 	in.Config.User = composeServiceUser(f.manager.paths.Compose())
+	// Docker copies the image USER when Compose does not set one.
+	if in.Config.User == "" {
+		in.Config.User = f.imageUser
+	}
 	in.Config.Cmd = []string{"run", "-config", "/usr/local/etc/xray/config.json"}
 	in.Config.Entrypoint = []string{"/usr/local/bin/xray"}
 	in.Config.Labels = map[string]string{"io.proxydock.managed": "true", "io.proxydock.instance": Instance, "io.proxydock.core": "xray", "com.docker.compose.project": Project, "com.docker.compose.service": Service}

@@ -468,7 +468,7 @@ func TestLegacyPublishRejectsTampering(t *testing.T) {
 }
 
 func TestRecoveryStillRejectsForeignContainer(t *testing.T) {
-	for _, change := range []string{"label", "mount", "command", "user", "writable-root"} {
+	for _, change := range []string{"label", "mount", "command", "writable-root"} {
 		t.Run(change, func(t *testing.T) {
 			m, f := fallbackDeployment(t, networkHost, true)
 			if _, err := m.begin("upgrade", f.container); err != nil {
@@ -481,8 +481,6 @@ func TestRecoveryStillRejectsForeignContainer(t *testing.T) {
 				f.container.Mounts[0].Source = "/foreign/config"
 			case "command":
 				f.container.Config.Cmd = []string{"foreign"}
-			case "user":
-				f.container.Config.User = "1000:1000"
 			case "writable-root":
 				f.container.HostConfig.ReadonlyRootfs = false
 			}

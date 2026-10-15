@@ -340,13 +340,3 @@ func (m *Manager) classifyCompose(md Metadata) (current bool, legacy bool, err e
 	}
 	return false, false, fmt.Errorf("Compose 文件已被外部修改，拒绝按未知定义操作容器")
 }
-
-// Root and the historical 0:0 pin are both managed. Any other user was not written by us.
-func managedContainerUser(user string) bool {
-	switch strings.TrimSpace(user) {
-	case "", "0:0":
-		return true
-	default:
-		return false
-	}
-}

@@ -75,7 +75,15 @@ func (m *Manager) prepareOperation(ctx context.Context) (Metadata, *inspection, 
 	if err == nil && in != nil && in.Image != md.ImageID {
 		err = fmt.Errorf("实际容器镜像与记录不一致")
 	}
-	return md, in, err
+	if err != nil {
+		return md, in, err
+	}
+	// The live container is the source of the image user's id. Root remains an
+	// explicit selection and is not overwritten from the container.
+	if err = m.defineUserFromContainer(&md, in); err != nil {
+		return md, in, err
+	}
+	return md, in, nil
 }
 func (m *Manager) prepareDeployment(ctx context.Context, version, network, runUser string) error {
 	if strings.TrimSpace(runUser) != "" {

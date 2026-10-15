@@ -217,6 +217,145 @@ func TestSetUserCommandSwitchesToRoot(t *testing.T) {
 	}
 }
 
+func TestPrepareRecordsDistrolessUser(t *testing.T) {
+	m, f := testManager(t)
+	f.imageUser = "65532"
+	if err := m.Prepare(context.Background(), "26.3.27"); err != nil {
+		t.Fatal(err)
+	}
+	md, err := m.metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md.ImageUser != "65532:65532" || md.RunAsRoot {
+		t.Fatalf("image user %q root %t", md.ImageUser, md.RunAsRoot)
+	}
+	b := readFile(t, m.paths.Compose())
+	if bytes.Contains(b, []byte("user:")) || !bytes.Contains(b, []byte("uid=65532,gid=65532")) {
+		t.Fatalf("compose = %s", b)
+	}
+}
+
+func TestImageUserContainerRemainsManaged(t *testing.T) {
+	m, f := deployed(t)
+	md, err := m.metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md.ImageUser = "65532:65532"
+	md.RunAsRoot = false
+	compose, err := m.composeFor(md, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = atomicWrite(m.paths.Compose(), compose, 0600); err != nil {
+		t.Fatal(err)
+	}
+	md.ComposeSHA256 = digest(compose)
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		t.Fatal(err)
+	}
+	f.imageUser = "65532"
+	f.newContainer(md.ImageID)
+	f.container.State.Running = true
+	f.container.State.Status = "running"
+	if f.container.Config.User != "65532" {
+		t.Fatalf("copied user %q", f.container.Config.User)
+	}
+	for _, user := range []string{"65532", "65532:65532", "1000:1000"} {
+		f.container.Config.User = user
+		st, err := m.Status(context.Background())
+		if err != nil || !st.Running {
+			t.Fatalf("user %s rejected: %+v %v", user, st, err)
+		}
+	}
+}
+
+func TestContainerUserDefinesImageUser(t *testing.T) {
+	m, f := deployed(t)
+	f.container.Config.User = "65532"
+	md, _, err := m.prepareOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md.ImageUser != "65532:65532" {
+		t.Fatalf("defined user %q", md.ImageUser)
+	}
+	b := readFile(t, m.paths.Compose())
+	if bytes.Contains(b, []byte("user:")) || !bytes.Contains(b, []byte("uid=65532,gid=65532")) {
+		t.Fatalf("compose = %s", b)
+	}
+	f.container.Config.User = "1000:1000"
+	md, _, err = m.prepareOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md.ImageUser != "1000:1000" || !bytes.Contains(readFile(t, m.paths.Compose()), []byte("uid=1000,gid=1000")) {
+		t.Fatalf("user %q compose %s", md.ImageUser, readFile(t, m.paths.Compose()))
+	}
+	rootCompose, err := m.composeFor(Metadata{ImageUser: md.ImageUser, RunAsRoot: true, Network: md.Network, ImageRef: md.ImageRef}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = atomicWrite(m.paths.Compose(), rootCompose, 0600); err != nil {
+		t.Fatal(err)
+	}
+	md.RunAsRoot = true
+	md.ComposeSHA256 = digest(rootCompose)
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		t.Fatal(err)
+	}
+	f.container.Config.User = "65532"
+	got, _, err := m.prepareOperation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageUser != "1000:1000" || !bytes.Contains(readFile(t, m.paths.Compose()), []byte("user: \"0:0\"")) {
+		t.Fatalf("root selection adopted the container user %q\n%s", got.ImageUser, readFile(t, m.paths.Compose()))
+	}
+	f.container.Config.User = "nonroot"
+	md.RunAsRoot = false
+	plain, err := m.composeFor(md, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = atomicWrite(m.paths.Compose(), plain, 0600); err != nil {
+		t.Fatal(err)
+	}
+	md.ComposeSHA256 = digest(plain)
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = m.prepareOperation(context.Background()); err == nil || !strings.Contains(err.Error(), "容器用户") {
+		t.Fatalf("unparsed container user: %v", err)
+	}
+}
+
+func TestRecoveryRollsBackImageUserContainer(t *testing.T) {
+	m, f := deployed(t)
+	md, err := m.metadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md.ImageUser = "65532:65532"
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		t.Fatal(err)
+	}
+	f.container.Config.User = "65532"
+	if _, err = m.begin("config", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.container != nil {
+		t.Fatal("container created during the unfinished config change was kept")
+	}
+	if _, err = os.Stat(m.paths.Journal()); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func TestChownTreeRequiresRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root")

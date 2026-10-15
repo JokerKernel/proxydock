@@ -48,7 +48,8 @@ func (m *Manager) resolvedImageUser(ctx context.Context) (int, int, error) {
 }
 
 // Before deployment metadata exists, temporary commands run as root so they can
-// read root-owned 0600 files. Afterwards the service user decides.
+// read root-owned 0600 files. Afterwards the service user decides. A non-root
+// deployment records the user id read from the container.
 func (m *Manager) containerIdentity(ctx context.Context) (containerIdentity, error) {
 	md, err := m.metadata()
 	if err != nil {
@@ -121,6 +122,58 @@ func chownTree(root string, uid, gid int) error {
 		}
 		return os.Lchown(path, uid, gid)
 	})
+}
+
+// defineUserFromContainer stores the container's numeric user as ImageUser and
+// aligns the log tmpfs with that uid. An empty or root user carries no image
+// id. RunAsRoot stays 0:0 even if the container still shows another uid.
+func (m *Manager) defineUserFromContainer(md *Metadata, in *inspection) error {
+	if in == nil || md == nil || md.RunAsRoot {
+		return nil
+	}
+	spec := strings.TrimSpace(in.Config.User)
+	if spec == "" {
+		return nil
+	}
+	uid, gid, ok := parseImageUser(spec)
+	if !ok {
+		return fmt.Errorf("容器用户 %q 无法识别", spec)
+	}
+	if uid == 0 && gid == 0 {
+		return nil
+	}
+	normalized := fmt.Sprintf("%d:%d", uid, gid)
+	if md.ImageUser == normalized {
+		return nil
+	}
+	previous := *md
+	md.ImageUser = normalized
+	next, err := m.composeFor(*md, nil)
+	if err != nil {
+		*md = previous
+		return err
+	}
+	current, err := readPrivate(m.paths.Compose())
+	if err != nil {
+		*md = previous
+		return err
+	}
+	if string(current) != string(next) {
+		if err = atomicWrite(m.paths.Compose(), next, 0600); err != nil {
+			*md = previous
+			return err
+		}
+	}
+	md.ComposeSHA256 = digest(next)
+	md.UpdatedAt = m.now().UTC()
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		if string(current) != string(next) {
+			_ = atomicWrite(m.paths.Compose(), current, 0600)
+		}
+		*md = previous
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) reconcileContainerUser(ctx context.Context, md *Metadata, in *inspection) (bool, error) {

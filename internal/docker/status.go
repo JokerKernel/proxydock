@@ -111,7 +111,7 @@ func (m *Manager) checkOwnedIdentity(in *inspection) error {
 	if labels["io.proxydock.managed"] != "true" || labels["io.proxydock.instance"] != Instance || labels["io.proxydock.core"] != "xray" || labels["com.docker.compose.project"] != Project || labels["com.docker.compose.service"] != Service || labels["com.docker.compose.oneoff"] == "True" {
 		return fmt.Errorf("同名容器不属于 ProxyDock 的受管 Xray 实例，拒绝操作")
 	}
-	if !in.HostConfig.ReadonlyRootfs || !managedContainerUser(in.Config.User) || !reflect.DeepEqual(in.Config.Cmd, []string{"run", "-config", "/usr/local/etc/xray/config.json"}) || !reflect.DeepEqual(in.Config.Entrypoint, []string{"/usr/local/bin/xray"}) {
+	if !in.HostConfig.ReadonlyRootfs || !reflect.DeepEqual(in.Config.Cmd, []string{"run", "-config", "/usr/local/etc/xray/config.json"}) || !reflect.DeepEqual(in.Config.Entrypoint, []string{"/usr/local/bin/xray"}) {
 		return fmt.Errorf("受管容器运行定义已改变，拒绝操作")
 	}
 	want := map[string]string{"/usr/local/etc/xray": filepath.Join(m.paths.Deploy(), "config"), "/etc/xray/tls": m.paths.TLS()}
