@@ -289,13 +289,57 @@ func TestPullDoesNotOpenGenerateForm(t *testing.T) {
 		t.Fatalf("pull asked for more input: %d\n%s", in.index, out.String())
 	}
 	text := out.String()
-	for _, want := range []string{"拉取镜像", "校验结果", "准备结果"} {
+	for _, want := range []string{"拉取镜像", "服务端配置", "客户端配置", "准备结果", "下一步"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("pull log missing %q:\n%s", want, text)
 		}
 	}
 	if strings.Contains(text, "主节点协议") || strings.Contains(text, "按 Enter") {
 		t.Fatalf("pull continued into node setup:\n%s", text)
+	}
+}
+
+func TestDockerDeployShowsExecutionOnSeparateScreen(t *testing.T) {
+	for _, action := range []string{"安装", "更新"} {
+		t.Run(action, func(t *testing.T) {
+			t.Setenv("TERM", "xterm")
+			m, fake := testManager(t)
+			ctx := context.Background()
+			if action == "更新" {
+				if err := m.Prepare(ctx, "latest"); err != nil {
+					t.Fatal(err)
+				}
+				fake.latestVersion = "26.10.11"
+				fake.latestImageID = "sha256:" + strings.Repeat("e", 64)
+			}
+			fake.calls = nil
+			var out dockerTerminalOutput
+			m.out, m.errOut = &out, &out
+			in := &dockerTerminalInput{answers: []string{"1\n", "1\n", "1\n", "\n", "0\n"}, output: &out}
+			if err := m.Menu(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			if len(in.screens) != 5 {
+				t.Fatalf("unexpected prompts: %d\n%s", len(in.screens), out.String())
+			}
+			screen := in.screens[3]
+			for _, want := range []string{action + "过程", "\n\npulled\n\n", "服务端配置", "客户端配置", "下一步", "按 Enter 返回菜单"} {
+				if !strings.Contains(screen, want) {
+					t.Fatalf("execution screen missing %q:\n%s", want, screen)
+				}
+			}
+			for _, unwanted := range []string{"操作确认", "确认操作", "将执行", "docker image pull", "校验 Xray 配置"} {
+				if strings.Contains(screen, unwanted) {
+					t.Fatalf("execution screen retained %q:\n%s", unwanted, screen)
+				}
+			}
+			if strings.Count(screen, "pulled\n") != 1 {
+				t.Fatalf("native pull output repeated:\n%s", screen)
+			}
+			if count := countDockerCalls(fake, func(c []string) bool { return c[0] == "run" && contains(c, "-test") }); count != 2 {
+				t.Fatalf("expected both capability checks, got %d", count)
+			}
+		})
 	}
 }
 

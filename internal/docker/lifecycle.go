@@ -128,11 +128,13 @@ func (m *Manager) prepareWithNetwork(ctx context.Context, version, network strin
 		if err = m.saveDeploymentParameters(md); err != nil {
 			return err
 		}
-		m.op(phaseResult, levelResult, "准备结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
+		m.op(phaseResult, levelResult, "准备结果", fmt.Sprintf("Xray %s 已准备", md.RequestedVersion))
+		m.op(phaseResult, levelInfo, "下一步", "服务端配置 → 生成/更新配置，完成后自动启动容器")
 		return nil
 	})
 }
 func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
+	m.op(phaseCheck, levelStep, "镜像能力", "检查服务端与客户端配置支持")
 	keys, err := m.keyPair(ctx, md)
 	if err != nil {
 		return err
@@ -150,14 +152,14 @@ func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
 	if err != nil {
 		return err
 	}
-	if err = m.validateBytes(ctx, md, server); err != nil {
+	if err = m.validateBytesFor(ctx, md, server, "服务端配置"); err != nil {
 		return fmt.Errorf("镜像不支持受管服务端配置: %w", err)
 	}
 	client, err := m.codec.RenderClient(n)
 	if err != nil {
 		return err
 	}
-	return m.validateBytes(ctx, md, client)
+	return m.validateBytesFor(ctx, md, client, "客户端配置")
 }
 func (m *Manager) upgrade(ctx context.Context, version, network, runUser string) error {
 	requested := ""
@@ -241,7 +243,8 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 				return err
 			}
 			m.removeReplacedImage(ctx, old, md)
-			m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("镜像 %s 已准备，生成节点配置后才能启动", md.RequestedVersion))
+			m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("Xray %s 已准备", md.RequestedVersion))
+			m.op(phaseResult, levelInfo, "下一步", "服务端配置 → 生成/更新配置，完成后自动启动容器")
 			return nil
 		}
 		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {

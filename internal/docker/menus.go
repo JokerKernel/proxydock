@@ -395,6 +395,8 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 		if err := u.confirm("确认更新？"); err != nil {
 			return err
 		}
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "更新过程")
 		return m.upgrade(ctx, version, network, "")
 	} else if !os.IsNotExist(e) {
 		return e
@@ -403,6 +405,8 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 	if err := u.confirm("确认安装？"); err != nil {
 		return err
 	}
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "安装过程")
 	if strings.TrimSpace(network) == "" {
 		network = defaultNetwork
 	}

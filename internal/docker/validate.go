@@ -56,6 +56,12 @@ func (m *Manager) coreRunAs(ctx context.Context, label opLabel, imageID string, 
 	return m.dockerOp(ctx, label, args...)
 }
 func (m *Manager) validateBytes(ctx context.Context, md Metadata, data []byte) error {
+	return m.validateBytesFor(ctx, md, data, "")
+}
+
+// A named capability check reports its own result without repeating the
+// generic validation command. Debug mode still includes the full invocation.
+func (m *Manager) validateBytesFor(ctx context.Context, md Metadata, data []byte, purpose string) error {
 	if len(data) == 0 || len(data) > maxConfigSize || !json.Valid(data) {
 		return fmt.Errorf("配置必须是大小合理的有效 JSON")
 	}
@@ -97,12 +103,17 @@ func (m *Manager) validateBytes(ctx context.Context, md Metadata, data []byte) e
 			return err
 		}
 	}
-	_, err = m.coreRunAs(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}, md.ImageID, id, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + tls + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
+	label := opLabel{}
+	if purpose == "" {
+		label = opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}
+		purpose = "校验结果"
+	}
+	_, err = m.coreRunAs(ctx, label, md.ImageID, id, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + tls + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
 	if err != nil {
-		m.op(phaseCheck, levelError, "校验结果", err.Error())
+		m.op(phaseCheck, levelError, purpose, err.Error())
 		return fmt.Errorf("Docker Xray 配置校验失败: %w", err)
 	}
-	m.op(phaseCheck, levelResult, "校验结果", "通过")
+	m.op(phaseCheck, levelResult, purpose, "通过")
 	return nil
 }
 

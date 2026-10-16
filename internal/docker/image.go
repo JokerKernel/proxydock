@@ -83,7 +83,11 @@ func (m *Manager) prepareImage(ctx context.Context, version string, known *Metad
 		channel = "pre-release"
 	}
 	tag := Repository + ":" + v
-	if err = m.dockerStreamOp(ctx, opLabel{phase: phaseCheck, level: levelStep, name: "拉取镜像"}, m.out, m.errOut, "image", "pull", tag); err != nil {
+	m.op(phaseCheck, levelStep, "拉取镜像", tag)
+	fmt.Fprintln(m.errOut)
+	err = m.dockerStreamOp(ctx, opLabel{}, m.out, m.errOut, "image", "pull", tag)
+	m.breakOp()
+	if err != nil {
 		return Metadata{}, fmt.Errorf("拉取官方版本镜像失败: %w", err)
 	}
 	b, err := m.docker(ctx, "image", "inspect", tag)
