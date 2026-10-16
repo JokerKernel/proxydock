@@ -43,6 +43,13 @@ func normalizeImageSelection(version string) (string, error) {
 	}
 }
 
+func (md Metadata) imageSelection() string {
+	if md.Channel == "pinned" {
+		return md.RequestedVersion
+	}
+	return md.Channel
+}
+
 func checkPreparedVersion(md Metadata, version string) error {
 	selection, err := normalizeImageSelection(version)
 	if err != nil {

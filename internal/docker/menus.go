@@ -125,6 +125,9 @@ func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
 
 func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 	selection := ""
+	if md, err := m.metadata(); err == nil {
+		selection = md.imageSelection()
+	}
 	network := ""
 	runAsRoot := false
 	runAsRootSet := false
@@ -212,6 +215,9 @@ func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
 func (m *Manager) deployCardRows(selection, network string, runAsRoot bool) [][2]string {
 	version := "尚未部署"
 	if md, err := m.metadata(); err == nil {
+		if selection == "" {
+			selection = md.imageSelection()
+		}
 		switch {
 		case strings.TrimSpace(md.Version) != "":
 			version = strings.TrimSpace(md.Version)
@@ -378,6 +384,9 @@ func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network str
 		mode = m.savedNetwork()
 	}
 	if md, e := m.metadata(); e == nil {
+		if strings.TrimSpace(version) == "" {
+			version = md.imageSelection()
+		}
 		items := []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态", "更新成功后删除本次替换的旧镜像"}
 		if md.ComposeSHA256 == "" {
 			items = []string{"拉取并校验选定镜像，更新部署参数", "生成节点配置时再写入 Compose 并启动容器", "更新成功后删除本次替换的旧镜像"}

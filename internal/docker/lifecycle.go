@@ -211,7 +211,11 @@ func (m *Manager) upgrade(ctx context.Context, version, network, runUser string)
 				return fmt.Errorf("回滚镜像不在本机，拒绝升级: %w", err)
 			}
 		}
-		md, err := m.prepareImage(ctx, version, &old)
+		selection := version
+		if strings.TrimSpace(selection) == "" {
+			selection = old.imageSelection()
+		}
+		md, err := m.prepareImage(ctx, selection, &old)
 		if err != nil {
 			return err
 		}

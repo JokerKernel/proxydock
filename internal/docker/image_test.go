@@ -138,6 +138,68 @@ func TestLatestUpgradeRefreshesDigestAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestUpgradeDefaultsToSavedSelection(t *testing.T) {
+	for _, entry := range []string{"manager", "command"} {
+		for _, selection := range []string{"latest", "pre-release", "26.3.27"} {
+			for _, configured := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/configured=%t", entry, selection, configured), func(t *testing.T) {
+					m, fake := testManager(t)
+					ctx := context.Background()
+					if err := m.Prepare(ctx, selection); err != nil {
+						t.Fatal(err)
+					}
+					if configured {
+						if err := m.Generate(ctx, model.GenerateOptions{Security: "tls", Server: "example.com", Port: 8443}, true); err != nil {
+							t.Fatal(err)
+						}
+					}
+					old, err := m.metadata()
+					if err != nil {
+						t.Fatal(err)
+					}
+					fake.latestVersion, fake.prereleaseVersion = "26.10.11", "26.10.12"
+					fake.latestImageID = "sha256:" + strings.Repeat("e", 64)
+					fake.prereleaseImageID = "sha256:" + strings.Repeat("f", 64)
+					fake.calls = nil
+					if entry == "manager" {
+						err = m.Upgrade(ctx, "")
+					} else {
+						cmd := m.Command()
+						cmd.SetOut(io.Discard)
+						cmd.SetErr(io.Discard)
+						cmd.SetArgs([]string{"upgrade"})
+						err = cmd.ExecuteContext(ctx)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					md, err := m.metadata()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if md.Channel != old.Channel {
+						t.Fatalf("default upgrade changed channel: %s -> %s", old.Channel, md.Channel)
+					}
+					wantImage := old.ImageID
+					if selection == "latest" {
+						wantImage = fake.latestImageID
+					} else if selection == "pre-release" {
+						wantImage = fake.prereleaseImageID
+					}
+					if md.ImageID != wantImage {
+						t.Fatalf("default upgrade did not use saved selection: %+v", md)
+					}
+					if count := countDockerCalls(fake, func(c []string) bool {
+						return len(c) == 3 && c[0] == "image" && c[1] == "pull" && c[2] == Repository+":"+selection
+					}); count != 1 {
+						t.Fatalf("default upgrade did not pull %q: %v", selection, fake.calls)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestUpgradeDeletesOnlyReplacedImageAfterSuccess(t *testing.T) {
 	for _, state := range []string{"running", "stopped", "removed", "prepared"} {
 		t.Run(state, func(t *testing.T) {

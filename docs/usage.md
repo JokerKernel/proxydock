@@ -17,11 +17,13 @@ Docker 和 Compose 需要提前安装。
 
 首次准备、升级需要访问官方镜像仓库。镜像版本支持三种选择：
 
-- `latest` 或省略 `--version`：直接拉取官方 `ghcr.io/xtls/xray-core:latest`。
+- `latest`：直接拉取官方 `ghcr.io/xtls/xray-core:latest`，首次准备或部署省略 `--version` 时默认使用。
 - `pre-release`：拉取官方 `ghcr.io/xtls/xray-core:pre-release`，选择开发版。
 - 具体版本号：拉取对应官方镜像，核对实际内核版本。
 
 三种方式均记录实际内核版本并固定 digest，只有主动升级才会拉取标签的新镜像。
+
+更新菜单默认沿用已保存的渠道或固定版本；`upgrade` 省略 `--version` 时行为相同。选择渠道或指定版本后，需确认执行安装或更新才会保存，返回菜单不会保存尚未应用的选择。
 
 ## 首次部署
 
@@ -145,6 +147,7 @@ sudo proxydock service restart
 sudo proxydock service logs
 sudo proxydock service logs --follow
 
+sudo proxydock upgrade # 沿用当前渠道或固定版本
 sudo proxydock upgrade --version VERSION
 sudo proxydock upgrade --version latest
 sudo proxydock recover

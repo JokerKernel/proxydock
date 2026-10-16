@@ -40,7 +40,11 @@ func (m *Manager) Command() *cobra.Command {
 			}
 			return m.upgrade(cmd.Context(), version, network, runUser)
 		}}
-		sub.Flags().StringVar(&version, "version", "", "latest（缺省，官方 latest 标签）、pre-release 或具体版本号")
+		versionHelp := "latest（缺省，官方 latest 标签）、pre-release 或具体版本号"
+		if action == "upgrade" {
+			versionHelp = "latest、pre-release 或具体版本号，缺省沿用当前渠道或固定版本"
+		}
+		sub.Flags().StringVar(&version, "version", "", versionHelp)
 		networkHelp := "网络方式：publish 或 host，缺省保持当前"
 		userHelp := "运行用户：default 或 root，缺省保持当前"
 		if action == "prepare" {

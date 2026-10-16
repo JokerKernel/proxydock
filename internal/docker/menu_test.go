@@ -155,6 +155,70 @@ func TestDockerVersionMenuUsesLatestAndPrerelease(t *testing.T) {
 	}
 }
 
+func TestDockerUpdateMenuKeepsSavedSelection(t *testing.T) {
+	for _, selection := range []string{"latest", "pre-release", "26.3.27"} {
+		t.Run(selection, func(t *testing.T) {
+			t.Setenv("TERM", "xterm")
+			m, fake := testManager(t)
+			ctx := context.Background()
+			if err := m.Prepare(ctx, selection); err != nil {
+				t.Fatal(err)
+			}
+			fake.calls = nil
+			var out dockerTerminalOutput
+			m.out, m.errOut = &out, &out
+			in := &dockerTerminalInput{answers: []string{"1\n", "1\n", "1\n", "\n", "1\n", "0\n", "0\n"}, output: &out}
+			if err := m.Menu(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			if len(in.screens) != 7 {
+				t.Fatalf("unexpected prompts: %d\n%s", len(in.screens), out.String())
+			}
+			for _, i := range []int{1, 2, 5} {
+				if !strings.Contains(in.screens[i], shownVersion(selection)) {
+					t.Fatalf("prompt %d lost saved selection %q:\n%s", i, selection, in.screens[i])
+				}
+			}
+			if count := countDockerCalls(fake, func(c []string) bool {
+				return len(c) == 3 && c[0] == "image" && c[1] == "pull" && c[2] == Repository+":"+selection
+			}); count != 1 {
+				t.Fatalf("update did not pull saved selection %q: %v", selection, fake.calls)
+			}
+			md, err := m.metadata()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selection == "26.3.27" && md.Channel != "pinned" || selection != "26.3.27" && md.Channel != selection {
+				t.Fatalf("update changed saved channel: %+v", md)
+			}
+		})
+	}
+}
+
+func TestDockerVersionMenuDefaultsToSavedChannel(t *testing.T) {
+	t.Setenv("TERM", "xterm")
+	m, _ := testManager(t)
+	ctx := context.Background()
+	if err := m.Prepare(ctx, "latest"); err != nil {
+		t.Fatal(err)
+	}
+	var out dockerTerminalOutput
+	m.out, m.errOut = &out, &out
+	in := &dockerTerminalInput{answers: []string{"1\n", "2\n", "2\n", "1\n", "1\n", "\n", "1\n", "2\n", "\n", "0\n", "0\n"}, output: &out}
+	if err := m.Menu(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.screens) != 11 {
+		t.Fatalf("unexpected prompts: %d\n%s", len(in.screens), out.String())
+	}
+	if !strings.Contains(in.screens[8], "请选择 [2]") {
+		t.Fatalf("reopened version menu did not default to pre-release:\n%s", in.screens[8])
+	}
+	if !strings.Contains(in.screens[9], "安装渠道  pre-release") {
+		t.Fatalf("accepting default changed channel:\n%s", in.screens[9])
+	}
+}
+
 func TestSpecifiedVersionReturnsWithoutChangingSelection(t *testing.T) {
 	for _, cancel := range []string{"0", "q", " Q "} {
 		t.Run(cancel, func(t *testing.T) {
