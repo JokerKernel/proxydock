@@ -78,21 +78,45 @@ func TestAskGenerateUsesHighPortWhen443IsBusy(t *testing.T) {
 	}
 }
 
-func TestPreferredListenPortKeepsExistingHighPort(t *testing.T) {
-	m, _ := testManager(t)
-	m.portFree = func(port int) error {
-		if port == 443 {
-			return fmt.Errorf("busy")
-		}
-		return nil
+func TestPreferredListenPortKeepsExistingPortWithoutProbing(t *testing.T) {
+	for _, current := range []int{1, 443, 8443, 34567, 45992, 65535} {
+		t.Run(fmt.Sprint(current), func(t *testing.T) {
+			m, _ := testManager(t)
+			m.portFree = func(port int) error {
+				t.Fatalf("existing port %d should not trigger a probe of %d", current, port)
+				return nil
+			}
+			port, err := m.preferredListenPort(current)
+			if err != nil || port != current {
+				t.Fatalf("existing port = %d, %v; want %d", port, err, current)
+			}
+		})
 	}
-	port, err := m.preferredListenPort(34567)
-	if err != nil || port != 34567 {
-		t.Fatalf("existing high port = %d, %v", port, err)
-	}
-	port, err = m.preferredListenPort(443)
-	if err != nil || port != 443 {
-		t.Fatalf("owned 443 = %d, %v", port, err)
+}
+
+func TestAskGenerateKeepsSavedPortWithoutRandomPortWarning(t *testing.T) {
+	for _, port := range []int{443, 8443, 45992} {
+		t.Run(fmt.Sprint(port), func(t *testing.T) {
+			m, _ := prepared(t)
+			ctx := context.Background()
+			if err := m.Generate(ctx, model.GenerateOptions{Security: "tls", Server: "example.com", Port: port}, true); err != nil {
+				t.Fatal(err)
+			}
+			m.portFree = func(probed int) error {
+				t.Fatalf("form with saved port %d should not probe %d", port, probed)
+				return nil
+			}
+			var out bytes.Buffer
+			opts, err := m.askGenerateUI(ctx, newUI(strings.NewReader("\n\n"), &out), model.GenerateOptions{
+				Security: "tls", Server: "example.com", UserName: "one", InboundTag: "docker-one",
+			})
+			if err != nil || opts.Port != port {
+				t.Fatalf("saved port changed: options=%+v error=%v", opts, err)
+			}
+			if !strings.Contains(out.String(), fmt.Sprintf("监听端口 [%d]", port)) || strings.Contains(out.String(), "443 已被占用") || strings.Contains(out.String(), "随机高位端口") {
+				t.Fatalf("saved port prompt was misleading:\n%s", out.String())
+			}
+		})
 	}
 }
 

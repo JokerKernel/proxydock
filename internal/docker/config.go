@@ -364,14 +364,14 @@ func (m *Manager) Generate(ctx context.Context, opts model.GenerateOptions, star
 	})
 }
 
-// preferredListenPort uses 443 when it is free or already belongs to this node.
-// Otherwise it keeps an existing high port, or allocates a new random one.
+// preferredListenPort preserves a configured port. Only a new node needs to
+// probe 443 and fall back to a random high port when it is unavailable.
 func (m *Manager) preferredListenPort(current int) (int, error) {
-	if current == 443 || m.portFree(443) == nil {
-		return 443, nil
-	}
-	if current >= model.FallbackPortMin && current <= model.FallbackPortMax {
+	if current >= 1 && current <= 65535 {
 		return current, nil
+	}
+	if m.portFree(443) == nil {
+		return 443, nil
 	}
 	port, err := m.freeHighPort(443)
 	if err != nil {

@@ -129,7 +129,7 @@ func (m *Manager) askGenerateUI(ctx context.Context, u *ui, opts model.GenerateO
 		if err != nil {
 			return opts, err
 		}
-		if def != 443 {
+		if def != 443 && def != n.Port {
 			fmt.Fprintf(u.out, "443 已被占用，默认使用随机高位端口 %d。\n", def)
 		}
 		value, askErr := u.ask("监听端口", strconv.Itoa(def))

@@ -46,6 +46,7 @@ const (
 	sniPageActionCancel     = "cancel"
 	sniPageActionManual     = "manual"
 	sniPageActionRetest     = "retest"
+	sniPageActionRedraw     = "redraw"
 	sniPageActionBack       = "back"
 	sniPageActionSortToggle = "sort-toggle"
 	sniPageActionSortIPv4   = "sort-ipv4"
@@ -93,6 +94,8 @@ func (m *Manager) selectSNICandidate(ctx context.Context, u *ui, server string) 
 			continue
 		}
 		switch action {
+		case sniPageActionRedraw:
+			continue
 		case sniPageActionNext:
 			page++
 		case sniPageActionPrev:
@@ -199,6 +202,8 @@ func (m *Manager) retestSNICandidates(ctx context.Context, u *ui) error {
 				continue
 			}
 			switch action {
+			case sniPageActionRedraw:
+				continue
 			case sniPageActionNext:
 				page++
 			case sniPageActionPrev:
@@ -282,8 +287,12 @@ func (u *ui) readSNIPageChoice(total, page, pages int, opts sniPageOptions) (str
 	fmt.Fprintln(u.out)
 	const invalidHint = "无效选择，请按提示输入。"
 	invalidShown := false
+	showPrompt := true
 	for {
-		fmt.Fprintf(u.out, "%s：", prompt)
+		if showPrompt {
+			fmt.Fprintf(u.out, "%s：", prompt)
+		}
+		showPrompt = true
 		line, err := u.readLine()
 		if errors.Is(err, errInterrupted) {
 			fmt.Fprintln(u.out)
@@ -295,6 +304,15 @@ func (u *ui) readSNIPageChoice(total, page, pages int, opts sniPageOptions) (str
 		pasted := u.discardBufferedInput()
 		value := strings.TrimSpace(line)
 		if value == "" {
+			if !pasted {
+				if u.interactive {
+					// Redraw the candidate page: erasing one line cannot reliably
+					// remove a prompt that wrapped in a narrow terminal.
+					return sniPageActionRedraw, 0, nil
+				}
+				showPrompt = false
+				continue
+			}
 			if u.interactive {
 				eraseChoiceRetry(u.out, false)
 			}
