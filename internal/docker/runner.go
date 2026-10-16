@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"proxydock/internal/terminal"
 )
 
 type Runner interface {
@@ -37,7 +39,7 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 }
 func (ExecRunner) RunStreaming(ctx context.Context, out, errOut io.Writer, name string, args ...string) error {
 	cmd := command(ctx, name, args)
-	cmd.Stdout = out
-	cmd.Stderr = errOut
+	cmd.Stdout = terminal.RawWriter(out)
+	cmd.Stderr = terminal.RawWriter(errOut)
 	return cmd.Run()
 }
