@@ -417,7 +417,12 @@ func enabledLabel(enabled bool) string {
 }
 
 func accessModeLabel(mode string) string {
-	if mode == model.AccessModeWhitelist {
+	switch mode {
+	case model.AccessModeAuto:
+		return "恢复自动选择"
+	case "":
+		return "默认模式（自动选择）"
+	case model.AccessModeWhitelist:
 		return "仅允许白名单访问"
 	}
 	return "默认模式"

@@ -283,6 +283,7 @@ func (m *Manager) accessCommand() *cobra.Command {
 	}}
 	cmd.Flags().BoolVar(&exact, "exact", false, "域名精确匹配")
 	cmd.Flags().StringVar(&ports, "ports", "", "本次添加或删除规则的目标端口，如 80,443,8000-8100（也支持点号分隔）；域名默认 80,443，IP/CIDR 默认所有端口；all 匹配所有端口")
+	cmd.Example = "  proxydock config access mode auto\n  proxydock config access mode default\n  proxydock config access mode whitelist"
 	return cmd
 }
 
@@ -290,10 +291,10 @@ func (m *Manager) accessCommand() *cobra.Command {
 func accessPolicyChange(args []string, exact bool, ports string, portsSet bool) (func(model.AccessPolicy) (model.AccessPolicy, error), error) {
 	switch args[0] {
 	case "mode":
-		if len(args) != 2 || args[1] != model.AccessModeDefault && args[1] != model.AccessModeWhitelist {
-			return nil, fmt.Errorf("mode <default|whitelist>")
+		if len(args) != 2 || args[1] != model.AccessModeAuto && args[1] != model.AccessModeDefault && args[1] != model.AccessModeWhitelist {
+			return nil, fmt.Errorf("mode <auto|default|whitelist>")
 		}
-		return func(p model.AccessPolicy) (model.AccessPolicy, error) { p.Mode = args[1]; return p, nil }, nil
+		return func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.SelectMode(args[1]) }, nil
 	case "switch":
 		if len(args) != 2 || args[1] != "on" && args[1] != "off" {
 			return nil, fmt.Errorf("switch <on|off>")
@@ -323,22 +324,21 @@ func accessPolicyChange(args []string, exact bool, ports string, portsSet bool) 
 			}
 		}
 		return func(p model.AccessPolicy) (model.AccessPolicy, error) {
+			if args[0] == "add" {
+				return p.AddEntries(args[1], entries)
+			}
 			list := &p.Whitelist
 			if args[1] == "black" {
 				list = &p.Blacklist
 			}
 			for _, entry := range entries {
-				if args[0] == "add" {
-					*list = append(*list, entry)
-				} else {
-					filtered := (*list)[:0]
-					for _, value := range *list {
-						if value != entry {
-							filtered = append(filtered, value)
-						}
+				filtered := (*list)[:0]
+				for _, value := range *list {
+					if value != entry {
+						filtered = append(filtered, value)
 					}
-					*list = filtered
 				}
+				*list = filtered
 			}
 			return p, nil
 		}, nil

@@ -95,6 +95,10 @@ DNS 支持 `system`、`public-cloudflare`、`public-google`、`doh-cloudflare`�
 
 ## 访问控制与线路
 
+尚未手动选择访问模式时，初始使用默认模式；首次添加白名单会自动切换为 `whitelist`，仅允许白名单中的地址和端口。单独添加黑名单不切换模式。手动选择 `default` 或 `whitelist` 后会保存该选择，后续增删名单不再自动切换；即使界面当前已显示默认模式，明确选择默认模式也会记录下来。进入仅白名单模式后，删除最后一条或清空白名单时仍保留该模式，全部未命中请求继续被拒绝。关闭访问控制期间添加规则只更新保存的名单和模式，不自动打开开关。
+
+菜单“切换访问模式 → 恢复自动选择”或 `config access mode auto` 可重新判断：有白名单时进入仅白名单模式；没有白名单时恢复初始状态，首次添加白名单后再自动切换。恢复自动选择保留两份名单和开关状态。`auto` 是恢复操作，不会作为模式值保存；未选择时 `mode` 字段为空或省略，手动默认模式明确保存为 `default`。已有名单不会仅因升级或新增其他规则而自动改变访问模式，可通过恢复自动选择主动切换。
+
 菜单“添加规则”和命令行均支持批量添加，用空格、英文逗号或中文逗号分隔域名、IP 和 CIDR，例如 `example.com example.org，1.2.3.4,10.0.0.0/8`。域名统一选择是否包含子域名；重复规则自动去重，任一目标无效时整批不提交。
 
 每条规则可单独指定目标端口。新添加的域名默认匹配 `80,443`，IP/CIDR 默认匹配所有端口；旧规则保持原有范围。支持单端口、多个端口及范围，例如 `80,443,8000-8100`，有效端口为 1–65535，`all` 表示所有端口。菜单在选择域名匹配方式后逐条询问端口，回车使用该地址类型的默认值；任一端口无效或取消时整批不提交。命令行 `--ports` 应用于本次命令的每个目标；不同端口条件分次添加。同一地址可保存多条不同端口的规则；删除时需提供对应的 `--ports` 和域名匹配方式，省略端口时域名按 `80,443` 匹配、IP/CIDR 按所有端口匹配。删除旧的不限端口域名规则需指定 `--ports all`，也可在菜单中按编号删除。
@@ -113,7 +117,9 @@ sudo proxydock config access add white b.example.com --ports 80,443
 sudo proxydock config access add white all-ports.example.com --ports all
 sudo proxydock config access add black 10.0.0.0/8 --ports 8000-8100
 sudo proxydock config access remove white a.example.com --ports 443
+sudo proxydock config access mode default
 sudo proxydock config access mode whitelist
+sudo proxydock config access mode auto
 sudo proxydock config access switch off
 sudo proxydock config access list
 sudo proxydock config access clear white
@@ -131,7 +137,7 @@ sudo proxydock config relay enable relay-one
 sudo proxydock config relay remove relay-one
 ```
 
-白名单优先于黑名单和默认私网阻断；`whitelist` 模式只允许白名单，空白名单拒绝代理请求。清空名单仅删除名单内容，保留访问模式和开关状态；在启用访问控制的 `whitelist` 模式下清空白名单后，全部代理请求仍被拒绝，恢复放行需添加白名单或显式切换模式。访问策略关闭时保留名单数据，之后可通过 `switch on` 恢复。规则作用于代理请求目标，REALITY 回落继续使用专用限制。
+白名单优先于黑名单和默认私网阻断；`whitelist` 模式只允许白名单，空白名单拒绝代理请求，黑名单保留但不参与匹配。清空名单仅删除名单内容，保留访问模式和开关状态；在启用访问控制的 `whitelist` 模式下清空白名单后，全部代理请求仍被拒绝，恢复放行需添加白名单或显式切换模式。访问策略关闭时保留名单数据，之后可通过 `switch on` 恢复。规则作用于代理请求目标，REALITY 回落继续使用专用限制。
 
 落地 `reality` 接入共享 REALITY 主入站；独立 TLS 接入使用自己的端口和证书。TLS 主节点新增落地接入时选择 `--security tls`。
 

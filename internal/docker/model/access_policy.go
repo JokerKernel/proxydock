@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	AccessModeAuto           = "auto"
 	AccessModeDefault        = "default"
 	AccessModeWhitelist      = "whitelist"
 	AccessEntryDomain        = "domain"
@@ -108,6 +109,40 @@ func (p AccessPolicy) Active() bool {
 
 func (p AccessPolicy) BlacklistEnabled() bool {
 	return !p.Disabled && p.EffectiveMode() == AccessModeDefault
+}
+
+// Auto is a command, not a persisted mode. With no whitelist it restores the
+// unset state; otherwise it selects whitelist mode, which stays closed on clear.
+func (p AccessPolicy) SelectMode(mode string) (AccessPolicy, error) {
+	switch mode {
+	case AccessModeAuto:
+		p.Mode = ""
+		if len(p.Whitelist) > 0 {
+			p.Mode = AccessModeWhitelist
+		}
+	case AccessModeDefault, AccessModeWhitelist:
+		p.Mode = mode
+	default:
+		return p, fmt.Errorf("访问模式无效（可选 auto、default 或 whitelist）")
+	}
+	return p, nil
+}
+
+func (p AccessPolicy) AddEntries(listName string, entries []AccessEntry) (AccessPolicy, error) {
+	switch listName {
+	case "white":
+		// Only a new first whitelist chooses the mode automatically. Explicit
+		// modes and existing lists keep their behavior until the user changes it.
+		if p.Mode == "" && len(p.Whitelist) == 0 && len(entries) > 0 {
+			p.Mode = AccessModeWhitelist
+		}
+		p.Whitelist = append(p.Whitelist, entries...)
+	case "black":
+		p.Blacklist = append(p.Blacklist, entries...)
+	default:
+		return p, fmt.Errorf("名单类型无效（可选 white 或 black）")
+	}
+	return p, nil
 }
 
 func (p AccessPolicy) ClearList(listName string) (AccessPolicy, error) {

@@ -97,3 +97,73 @@ func TestClearAccessListPreservesModeAndSwitch(t *testing.T) {
 		}
 	}
 }
+
+func TestAccessModeSelectionAndFirstWhitelist(t *testing.T) {
+	entry := AccessEntry{Type: AccessEntryDomain, Value: "example.com", Ports: "80,443"}
+	for _, tc := range []struct {
+		name, mode, list, wantMode string
+		existing, empty, disabled  bool
+	}{
+		{name: "first-white", list: "white", wantMode: AccessModeWhitelist},
+		{name: "first-white-disabled", list: "white", wantMode: AccessModeWhitelist, disabled: true},
+		{name: "only-black", list: "black"},
+		{name: "empty-batch", list: "white", empty: true},
+		{name: "manual-default", mode: AccessModeDefault, list: "white", wantMode: AccessModeDefault},
+		{name: "manual-whitelist", mode: AccessModeWhitelist, list: "white", wantMode: AccessModeWhitelist},
+		{name: "legacy-whitelist", list: "white", existing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := AccessPolicy{Mode: tc.mode, Disabled: tc.disabled}
+			if tc.existing {
+				policy.Whitelist = []AccessEntry{entry}
+			}
+			entries := []AccessEntry{entry}
+			if tc.empty {
+				entries = nil
+			}
+			got, err := policy.AddEntries(tc.list, entries)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Mode != tc.wantMode || got.Disabled != tc.disabled {
+				t.Fatalf("unexpected automatic selection: %+v", got)
+			}
+		})
+	}
+	for _, mode := range []string{"", AccessModeDefault, AccessModeWhitelist} {
+		for _, hasWhite := range []bool{false, true} {
+			for _, disabled := range []bool{false, true} {
+				policy := AccessPolicy{Mode: mode, Disabled: disabled, Blacklist: []AccessEntry{entry}}
+				if hasWhite {
+					policy.Whitelist = []AccessEntry{entry}
+				}
+				got, err := policy.SelectMode(AccessModeAuto)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := policy
+				want.Mode = ""
+				if hasWhite {
+					want.Mode = AccessModeWhitelist
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("restoring auto changed the wrong fields: got %+v, want %+v", got, want)
+				}
+			}
+		}
+	}
+	for _, mode := range []string{AccessModeDefault, AccessModeWhitelist} {
+		got, err := (AccessPolicy{}).SelectMode(mode)
+		if err != nil || got.Mode != mode {
+			t.Fatalf("manual mode not recorded: %+v, %v", got, err)
+		}
+		data, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored AccessPolicy
+		if err := json.Unmarshal(data, &restored); err != nil || restored.Mode != mode {
+			t.Fatalf("manual mode lost on reload: %s, %v", data, err)
+		}
+	}
+}

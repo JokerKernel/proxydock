@@ -650,7 +650,7 @@ func (m *Manager) printConfigCard(u *ui) {
 		)
 	}
 	if hasNode {
-		rows = append(rows, [2]string{"访问模式", accessModeLabel(node.AccessPolicy.EffectiveMode())}, [2]string{"访问名单", fmt.Sprintf("白名单 %d 条 · 黑名单 %d 条", len(node.AccessPolicy.Whitelist), len(node.AccessPolicy.Blacklist))})
+		rows = append(rows, [2]string{"访问模式", accessModeLabel(node.AccessPolicy.Mode)}, [2]string{"访问名单", fmt.Sprintf("白名单 %d 条 · 黑名单 %d 条", len(node.AccessPolicy.Whitelist), len(node.AccessPolicy.Blacklist))})
 	}
 	port := "未生成"
 	if hasNode {
@@ -1245,7 +1245,7 @@ func (m *Manager) printAccessCard(u *ui, policy model.AccessPolicy) {
 		finalAction = "其余拒绝"
 	}
 	order = append(order, finalAction)
-	u.labeledCard("访问策略", [][2]string{{"访问控制", accessSwitchLabel(policy)}, {"访问模式", accessModeLabel(policy.EffectiveMode())}, {"规则顺序", strings.Join(order, " → ")}, {"默认动作", defaultAction}})
+	u.labeledCard("访问策略", [][2]string{{"访问控制", accessSwitchLabel(policy)}, {"访问模式", accessModeLabel(policy.Mode)}, {"规则顺序", strings.Join(order, " → ")}, {"默认动作", defaultAction}})
 }
 
 func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
@@ -1257,11 +1257,11 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 	u.clearScreen()
 	u.pageHeader("Xray（Docker）", "访问控制", "切换访问模式")
 	m.printAccessCard(u, policy)
-	modes := []string{model.AccessModeDefault, model.AccessModeWhitelist}
+	modes := []string{model.AccessModeDefault, model.AccessModeWhitelist, model.AccessModeAuto}
 	defaultChoice := 1
 	for i, mode := range modes {
 		label := accessModeLabel(mode)
-		if mode == policy.EffectiveMode() {
+		if mode == policy.Mode || mode == model.AccessModeAuto && policy.Mode == "" && len(policy.Whitelist) == 0 {
 			label += "（当前）"
 			defaultChoice = i + 1
 		}
@@ -1275,17 +1275,24 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 		}
 		return err
 	}
-	policy.Mode = modes[choice-1]
-	if policy.Mode == policy.EffectiveMode() && modes[choice-1] == s.Node.AccessPolicy.EffectiveMode() {
+	mode := modes[choice-1]
+	next, err := policy.SelectMode(mode)
+	if err != nil {
+		return err
+	}
+	if next.Mode == policy.Mode {
 		fmt.Fprintln(u.out, "[提示] 访问模式没有变化。")
 		return nil
 	}
-	if err = u.confirm("将访问模式切换为" + accessModeLabel(policy.Mode) + "？"); err != nil {
+	message := "将访问模式切换为" + accessModeLabel(next.Mode) + "？手动选择后，增删名单不会自动切换模式。"
+	if mode == model.AccessModeAuto {
+		message = "恢复自动选择？有白名单时仅允许白名单；没有白名单时恢复默认模式，首次添加白名单后自动切换。"
+	}
+	if err = u.confirm(message); err != nil {
 		return err
 	}
 	return m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) {
-		p.Mode = policy.Mode
-		return p, nil
+		return p.SelectMode(mode)
 	})
 }
 
@@ -1403,12 +1410,7 @@ func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) er
 		}
 	}
 	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
-		if listName == "black" {
-			policy.Blacklist = append(policy.Blacklist, entries...)
-		} else {
-			policy.Whitelist = append(policy.Whitelist, entries...)
-		}
-		return policy, nil
+		return policy.AddEntries(listName, entries)
 	})
 }
 
