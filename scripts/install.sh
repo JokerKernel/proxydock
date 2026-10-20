@@ -59,37 +59,32 @@ paint() {
 
 detail() {
   local label=$1 text=$2 color=$3
-  local LC_ALL=C
-  local width=0 index character padding
-  # Count ASCII cells and UTF-8 leading bytes without requiring a locale.
-  for ((index = 0; index < ${#label}; index++)); do
-    character=${label:index:1}
-    if [[ "${character}" < $'\200' ]]; then
-      width=$((width + 1))
-    elif [[ "${character}" > $'\277' ]]; then
-      width=$((width + 2))
-    fi
-  done
-  padding=$((22 - width))
-  ((padding >= 0)) || padding=0
-  printf '%s%*s │ %s\n' "$(paint "${color}" "${label}")" "${padding}" '' "${text}"
+  printf '%s %s\n' "$(paint "${color}" "[${label}]")" "${text}"
 }
 
 info() {
-  detail "${1}" "${2}" "${color_blue}"
+  detail "信息" "$1：$2" "${color_blue}"
 }
 
 step() {
   printf '\n'
-  detail "${1}" "${2}" "${color_bold_orange}"
+  local text=$1
+  if [[ -n "${2:-}" ]]; then
+    text+="：$2"
+  fi
+  detail "步骤" "${text}" "${color_bold_orange}"
 }
 
 result() {
-  detail "${1}" "${2}" "${color_bold_green}"
+  printf '\n'
+  card_open
+  card_line "$1"
+  card_line "$2" "${color_bold_green}"
+  card_close
 }
 
 warn() {
-  detail "${1}" "${2}" "${color_bold_yellow}"
+  detail "警告" "$1：$2" "${color_bold_yellow}"
 }
 
 die() {
@@ -97,11 +92,23 @@ die() {
   exit 1
 }
 
-print_header() {
-  local subtitle=${1:-自身安装与更新}
+card_open() {
   printf '%s\n' "$(paint "${color_bold_orange}" '╭─ ProxyDock')"
-  printf '%s\n' "$(paint "${color_orange}" "│ ${subtitle}")"
+}
+
+card_line() {
+  local text=$1 color=${2-${color_orange}}
+  printf '%s %s\n' "$(paint "${color_orange}" '│')" "$(paint "${color}" "${text}")"
+}
+
+card_close() {
   printf '%s\n' "$(paint "${color_bold_orange}" '╰──────────────────────────────────────────────')"
+}
+
+print_header() {
+  card_open
+  card_line "${1:-自身安装与更新}"
+  card_close
 }
 
 print_release_summary() {
@@ -116,13 +123,14 @@ print_release_summary() {
     current) action_display="无需更新" ;;
     newer) action_display="跳过，避免降级" ;;
   esac
-  printf '\n%s\n' "$(paint "${color_bold_orange}" '发布信息')"
-  printf '%s\n' "$(paint "${color_orange}" '----------------------------------------')"
-  info "平台" "Linux/$1"
-  info "当前版本" "${current_display}"
-  info "目标版本" "${resolved_version}"
-  info "执行操作" "${action_display}"
-  printf '%s\n' "$(paint "${color_orange}" '----------------------------------------')"
+  printf '\n'
+  card_open
+  card_line "发布信息"
+  card_line "平台：Linux/$1" ""
+  card_line "当前版本：${current_display}" "${color_blue}"
+  card_line "目标版本：${resolved_version}" "${color_blue}"
+  card_line "执行操作：${action_display}" ""
+  card_close
 }
 
 print_completion() {
@@ -132,12 +140,13 @@ print_completion() {
   elif [[ "${installation_action}" == "replace" ]]; then
     action_label="重新安装完成"
   fi
-  printf '\n%s\n' "$(paint "${color_bold_orange}" '╭─ ProxyDock')"
-  result "安装结果" "${action_label}"
-  info "程序版本" "${resolved_version}"
-  info "安装位置" "${install_path}"
-  info "运行命令" "sudo ${install_path}"
-  printf '%s\n' "$(paint "${color_bold_orange}" '╰──────────────────────────────────────────────')"
+  printf '\n'
+  card_open
+  card_line "${action_label}" "${color_bold_green}"
+  card_line "程序版本：${resolved_version}" "${color_blue}"
+  card_line "安装位置：${install_path}" "${color_blue}"
+  card_line "运行命令：sudo ${install_path}" ""
+  card_close
 }
 
 cleanup() {
@@ -515,7 +524,7 @@ main() {
     fi
   fi
 
-  step "校验发布文件" "读取发布清单与 SHA-256"
+  step "下载发布文件"
   info "读取发布清单" "Linux/${architecture}"
   download "${release_base}/SHA256SUMS" "${temporary_dir}/SHA256SUMS"
   select_asset "${temporary_dir}/SHA256SUMS" "${architecture}"
@@ -528,20 +537,32 @@ main() {
 
   info "下载发布文件" "${selected_asset}"
   download "${release_base}/${selected_asset}" "${temporary_dir}/${selected_asset}" true
+  result "下载结果" "发布文件下载完成"
+
+  step "校验发布文件" "SHA-256"
   printf '%s  %s\n' "${selected_checksum}" "${selected_asset}" |
     (cd "${temporary_dir}" && sha256sum --check --status -) || die "SHA-256 校验失败"
   result "文件校验结果" "SHA-256 校验通过"
 
-  step "写入程序文件" "${install_path}（原子替换）"
+  step "安装程序" "校验候选程序后原子替换"
+  info "安装位置" "${install_path}"
+  [[ ! -d "${install_path}" ]] || die "安装目标是目录，拒绝覆盖：${install_path}"
   if [[ ! -d "${install_dir}" ]]; then
     install -d -m 0755 "${install_dir}"
   fi
-  staged_path="${install_dir}/.proxydock.new.$$"
-  install -m 0755 "${temporary_dir}/${selected_asset}" "${staged_path}"
-  mv -f -- "${staged_path}" "${install_path}"
+  staged_path=$(mktemp "${install_dir}/.proxydock.new.XXXXXX") || die "无法创建候选程序文件"
+  install -m 0755 "${temporary_dir}/${selected_asset}" "${staged_path}" || die "写入候选程序失败，原程序已保留"
+  local candidate_output candidate_version
+  if ! candidate_output=$("${staged_path}" --version 2>/dev/null); then
+    die "候选程序无法运行，原程序已保留"
+  fi
+  candidate_version=${candidate_output%%$'\n'*}
+  [[ "${candidate_version}" == "proxydock ${resolved_version}" ]] || \
+    die "候选程序版本与发布版本不一致，原程序已保留"
+  info "程序校验结果" "版本与运行检查通过"
+  mv -fT -- "${staged_path}" "${install_path}" || die "原子替换程序失败"
   staged_path=""
 
-  "${install_path}" --version
   print_completion
 }
 

@@ -40,14 +40,14 @@ test_color_controls() (
 
   local output
   output=$(info "彩色信息" "详情")
-  [[ "${output}" == *$'\033[34m彩色信息\033[0m'* ]] || fail "blue information color was not applied"
-  [[ "${output}" == *$'\033[0m'*' │ 详情' ]] || fail "padding was colored: ${output}"
+  [[ "${output}" == *$'\033[34m[信息]\033[0m'* ]] || fail "blue information color was not applied"
+  [[ "${output}" == *$'\033[0m 彩色信息：详情'* ]] || fail "information text was mixed with the colored badge: ${output}"
   output=$(print_header)
   [[ "${output}" == *$'\033[1;38;5;208m╭─ ProxyDock\033[0m'* ]] || fail "orange title color was not applied"
   output=$(step "彩色步骤" "详情")
-  [[ "${output}" == *$'\033[1;38;5;208m彩色步骤\033[0m'* ]] || fail "orange step color was not applied"
+  [[ "${output}" == *$'\033[1;38;5;208m[步骤]\033[0m'* ]] || fail "orange step color was not applied"
   output=$(result "安装结果" "安装完成")
-  [[ "${output}" == *$'\033[1;32m安装结果\033[0m'* ]] || fail "green result color was not applied"
+  [[ "${output}" == *$'\033[1;32m安装完成\033[0m'* ]] || fail "green result color was not applied"
 )
 
 test_no_color_is_respected() (
@@ -57,7 +57,7 @@ test_no_color_is_respected() (
 
   local output
   output=$(result "纯文本结果" "详情")
-  [[ "${output}" != *$'\033['* && "${output}" == *"纯文本结果"* && "${output}" == *"│ 详情" ]] || fail "NO_COLOR output was decorated: ${output}"
+  [[ "${output}" != *$'\033['* && "${output}" == *"纯文本结果"* && "${output}" == *"│ 详情"* ]] || fail "NO_COLOR output was decorated: ${output}"
 )
 
 test_version_comparison_and_classification() (
