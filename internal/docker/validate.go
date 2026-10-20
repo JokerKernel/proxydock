@@ -108,8 +108,11 @@ func (m *Manager) validateBytesFor(ctx context.Context, md Metadata, data []byte
 		label = opLabel{phase: phaseCheck, level: levelStep, name: "校验 Xray 配置"}
 		purpose = "校验结果"
 	}
-	_, err = m.coreRunAs(ctx, label, md.ImageID, id, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + tls + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
+	output, err := m.coreRunAs(ctx, label, md.ImageID, id, []string{"--mount", "type=bind,src=" + path + ",dst=/run/proxydock/config.json,readonly", "--mount", "type=bind,src=" + tls + ",dst=/etc/xray/tls,readonly"}, "run", "-test", "-config", "/run/proxydock/config.json")
 	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			err = fmt.Errorf("%w\n%s", err, detail)
+		}
 		m.op(phaseCheck, levelError, purpose, err.Error())
 		return fmt.Errorf("Docker Xray 配置校验失败: %w", err)
 	}
