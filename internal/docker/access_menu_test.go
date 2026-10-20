@@ -34,6 +34,13 @@ func TestAccessMenuAddsBatchInOneUpdate(t *testing.T) {
 			if tc.match != "" {
 				answers = append(answers, tc.match+"\n")
 			}
+			portPrompts := 4
+			if tc.match == "" {
+				portPrompts = 2
+			}
+			for i := 0; i < portPrompts; i++ {
+				answers = append(answers, "\n")
+			}
 			in := &dockerTerminalInput{answers: answers, output: &out}
 			if err := m.addAccessEntry(context.Background(), newUI(in, &out), tc.list); err != nil {
 				t.Fatal(err)
@@ -43,8 +50,8 @@ func TestAccessMenuAddsBatchInOneUpdate(t *testing.T) {
 				t.Fatal(err)
 			}
 			added := []model.AccessEntry{
-				{Type: model.AccessEntryDomain, Value: "example.com", IncludeSubdomains: !tc.exact},
-				{Type: model.AccessEntryDomain, Value: "example.org", IncludeSubdomains: !tc.exact},
+				{Type: model.AccessEntryDomain, Value: "example.com", IncludeSubdomains: !tc.exact, Ports: "80,443"},
+				{Type: model.AccessEntryDomain, Value: "example.org", IncludeSubdomains: !tc.exact, Ports: "80,443"},
 				{Type: model.AccessEntryIP, Value: "1.2.3.4"},
 				{Type: model.AccessEntryCIDR, Value: "10.0.0.0/8"},
 			}
@@ -244,6 +251,8 @@ func TestAccessMenuBatchCancellationDoesNotWrite(t *testing.T) {
 		{"input-q", []string{"q\n"}},
 		{"match-zero", []string{"example.com,example.org\n", "0\n"}},
 		{"match-q", []string{"example.com,example.org\n", "q\n"}},
+		{"ports-q", []string{"example.com,example.org\n", "1\n", "q\n"}},
+		{"second-ports-q", []string{"example.com,example.org\n", "1\n", "443\n", "q\n"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("TERM", "xterm")

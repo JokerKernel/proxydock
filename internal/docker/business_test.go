@@ -37,6 +37,7 @@ func TestAccessCLIReadsPolicyAfterRecovery(t *testing.T) {
 	oldEntry := accessEntry(t, "old.example.com")
 	pendingEntry := accessEntry(t, "pending.example.com")
 	addedEntry := accessEntry(t, "added.example.com")
+	addedEntry.Ports = model.DefaultAccessDomainPorts
 	if err := m.SetPolicy(ctx, model.AccessPolicy{Mode: "whitelist", Whitelist: []model.AccessEntry{oldEntry}}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestConcurrentAccessCLIUpdatesKeepBothEntries(t *testing.T) {
 }
 
 func TestInvalidAccessCLIDoesNotRecover(t *testing.T) {
-	for _, args := range [][]string{{"mode", "invalid"}, {"switch", "invalid"}, {"clear", "invalid"}, {"add", "white", "https://invalid"}, {"remove", "invalid", "example.com"}} {
+	for _, args := range [][]string{{"mode", "invalid"}, {"switch", "invalid"}, {"clear", "invalid"}, {"add", "white", "https://invalid"}, {"remove", "invalid", "example.com"}, {"add", "white", "example.com", "--ports", "0"}, {"remove", "black", "1.2.3.4", "--ports", "443-80"}, {"list", "--ports", "443"}, {"mode", "default", "--ports", "443"}} {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
 			m, f := deployed(t)
 			if _, err := m.begin("config", f.container); err != nil {

@@ -4,6 +4,7 @@ package accesspolicy
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"proxydock/internal/docker/model"
@@ -30,7 +31,12 @@ func list(v any) []any {
 func str(v any) string { s, _ := v.(string); return s }
 func owned(r map[string]any) bool {
 	t := str(r["ruleTag"])
-	return t == "white-domain" || t == "white-ip" || t == "black-domain" || t == "black-ip" || t == Prefix+"final" || strings.HasPrefix(t, Prefix+"white-relay-")
+	for _, base := range []string{"white-domain", "white-ip", "black-domain", "black-ip"} {
+		if t == base || strings.HasPrefix(t, base+"-ports-") {
+			return true
+		}
+	}
+	return t == Prefix+"final" || strings.HasPrefix(t, Prefix+"white-relay-")
 }
 func proxyTags(n model.Node) []string {
 	r := []string{n.InboundTag}
@@ -62,6 +68,35 @@ func values(entries []model.AccessEntry) map[string]any {
 		r["ip"] = ips
 	}
 	return r
+}
+
+type matchGroup struct {
+	field  string
+	values any
+	ports  string
+}
+
+// Group only addresses with identical port conditions. Domain and IP matches
+// need separate rules because Xray combines different fields with AND.
+func matchGroups(entries []model.AccessEntry) []matchGroup {
+	var order []string
+	groups := map[string][]model.AccessEntry{}
+	for _, entry := range entries {
+		if _, ok := groups[entry.Ports]; !ok {
+			order = append(order, entry.Ports)
+		}
+		groups[entry.Ports] = append(groups[entry.Ports], entry)
+	}
+	var result []matchGroup
+	for _, ports := range order {
+		matches := values(groups[ports])
+		for _, field := range []string{"domain", "ip"} {
+			if v, ok := matches[field]; ok {
+				result = append(result, matchGroup{field: field, values: v, ports: ports})
+			}
+		}
+	}
+	return result
 }
 func ValidateRoot(root map[string]any, _ string) error {
 	if root == nil || object(root["routing"]) == nil {
@@ -183,17 +218,18 @@ func Apply(root map[string]any, n model.Node) error {
 	root["outbounds"] = outs
 	front := []any{}
 	add := func(entries []model.AccessEntry, out, user, label string) {
-		matches := values(entries)
-		for _, field := range []string{"domain", "ip"} {
-			v, ok := matches[field]
-			if !ok {
-				continue
+		for i, group := range matchGroups(entries) {
+			ruleTag := label + "-" + group.field
+			if group.ports != "" {
+				ruleTag += "-ports-" + strconv.Itoa(i+1)
 			}
-			ruleTag := label + "-" + field
 			if strings.HasPrefix(label, "white-relay-") {
 				ruleTag = Prefix + ruleTag
 			}
-			r := map[string]any{"inboundTag": tags, field: v, "outboundTag": out, "ruleTag": ruleTag}
+			r := map[string]any{"inboundTag": tags, group.field: group.values, "outboundTag": out, "ruleTag": ruleTag}
+			if group.ports != "" {
+				r["port"] = group.ports
+			}
 			if user != "" {
 				r["inboundTag"] = []string{n.InboundTag}
 				r["user"] = []string{user}
@@ -254,13 +290,12 @@ func AllowClient(root map[string]any, n model.Node) {
 		return
 	}
 	rules := []any{}
-	matches := values(n.AccessPolicy.Whitelist)
-	for _, field := range []string{"domain", "ip"} {
-		v, ok := matches[field]
-		if !ok {
-			continue
+	for _, group := range matchGroups(n.AccessPolicy.Whitelist) {
+		rule := map[string]any{group.field: group.values, "outboundTag": "proxy"}
+		if group.ports != "" {
+			rule["port"] = group.ports
 		}
-		rules = append(rules, map[string]any{field: v, "outboundTag": "proxy"})
+		rules = append(rules, rule)
 	}
 	route["rules"] = append(rules, list(route["rules"])...)
 }

@@ -97,9 +97,20 @@ DNS 支持 `system`、`public-cloudflare`、`public-google`、`doh-cloudflare`�
 
 菜单“添加规则”和命令行均支持批量添加，用空格、英文逗号或中文逗号分隔域名、IP 和 CIDR，例如 `example.com example.org，1.2.3.4,10.0.0.0/8`。域名统一选择是否包含子域名；重复规则自动去重，任一目标无效时整批不提交。
 
+每条规则可单独指定目标端口。新添加的域名默认匹配 `80,443`，IP/CIDR 默认匹配所有端口；旧规则保持原有范围。支持单端口、多个端口及范围，例如 `80,443,8000-8100`，有效端口为 1–65535，`all` 表示所有端口。菜单在选择域名匹配方式后逐条询问端口，回车使用该地址类型的默认值；任一端口无效或取消时整批不提交。命令行 `--ports` 应用于本次命令的每个目标；不同端口条件分次添加。同一地址可保存多条不同端口的规则；删除时需提供对应的 `--ports` 和域名匹配方式，省略端口时域名按 `80,443` 匹配、IP/CIDR 按所有端口匹配。删除旧的不限端口域名规则需指定 `--ports all`，也可在菜单中按编号删除。
+
+规则同时匹配地址和目标端口才生效：黑名单只拦截命中的端口；仅白名单模式只放行命中的地址与端口，其他连接拒绝；默认模式下未命中白名单的连接继续按后续规则处理。白名单仍优先于黑名单。生成 Xray 配置时仅合并地址类型和端口条件相同的规则，管理列表保持逐条保存；原生客户端的白名单例外路由同步保留端口条件。
+
+若同一域名已有匹配所有端口的白名单规则，新增限定端口的规则不会缩小原有放行范围；要收窄范围，需先删除原来的不限端口规则。
+
 ```bash
 sudo proxydock config access add white example.com 10.0.0.0/8
 sudo proxydock config access add black blocked.example.com --exact
+sudo proxydock config access add white a.example.com --ports 443
+sudo proxydock config access add white b.example.com --ports 80,443
+sudo proxydock config access add white all-ports.example.com --ports all
+sudo proxydock config access add black 10.0.0.0/8 --ports 8000-8100
+sudo proxydock config access remove white a.example.com --ports 443
 sudo proxydock config access mode whitelist
 sudo proxydock config access switch off
 sudo proxydock config access list

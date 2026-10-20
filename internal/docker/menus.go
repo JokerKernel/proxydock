@@ -1383,6 +1383,21 @@ func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) er
 			}
 		}
 	}
+	fmt.Fprintln(u.out, "逐条设置目标端口；域名默认 80,443，IP/CIDR 默认所有端口；支持 80,443,8000-8100，all 表示所有端口，q 返回。")
+	for i := range entries {
+		defaultPorts := "all"
+		if entries[i].Type == model.AccessEntryDomain {
+			defaultPorts = model.DefaultAccessDomainPorts
+		}
+		value, err := u.ask(entries[i].Value+" 的目标端口", defaultPorts)
+		if err != nil {
+			return err
+		}
+		entries[i].Ports, err = model.NormalizeAccessPorts(value)
+		if err != nil {
+			return fmt.Errorf("%s 的端口无效: %w", entries[i].Value, err)
+		}
+	}
 	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
 		if listName == "black" {
 			policy.Blacklist = append(policy.Blacklist, entries...)

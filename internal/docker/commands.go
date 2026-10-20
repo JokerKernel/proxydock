@@ -258,7 +258,11 @@ func (m *Manager) generateCommand(use string, yes *bool) *cobra.Command {
 }
 func (m *Manager) accessCommand() *cobra.Command {
 	var exact bool
+	var ports string
 	cmd := &cobra.Command{Use: "access <list|mode|switch|add|remove|clear> [args]", Short: "白名单、黑名单和访问模式", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("ports") && args[0] != "add" && args[0] != "remove" {
+			return fmt.Errorf("--ports 仅适用于 add/remove")
+		}
 		if args[0] == "list" {
 			if len(args) != 1 {
 				return fmt.Errorf("list 不接受参数")
@@ -271,18 +275,19 @@ func (m *Manager) accessCommand() *cobra.Command {
 			fmt.Fprint(m.out, string(b))
 			return nil
 		}
-		change, err := accessPolicyChange(args, exact)
+		change, err := accessPolicyChange(args, exact, ports, cmd.Flags().Changed("ports"))
 		if err != nil {
 			return err
 		}
 		return m.updatePolicy(cmd.Context(), change)
 	}}
 	cmd.Flags().BoolVar(&exact, "exact", false, "域名精确匹配")
+	cmd.Flags().StringVar(&ports, "ports", "", "本次添加或删除规则的目标端口，如 80,443,8000-8100；域名默认 80,443，IP/CIDR 默认所有端口；all 匹配所有端口")
 	return cmd
 }
 
 // Validate arguments before locking or recovering, then apply them to fresh state.
-func accessPolicyChange(args []string, exact bool) (func(model.AccessPolicy) (model.AccessPolicy, error), error) {
+func accessPolicyChange(args []string, exact bool, ports string, portsSet bool) (func(model.AccessPolicy) (model.AccessPolicy, error), error) {
 	switch args[0] {
 	case "mode":
 		if len(args) != 2 || args[1] != model.AccessModeDefault && args[1] != model.AccessModeWhitelist {
@@ -306,6 +311,16 @@ func accessPolicyChange(args []string, exact bool) (func(model.AccessPolicy) (mo
 		entries, err := model.ParseAccessEntries(strings.Join(args[2:], " "), exact)
 		if err != nil {
 			return nil, err
+		}
+		ports, err = model.NormalizeAccessPorts(ports)
+		if err != nil {
+			return nil, err
+		}
+		for i := range entries {
+			entries[i].Ports = ports
+			if !portsSet && entries[i].Type == model.AccessEntryDomain {
+				entries[i].Ports = model.DefaultAccessDomainPorts
+			}
 		}
 		return func(p model.AccessPolicy) (model.AccessPolicy, error) {
 			list := &p.Whitelist

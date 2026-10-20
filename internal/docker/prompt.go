@@ -431,13 +431,19 @@ func accessSwitchLabel(policy model.AccessPolicy) string {
 }
 
 func accessEntryLabel(entry model.AccessEntry) string {
+	label := entry.Value
 	if entry.Type == model.AccessEntryDomain {
 		if entry.IncludeSubdomains {
-			return entry.Value + "（包括子域名）"
+			label += "（包括子域名）"
+		} else {
+			label += "（精确域名）"
 		}
-		return entry.Value + "（精确域名）"
 	}
-	return entry.Value
+	ports := entry.Ports
+	if ports == "" {
+		ports = "全部"
+	}
+	return label + " · 端口 " + ports
 }
 
 func linkSummary(hasNode, known bool, total, enabled int) string {

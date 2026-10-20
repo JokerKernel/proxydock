@@ -3,22 +3,26 @@ package model
 import (
 	"fmt"
 	"net/netip"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
 
 const (
-	AccessModeDefault   = "default"
-	AccessModeWhitelist = "whitelist"
-	AccessEntryDomain   = "domain"
-	AccessEntryIP       = "ip"
-	AccessEntryCIDR     = "cidr"
+	AccessModeDefault        = "default"
+	AccessModeWhitelist      = "whitelist"
+	AccessEntryDomain        = "domain"
+	AccessEntryIP            = "ip"
+	AccessEntryCIDR          = "cidr"
+	DefaultAccessDomainPorts = "80,443"
 )
 
 type AccessEntry struct {
 	Type              string `json:"type"`
 	Value             string `json:"value"`
 	IncludeSubdomains bool   `json:"include_subdomains,omitempty"`
+	Ports             string `json:"ports,omitempty"`
 }
 
 type AccessPolicy struct {
@@ -26,6 +30,66 @@ type AccessPolicy struct {
 	Mode      string        `json:"mode,omitempty"`
 	Whitelist []AccessEntry `json:"whitelist,omitempty"`
 	Blacklist []AccessEntry `json:"blacklist,omitempty"`
+}
+
+// NormalizeAccessPorts canonicalizes destination ports; empty means all ports.
+func NormalizeAccessPorts(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "all") {
+		return "", nil
+	}
+	type interval struct{ first, last int }
+	var ranges []interval
+	parse := func(raw string) (int, error) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || strings.IndexFunc(raw, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			return 0, fmt.Errorf("端口必须为 1–65535 的整数")
+		}
+		port, err := strconv.Atoi(raw)
+		if err != nil || port < 1 || port > 65535 {
+			return 0, fmt.Errorf("端口必须为 1–65535 的整数")
+		}
+		return port, nil
+	}
+	for _, part := range strings.Split(strings.ReplaceAll(value, "，", ","), ",") {
+		bounds := strings.Split(part, "-")
+		if len(bounds) > 2 {
+			return "", fmt.Errorf("端口格式无效，请使用例如 80,443,8000-8100")
+		}
+		first, err := parse(bounds[0])
+		if err != nil {
+			return "", err
+		}
+		last := first
+		if len(bounds) == 2 {
+			last, err = parse(bounds[1])
+			if err != nil {
+				return "", err
+			}
+			if last < first {
+				return "", fmt.Errorf("端口范围起点不能大于终点")
+			}
+		}
+		ranges = append(ranges, interval{first, last})
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].first < ranges[j].first })
+	merged := ranges[:0]
+	for _, current := range ranges {
+		if len(merged) == 0 || current.first > merged[len(merged)-1].last+1 {
+			merged = append(merged, current)
+		} else if current.last > merged[len(merged)-1].last {
+			merged[len(merged)-1].last = current.last
+		}
+	}
+	parts := make([]string, 0, len(merged))
+	for _, span := range merged {
+		part := strconv.Itoa(span.first)
+		if span.first != span.last {
+			part += "-" + strconv.Itoa(span.last)
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ","), nil
 }
 
 func (p AccessPolicy) EffectiveMode() string {
@@ -152,6 +216,10 @@ func (p AccessPolicy) Normalize() (AccessPolicy, error) {
 			}
 			if parsed.Type != entry.Type || (parsed.Type != AccessEntryDomain && entry.IncludeSubdomains) {
 				return nil, fmt.Errorf("访问规则类型与目标不一致: %s", entry.Value)
+			}
+			parsed.Ports, err = NormalizeAccessPorts(entry.Ports)
+			if err != nil {
+				return nil, fmt.Errorf("%s 的端口无效: %w", entry.Value, err)
 			}
 			if !seen[parsed] {
 				seen[parsed] = true
