@@ -76,9 +76,43 @@ type matchGroup struct {
 	ports  string
 }
 
-// Group only addresses with identical port conditions. Domain and IP matches
-// need separate rules because Xray combines different fields with AND.
-func matchGroups(entries []model.AccessEntry) []matchGroup {
+// Merge ports for each exact destination before grouping destinations by ports.
+// Work on copies so the management list keeps independently removable entries.
+func mergeDestinationPorts(entries []model.AccessEntry) ([]model.AccessEntry, error) {
+	var merged []model.AccessEntry
+	positions := map[model.AccessEntry]int{}
+	for _, entry := range entries {
+		ports, err := model.NormalizeAccessPorts(entry.Ports)
+		if err != nil {
+			return nil, err
+		}
+		entry.Ports = ""
+		if index, ok := positions[entry]; ok {
+			previous := &merged[index]
+			if previous.Ports == "" || ports == "" {
+				previous.Ports = ""
+			} else {
+				previous.Ports, err = model.NormalizeAccessPorts(previous.Ports + "," + ports)
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			positions[entry] = len(merged)
+			entry.Ports = ports
+			merged = append(merged, entry)
+		}
+	}
+	return merged, nil
+}
+
+// Group only addresses with identical combined port conditions. Domain and IP
+// matches need separate rules because Xray combines different fields with AND.
+func matchGroups(entries []model.AccessEntry) ([]matchGroup, error) {
+	entries, err := mergeDestinationPorts(entries)
+	if err != nil {
+		return nil, err
+	}
 	var order []string
 	groups := map[string][]model.AccessEntry{}
 	for _, entry := range entries {
@@ -96,7 +130,7 @@ func matchGroups(entries []model.AccessEntry) []matchGroup {
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 func ValidateRoot(root map[string]any, _ string) error {
 	if root == nil || object(root["routing"]) == nil {
@@ -169,6 +203,14 @@ func Apply(root map[string]any, n model.Node) error {
 	if !p.Active() {
 		return nil
 	}
+	whiteGroups, err := matchGroups(p.Whitelist)
+	if err != nil {
+		return err
+	}
+	blackGroups, err := matchGroups(p.Blacklist)
+	if err != nil {
+		return err
+	}
 	tags := proxyTags(n)
 	scoped := map[string]bool{}
 	for _, tag := range tags {
@@ -217,8 +259,8 @@ func Apply(root map[string]any, n model.Node) error {
 	outs = append(outs, map[string]any{"protocol": "blackhole", "settings": map[string]any{}, "tag": denyTag})
 	root["outbounds"] = outs
 	front := []any{}
-	add := func(entries []model.AccessEntry, out, user, label string) {
-		for i, group := range matchGroups(entries) {
+	add := func(groups []matchGroup, out, user, label string) {
+		for i, group := range groups {
 			ruleTag := label + "-" + group.field
 			if group.ports != "" {
 				ruleTag += "-ports-" + strconv.Itoa(i+1)
@@ -240,13 +282,13 @@ func Apply(root map[string]any, n model.Node) error {
 	if len(p.Whitelist) > 0 {
 		for _, link := range n.RelayLinks {
 			if link.Enabled {
-				add(p.Whitelist, model.RelayOutboundTag(link.Name), link.UserName, "white-relay-"+link.Name)
+				add(whiteGroups, model.RelayOutboundTag(link.Name), link.UserName, "white-relay-"+link.Name)
 			}
 		}
-		add(p.Whitelist, directTag, "", "white")
+		add(whiteGroups, directTag, "", "white")
 	}
 	if p.BlacklistEnabled() {
-		add(p.Blacklist, denyTag, "", "black")
+		add(blackGroups, denyTag, "", "black")
 	}
 	route := object(root["routing"])
 	tail := list(route["rules"])
@@ -281,16 +323,20 @@ func Apply(root map[string]any, n model.Node) error {
 	route["rules"] = append(front, tail...)
 	return nil
 }
-func AllowClient(root map[string]any, n model.Node) {
+func AllowClient(root map[string]any, n model.Node) error {
 	if !n.AccessPolicy.Active() {
-		return
+		return nil
 	}
 	route := object(root["routing"])
 	if route == nil {
-		return
+		return nil
+	}
+	groups, err := matchGroups(n.AccessPolicy.Whitelist)
+	if err != nil {
+		return err
 	}
 	rules := []any{}
-	for _, group := range matchGroups(n.AccessPolicy.Whitelist) {
+	for _, group := range groups {
 		rule := map[string]any{group.field: group.values, "outboundTag": "proxy"}
 		if group.ports != "" {
 			rule["port"] = group.ports
@@ -298,6 +344,7 @@ func AllowClient(root map[string]any, n model.Node) {
 		rules = append(rules, rule)
 	}
 	route["rules"] = append(rules, list(route["rules"])...)
+	return nil
 }
 func SnapshotSniffing(config []byte, n model.Node) (map[string]json.RawMessage, error) {
 	var root map[string]any

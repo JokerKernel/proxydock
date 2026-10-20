@@ -137,3 +137,60 @@ func TestAccessMenuInvalidPortsDoesNotWrite(t *testing.T) {
 		t.Fatalf("invalid ports called Docker: %v", fake.calls)
 	}
 }
+
+func TestAccessMergedPortsCanStillBeRemovedIndividually(t *testing.T) {
+	m, _ := deployed(t)
+	for _, args := range [][]string{
+		{"add", "white", "dantapi.top"},
+		{"add", "white", "dantapi.top", "--ports", "553"},
+	} {
+		if err := accessCLI(m, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := m.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Node.AccessPolicy.Whitelist) != 2 {
+		t.Fatalf("management entries were merged: %+v", state.Node.AccessPolicy.Whitelist)
+	}
+	assertPorts := func(data []byte, outbound, ports string) {
+		t.Helper()
+		root := configRoot(t, data)
+		count := 0
+		for _, item := range root["routing"].(map[string]any)["rules"].([]any) {
+			rule := item.(map[string]any)
+			if rule["outboundTag"] != outbound {
+				continue
+			}
+			count++
+			if rule["port"] != ports || !reflect.DeepEqual(rule["domain"], []any{"domain:dantapi.top"}) {
+				t.Fatalf("incorrect compiled ports: %+v", rule)
+			}
+		}
+		if count != 1 {
+			t.Fatalf("expected one merged rule for %s, got %d", outbound, count)
+		}
+	}
+	assertPorts(readFile(t, m.paths.Config()), "access-direct", "80,443,553")
+	client, err := m.Client(context.Background(), "native", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPorts(client, "proxy", "80,443,553")
+	if err := accessCLI(m, "remove", "white", "dantapi.top", "--ports", "553"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Generate(context.Background(), model.GenerateOptions{}, false); err != nil {
+		t.Fatal(err)
+	}
+	state, err = m.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Node.AccessPolicy.Whitelist) != 1 || state.Node.AccessPolicy.Whitelist[0].Ports != "80,443" {
+		t.Fatalf("deletion removed unrelated ports: %+v", state.Node.AccessPolicy.Whitelist)
+	}
+	assertPorts(readFile(t, m.paths.Config()), "access-direct", "80,443")
+}

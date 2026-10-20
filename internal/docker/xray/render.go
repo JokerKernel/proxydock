@@ -262,7 +262,9 @@ func (*Codec) RenderClient(n model.Node) ([]byte, error) {
 		if err := json.Unmarshal(b, &root); err != nil {
 			return nil, err
 		}
-		accesspolicy.AllowClient(root, n)
+		if err := accesspolicy.AllowClient(root, n); err != nil {
+			return nil, err
+		}
 		return marshalXray(root)
 	}
 	return marshalXray(v)
