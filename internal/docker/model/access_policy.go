@@ -51,7 +51,7 @@ func NormalizeAccessPorts(value string) (string, error) {
 		}
 		return port, nil
 	}
-	for _, part := range strings.Split(strings.ReplaceAll(value, "，", ","), ",") {
+	for _, part := range strings.Split(strings.NewReplacer("，", ",", ".", ",").Replace(value), ",") {
 		bounds := strings.Split(part, "-")
 		if len(bounds) > 2 {
 			return "", fmt.Errorf("端口格式无效，请使用例如 80,443,8000-8100")

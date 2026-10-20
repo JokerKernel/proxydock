@@ -282,7 +282,7 @@ func (m *Manager) accessCommand() *cobra.Command {
 		return m.updatePolicy(cmd.Context(), change)
 	}}
 	cmd.Flags().BoolVar(&exact, "exact", false, "域名精确匹配")
-	cmd.Flags().StringVar(&ports, "ports", "", "本次添加或删除规则的目标端口，如 80,443,8000-8100；域名默认 80,443，IP/CIDR 默认所有端口；all 匹配所有端口")
+	cmd.Flags().StringVar(&ports, "ports", "", "本次添加或删除规则的目标端口，如 80,443,8000-8100（也支持点号分隔）；域名默认 80,443，IP/CIDR 默认所有端口；all 匹配所有端口")
 	return cmd
 }
 

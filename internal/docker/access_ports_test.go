@@ -19,6 +19,7 @@ func TestAccessCLIPortsDefaultsIdentityAndRemoval(t *testing.T) {
 		{"add", "white", "example.com", "10.0.0.0/8", "2001:db8::1"},
 		{"add", "white", "example.com", "--ports", "8443"},
 		{"add", "white", "example.com", "--ports", "443,80,443"},
+		{"add", "white", "example.com", "--ports", "443.80.443"},
 		{"add", "white", "example.com", "--ports", "all"},
 	} {
 		if err := accessCLI(m, args...); err != nil {
@@ -39,7 +40,7 @@ func TestAccessCLIPortsDefaultsIdentityAndRemoval(t *testing.T) {
 	if !reflect.DeepEqual(s.Node.AccessPolicy.Whitelist, want) {
 		t.Fatalf("wrong defaults or duplicate handling: %+v", s.Node.AccessPolicy.Whitelist)
 	}
-	if err := accessCLI(m, "remove", "white", "example.com", "--ports", "443,80"); err != nil {
+	if err := accessCLI(m, "remove", "white", "example.com", "--ports", "443.80"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Generate(context.Background(), model.GenerateOptions{}, false); err != nil {
@@ -91,7 +92,7 @@ func TestAccessMenuSetsEachAddressPorts(t *testing.T) {
 			var out dockerTerminalOutput
 			in := &dockerTerminalInput{answers: []string{
 				"a.example.com b.example.com c.example.com 10.0.0.0/8\n", "2\n",
-				"443\n", "\n", "all\n", "8100,8000-8100\n",
+				"443\n", "\n", "all\n", "8100.8000-8100\n",
 			}, output: &out}
 			if err := m.addAccessEntry(context.Background(), newUI(in, &out), listName); err != nil {
 				t.Fatal(err)
