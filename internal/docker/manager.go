@@ -34,6 +34,7 @@ type Options struct {
 	TargetCheck func(context.Context, string, string, string) error
 	HealthCheck func(context.Context, []int, string) error
 	PortFree    func(int) error
+	Reachable   func(context.Context, string, int) error
 	HTTPClient  *http.Client
 }
 
@@ -47,6 +48,8 @@ type Manager struct {
 	targetCheck      func(context.Context, string, string, string) error
 	healthCheck      func(context.Context, []int, string) error
 	portFree         func(int) error
+	reachable        func(context.Context, string, int) error
+	runEditor        func(context.Context, string, string) error
 	http             *http.Client
 	codec            *xray.Codec
 	stateWrite       func(string, []byte, os.FileMode) error
@@ -86,6 +89,10 @@ func New(opts Options) *Manager {
 		opts.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	m := &Manager{paths: Paths{Root: opts.Root}, runner: opts.Runner, out: opts.Out, errOut: opts.ErrOut, now: opts.Now, rootCheck: opts.RootCheck, lookPath: opts.LookPath, targetCheck: opts.TargetCheck, healthCheck: opts.HealthCheck, portFree: opts.PortFree, http: opts.HTTPClient, codec: xray.New()}
+	m.reachable = opts.Reachable
+	if m.reachable == nil {
+		m.reachable = probeRelayTCP
+	}
 	if m.portFree == nil {
 		m.portFree = checkPortFree
 	}

@@ -137,11 +137,11 @@ sudo proxydock config relay enable relay-one
 sudo proxydock config relay remove relay-one
 ```
 
-白名单优先于黑名单和默认私网阻断；`whitelist` 模式只允许白名单，空白名单拒绝代理请求，黑名单保留但不参与匹配。清空名单仅删除名单内容，保留访问模式和开关状态；在启用访问控制的 `whitelist` 模式下清空白名单后，全部代理请求仍被拒绝，恢复放行需添加白名单或显式切换模式。访问策略关闭时保留名单数据，之后可通过 `switch on` 恢复。规则作用于代理请求目标，REALITY 回落继续使用专用限制。
+白名单优先于黑名单和默认私网阻断；`whitelist` 模式只允许白名单，黑名单保留但不参与匹配。清空名单保留模式选择和开关状态：自动选择会在白名单为空后恢复默认模式；手动仅白名单则继续拒绝全部代理请求。访问策略关闭时保留名单数据，之后可通过 `switch on` 恢复。规则作用于代理请求目标，REALITY 回落继续使用专用限制。
 
-落地 `reality` 接入共享 REALITY 主入站；独立 TLS 接入使用自己的端口和证书。TLS 主节点新增落地接入时选择 `--security tls`。
+落地 `reality` 接入共享 REALITY 主入站；独立 TLS 接入使用自己的端口和证书。`landing add` 默认使用 `--security current`，共享当前 REALITY/TLS 主入站和端口；TLS 主节点也共享其证书。`--security tls` 则创建独立 TLS 入站，省略端口时自动选择随机高位端口。
 
-交互菜单中的“使用当前协议”或 CLI 的 `landing add --security current` 共享主节点端口；TLS 主节点也共享其证书。CLI 的 `landing add --security tls` 继续创建独立 TLS 入站，省略端口时自动选择随机高位端口。
+菜单支持粘贴连接文本到临时编辑文件、手动输入和导入文件。中转管理支持客户端导出、TCP 测试、更新上游、轮换 UUID、启停和删除；落地管理支持连接文本导出、UUID 轮换、启停和删除。`relay add/update` 支持 `--upstream-stdin`、`--peer-file` 或 `--upstream`，添加和更新前检查 TCP 连通性；确认暂时不可达仍要保存时使用 `--allow-unreachable`。详细流程与兼容范围见[中转与落地线路](links.md)。
 
 ## 客户端导出
 

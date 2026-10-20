@@ -10,6 +10,17 @@ import (
 )
 
 func (m *Manager) Client(ctx context.Context, format, name string) ([]byte, error) {
+	return m.client(ctx, format, name, false)
+}
+
+func (m *Manager) RelayClient(ctx context.Context, format, name string) ([]byte, error) {
+	if name == "" {
+		return nil, fmt.Errorf("需要中转线路名称")
+	}
+	return m.client(ctx, format, name, true)
+}
+
+func (m *Manager) client(ctx context.Context, format, name string, relayOnly bool) ([]byte, error) {
 	switch format {
 	case "native", "clash":
 	default:
@@ -31,7 +42,7 @@ func (m *Manager) Client(ctx context.Context, format, name string) ([]byte, erro
 		if name != "" {
 			found := false
 			for _, a := range n.LandingAccesses {
-				if a.Name == name && a.Enabled {
+				if !relayOnly && a.Name == name && a.Enabled {
 					found = true
 					n.UUID = a.UUID
 					if !a.UsesPrimaryInbound() {

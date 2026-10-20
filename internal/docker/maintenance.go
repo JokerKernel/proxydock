@@ -79,6 +79,9 @@ func (m *Manager) maintainFilesLocked() error {
 	if err := m.cleanupValidationDirs(); err != nil {
 		return err
 	}
+	if err := m.cleanupLandingPasteDirs(); err != nil {
+		return err
+	}
 	backupRefs, err := m.pruneBackups()
 	if err != nil {
 		return err

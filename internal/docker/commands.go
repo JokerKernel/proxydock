@@ -3,7 +3,6 @@ package docker
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -350,7 +349,8 @@ func (m *Manager) landingCommand() *cobra.Command {
 	var security string
 	var port int
 	var output string
-	cmd := &cobra.Command{Use: "landing <list|add|peer|enable|disable|remove> [name]", Short: "管理落地接入", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
+	var force bool
+	cmd := &cobra.Command{Use: "landing <list|add|export|show|peer|rotate|enable|disable|remove> [name]", Short: "管理落地接入", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
 		if args[0] == "list" {
 			if len(args) != 1 {
 				return fmt.Errorf("list 不接受名称")
@@ -371,8 +371,14 @@ func (m *Manager) landingCommand() *cobra.Command {
 		switch args[0] {
 		case "add":
 			peer, err = m.AddLanding(cmd.Context(), args[1], security, port)
-		case "peer":
+		case "peer", "export", "show":
 			peer, err = m.peer(cmd.Context(), args[1])
+		case "rotate":
+			yes, _ := cmd.Flags().GetBool("yes")
+			if err := m.confirmInput(cmd.InOrStdin(), yes, "轮换落地 UUID？所有中转机需要重新导入连接文本。"); err != nil {
+				return err
+			}
+			return m.ChangeLink(cmd.Context(), "landing", args[1], "rotate")
 		case "enable", "disable", "remove":
 			return m.ChangeLink(cmd.Context(), "landing", args[1], args[0])
 		default:
@@ -381,21 +387,31 @@ func (m *Manager) landingCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		b, _ := jsonBytes(peer)
+		var b []byte
+		if args[0] == "peer" {
+			b, err = jsonBytes(peer)
+		} else {
+			b, err = landingText(peer)
+		}
+		if err != nil {
+			return err
+		}
 		if output != "" {
-			return m.WriteExport(output, b, false)
+			return m.WriteExport(output, b, force)
 		}
 		fmt.Fprint(m.out, string(b))
 		return nil
 	}}
-	cmd.Flags().StringVar(&security, "security", "reality", "current（共享主节点端口）、reality 或 tls（独立端口）")
+	cmd.Flags().StringVar(&security, "security", "current", "current（缺省，共享主节点端口）、reality 或 tls（独立端口）")
 	cmd.Flags().IntVar(&port, "port", 0, "独立 TLS 接入端口")
-	cmd.Flags().StringVar(&output, "output", "", "peer JSON 导出路径")
+	cmd.Flags().StringVar(&output, "output", "", "落地连接 JSON 导出路径（0600）")
+	cmd.Flags().BoolVar(&force, "force", false, "覆盖已有导出文件")
 	return cmd
 }
 func (m *Manager) relayCommand() *cobra.Command {
-	var peerFile string
-	cmd := &cobra.Command{Use: "relay <list|add|enable|disable|remove> [name]", Short: "管理中转线路", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
+	var peerFile, upstreamFile, output, format string
+	var fromStdin, allowUnreachable, force bool
+	cmd := &cobra.Command{Use: "relay <list|add|update|test|client|rotate|enable|disable|remove> [name]", Short: "管理中转线路", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
 		if args[0] == "list" {
 			if len(args) != 1 {
 				return fmt.Errorf("list 不接受名称")
@@ -412,25 +428,57 @@ func (m *Manager) relayCommand() *cobra.Command {
 			return fmt.Errorf("需要线路名称")
 		}
 		switch args[0] {
-		case "add":
-			if peerFile == "" {
-				return fmt.Errorf("需要 --peer-file")
+		case "add", "update":
+			if peerFile != "" && upstreamFile != "" {
+				return fmt.Errorf("--peer-file 和 --upstream 不能同时使用")
 			}
-			absolute, err := filepath.Abs(peerFile)
+			path := peerFile
+			if upstreamFile != "" {
+				path = upstreamFile
+			}
+			peer, err := readLandingInput(path, fromStdin, cmd.InOrStdin())
 			if err != nil {
 				return err
 			}
-			var peer model.LandingPeer
-			if err = loadJSON(absolute, &peer); err != nil {
+			opts := RelayOptions{AllowUnreachable: allowUnreachable}
+			if args[0] == "update" {
+				return m.UpdateRelay(cmd.Context(), args[1], peer, opts)
+			}
+			return m.AddRelay(cmd.Context(), args[1], peer, opts)
+		case "test":
+			if err := m.TestRelay(cmd.Context(), args[1]); err != nil {
 				return err
 			}
-			return m.AddRelay(cmd.Context(), args[1], peer)
+			fmt.Fprintln(m.out, "落地端点 TCP 可达。")
+			return nil
+		case "client":
+			b, err := m.RelayClient(cmd.Context(), format, args[1])
+			if err != nil {
+				return err
+			}
+			if output != "" {
+				return m.WriteExport(output, b, force)
+			}
+			_, err = m.out.Write(b)
+			return err
+		case "rotate":
+			yes, _ := cmd.Flags().GetBool("yes")
+			if err := m.confirmInput(cmd.InOrStdin(), yes, "轮换中转 UUID？该线路旧客户端将失效。"); err != nil {
+				return err
+			}
+			return m.ChangeLink(cmd.Context(), "relay", args[1], "rotate")
 		case "enable", "disable", "remove":
 			return m.ChangeLink(cmd.Context(), "relay", args[1], args[0])
 		default:
 			return fmt.Errorf("中转操作无效")
 		}
 	}}
-	cmd.Flags().StringVar(&peerFile, "peer-file", "", "落地接入导出的 0600 peer JSON")
+	cmd.Flags().StringVar(&peerFile, "peer-file", "", "0600 落地连接 JSON（兼容已有 peer JSON）")
+	cmd.Flags().StringVar(&upstreamFile, "upstream", "", "落地连接 JSON 文件，等同于 --peer-file")
+	cmd.Flags().BoolVar(&fromStdin, "upstream-stdin", false, "从标准输入读取完整落地连接 JSON")
+	cmd.Flags().BoolVar(&allowUnreachable, "allow-unreachable", false, "TCP 不可达时仍保存线路；不绕过配置和地址校验")
+	cmd.Flags().StringVar(&format, "format", "native", "客户端格式：native 或 clash")
+	cmd.Flags().StringVar(&output, "output", "", "客户端配置导出路径（0600）")
+	cmd.Flags().BoolVar(&force, "force", false, "覆盖已有导出文件")
 	return cmd
 }

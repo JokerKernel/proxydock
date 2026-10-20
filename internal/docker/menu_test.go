@@ -79,7 +79,7 @@ func TestLandingPeerRemainsVisibleUntilReturn(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			data, err := jsonBytes(peer)
+			data, err := landingText(peer)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -378,6 +378,7 @@ func testManager(t *testing.T) (*Manager, *simulatedDocker) {
 		return nil
 	}})
 	f.manager = m
+	m.reachable = func(context.Context, string, int) error { return nil }
 	// Docker and root checks are simulated; track intended ownership without
 	// requiring the unit test process to chown files to arbitrary system users.
 	m.chown = func(path string, uid, gid int) error {

@@ -23,13 +23,42 @@ func cloneNode(n model.Node) (model.Node, error) {
 	return copy, err
 }
 func linkName(name string) error {
-	if !namePattern.MatchString(name) || strings.HasPrefix(name, "access-") || name == "direct" || name == "private-block" || name == "fallback-in" || name == "fallback-out" {
+	normalized := strings.ToLower(name)
+	if !namePattern.MatchString(name) || strings.HasPrefix(normalized, "access-") || normalized == "direct" || normalized == "private-block" || normalized == "fallback-in" || normalized == "fallback-out" || normalized == "proxy" {
 		return fmt.Errorf("线路名称无效或保留")
 	}
 	return nil
 }
+
+func availableLinkName(n model.Node, kind, name string) error {
+	if err := linkName(name); err != nil {
+		return err
+	}
+	user, tag := "relay-"+name, model.RelayOutboundTag(name)
+	if kind == "landing" {
+		user, tag = "landing-"+name, model.LandingTLSInboundTag(name)
+	}
+	conflicts := func(value string) bool {
+		return value != "" && (strings.EqualFold(name, value) || strings.EqualFold(user, value) || strings.EqualFold(tag, value))
+	}
+	if conflicts(n.UserName) || conflicts(n.InboundTag) || n.TLSCertificate != nil && conflicts(n.TLSCertificate.Name) {
+		return fmt.Errorf("名称与主节点用户、入站标签或证书冲突")
+	}
+	for _, access := range n.LandingAccesses {
+		if conflicts(access.Name) || conflicts(access.UserName) || conflicts(model.LandingTLSInboundTag(access.Name)) {
+			return fmt.Errorf("名称已被落地接入 %s 占用", access.Name)
+		}
+	}
+	for _, link := range n.RelayLinks {
+		if conflicts(link.Name) || conflicts(link.UserName) || conflicts(model.RelayOutboundTag(link.Name)) {
+			return fmt.Errorf("名称已被中转线路 %s 占用", link.Name)
+		}
+	}
+	return nil
+}
+
 func validatePeer(p model.LandingPeer) error {
-	if p.Core != model.CoreXray || p.Flow != model.VisionFlow {
+	if (p.Core != model.CoreXray && p.Core != "sing-box") || p.Flow != model.VisionFlow {
 		return fmt.Errorf("上游节点 core 或 flow 无效")
 	}
 	if !validServer(p.Server) || p.Port < 1 || p.Port > 65535 || !hostname(p.SNI, true) || !uuidPattern.MatchString(p.UUID) {
@@ -111,6 +140,9 @@ func (m *Manager) AddLanding(ctx context.Context, name, security string, port in
 				return fmt.Errorf("名称已被中转线路占用")
 			}
 		}
+		if err := availableLinkName(next, "landing", name); err != nil {
+			return err
+		}
 		if sharePrimary {
 			security = model.NormalizeLandingSecurity(next.Security)
 		}
@@ -184,12 +216,20 @@ func landingPeer(n model.Node, a model.LandingAccess) model.LandingPeer {
 	}
 	return p
 }
-func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingPeer) error {
+func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingPeer, options ...RelayOptions) error {
+	peer.Security = model.NormalizeLandingSecurity(peer.Security)
 	if err := linkName(name); err != nil {
 		return err
 	}
 	if err := validatePeer(peer); err != nil {
 		return err
+	}
+	opts := RelayOptions{}
+	if len(options) > 1 {
+		return fmt.Errorf("中转选项只能提供一组")
+	}
+	if len(options) == 1 {
+		opts = options[0]
 	}
 	return m.withLock(ctx, func() error {
 		md, in, err := m.prepareOperation(ctx)
@@ -214,6 +254,15 @@ func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingP
 				return fmt.Errorf("名称已被落地接入占用")
 			}
 		}
+		if err := availableLinkName(next, "relay", name); err != nil {
+			return err
+		}
+		if err := validateRelayEndpoint(next, peer); err != nil {
+			return err
+		}
+		if err := m.checkRelay(ctx, peer, opts); err != nil {
+			return err
+		}
 		id, err := newUUID()
 		if err != nil {
 			return err
@@ -222,11 +271,61 @@ func (m *Manager) AddRelay(ctx context.Context, name string, peer model.LandingP
 		return m.patchLinks(ctx, md, in, s.Node, next, b)
 	})
 }
+
+// Updating the upstream preserves the local client's identity and enabled state.
+func (m *Manager) UpdateRelay(ctx context.Context, name string, peer model.LandingPeer, opts RelayOptions) error {
+	peer.Security = model.NormalizeLandingSecurity(peer.Security)
+	if err := linkName(name); err != nil {
+		return err
+	}
+	if err := validatePeer(peer); err != nil {
+		return err
+	}
+	return m.withLock(ctx, func() error {
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
+			return err
+		}
+		s, b, err := m.managedConfig()
+		if err != nil {
+			return err
+		}
+		next, err := cloneNode(s.Node)
+		if err != nil {
+			return err
+		}
+		for i, link := range next.RelayLinks {
+			if link.Name != name {
+				continue
+			}
+			if err := validateRelayEndpoint(next, peer); err != nil {
+				return err
+			}
+			if link.Upstream == peer {
+				return nil
+			}
+			if err := m.checkRelay(ctx, peer, opts); err != nil {
+				return err
+			}
+			next.RelayLinks[i].Upstream = peer
+			next.RelayLinks[i].UpdatedAt = m.now().UTC()
+			md, in, err := m.prepareOperation(ctx)
+			if err != nil {
+				return err
+			}
+			return m.patchLinks(ctx, md, in, s.Node, next, b)
+		}
+		return fmt.Errorf("未找到中转线路 %s", name)
+	})
+}
+
 func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) error {
 	if kind != "landing" && kind != "relay" {
 		return fmt.Errorf("线路类型无效")
 	}
-	if action != "remove" && action != "enable" && action != "disable" {
+	if action != "remove" && action != "enable" && action != "disable" && action != "rotate" {
 		return fmt.Errorf("线路操作无效")
 	}
 	if err := linkName(name); err != nil {
@@ -248,16 +347,26 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 			return err
 		}
 		found := false
+		uuid := ""
+		if action == "rotate" {
+			uuid, err = newUUID()
+			if err != nil {
+				return err
+			}
+		}
 		switch kind {
 		case "landing":
 			for i, a := range next.LandingAccesses {
 				if a.Name == name {
 					found = true
-					if action != "remove" && a.Enabled == (action == "enable") {
+					if (action == "enable" || action == "disable") && a.Enabled == (action == "enable") {
 						return nil
 					}
 					if action == "remove" {
 						next.LandingAccesses = append(next.LandingAccesses[:i], next.LandingAccesses[i+1:]...)
+					} else if action == "rotate" {
+						next.LandingAccesses[i].UUID = uuid
+						next.LandingAccesses[i].UpdatedAt = m.now().UTC()
 					} else {
 						next.LandingAccesses[i].Enabled = action == "enable"
 						next.LandingAccesses[i].UpdatedAt = m.now().UTC()
@@ -269,11 +378,14 @@ func (m *Manager) ChangeLink(ctx context.Context, kind, name, action string) err
 			for i, r := range next.RelayLinks {
 				if r.Name == name {
 					found = true
-					if action != "remove" && r.Enabled == (action == "enable") {
+					if (action == "enable" || action == "disable") && r.Enabled == (action == "enable") {
 						return nil
 					}
 					if action == "remove" {
 						next.RelayLinks = append(next.RelayLinks[:i], next.RelayLinks[i+1:]...)
+					} else if action == "rotate" {
+						next.RelayLinks[i].UUID = uuid
+						next.RelayLinks[i].UpdatedAt = m.now().UTC()
 					} else {
 						next.RelayLinks[i].Enabled = action == "enable"
 						next.RelayLinks[i].UpdatedAt = m.now().UTC()

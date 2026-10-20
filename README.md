@@ -69,6 +69,7 @@ sudo proxydock cleanup --yes
 ## 文档
 
 - [使用指南](docs/usage.md)：部署、配置、服务、升级回滚及文件位置。
+- [中转与落地线路](docs/links.md)：连接文本导入导出、线路测试、上游更新和 UUID 轮换。
 - [安装与更新指南](docs/installation.md)：一键安装、固定版本、程序更新与卸载。
 - [开发指南](docs/development.md)：模块边界、测试、构建和发布。
 

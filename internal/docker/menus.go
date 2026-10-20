@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1758,6 +1757,12 @@ func (m *Manager) linkMenu(ctx context.Context, u *ui) error {
 			continue
 		}
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) || errors.Is(err, errQuit) || errors.Is(err, errBack) || errors.Is(err, errInterrupted) {
+				return err
+			}
+			m.printMenuError(err)
+		}
+		if err := u.pause(); err != nil {
 			return err
 		}
 	}
@@ -1781,7 +1786,7 @@ func (m *Manager) addLandingInteractive(ctx context.Context, u *ui, node model.N
 	if choice == 2 {
 		security = "tls"
 	}
-	name, err := u.ask("接入名称", "")
+	name, err := u.ask("接入名称", nextLandingName(node))
 	if err != nil {
 		return err
 	}
@@ -1790,30 +1795,32 @@ func (m *Manager) addLandingInteractive(ctx context.Context, u *ui, node model.N
 		return err
 	}
 	fmt.Fprintln(u.out, "落地连接信息：")
-	b, _ := jsonBytes(peer)
+	b, err := landingText(peer)
+	if err != nil {
+		return err
+	}
 	fmt.Fprint(u.out, string(b))
-	return u.pause()
+	if peer.Security == model.LandingSecurityTLS && choice == 2 {
+		fmt.Fprintf(u.out, "请放行防火墙和云安全组 TCP 端口 %d。\n", peer.Port)
+	}
+	return nil
 }
 
 func (m *Manager) addRelayInteractive(ctx context.Context, u *ui) error {
 	u.pageHeader("Xray（Docker）", "添加中转线路")
-	name, err := u.ask("线路名称", "")
+	peer, err := m.askLandingSource(ctx, u)
 	if err != nil {
 		return err
 	}
-	path, err := u.ask("上游 peer JSON 文件（0600 权限）", "")
+	name, err := u.ask("线路名称", peer.Name)
 	if err != nil {
 		return err
 	}
-	path, err = filepath.Abs(path)
-	if err != nil {
+	fmt.Fprintf(u.out, "落地：%s · %s\n", net.JoinHostPort(peer.Server, strconv.Itoa(peer.Port)), landingProtocolLabel(peer.Security))
+	if err := u.confirm("创建独立中转用户？该用户固定走指定落地，落地不可用时连接失败，不回退本机出口。"); err != nil {
 		return err
 	}
-	var peer model.LandingPeer
-	if err = loadJSON(path, &peer); err != nil {
-		return err
-	}
-	return m.AddRelay(ctx, name, peer)
+	return m.saveRelayInteractive(ctx, u, name, peer, false)
 }
 
 func (m *Manager) manageRelays(ctx context.Context, u *ui) error {
@@ -1828,7 +1835,8 @@ func (m *Manager) manageRelays(ctx context.Context, u *ui) error {
 		return nil
 	}
 	for i, link := range links {
-		u.menuBadge(strconv.Itoa(i+1), link.Name, "["+enabledLabel(link.Enabled)+"]")
+		title := link.Name + " · " + model.RelayOutboundTag(link.Name) + " · " + net.JoinHostPort(link.Upstream.Server, strconv.Itoa(link.Upstream.Port))
+		u.menuBadge(strconv.Itoa(i+1), title, "["+enabledLabel(link.Enabled)+"]")
 	}
 	u.menuChoice("0/q", "返回")
 	choice, err := u.chooseNumber("请选择中转线路", 0, len(links), 1)
@@ -1838,7 +1846,81 @@ func (m *Manager) manageRelays(ctx context.Context, u *ui) error {
 		}
 		return err
 	}
-	return m.changeLinkInteractive(ctx, u, "relay", links[choice-1].Name, links[choice-1].Enabled)
+	link := links[choice-1]
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "管理中转线路", model.RelayOutboundTag(link.Name))
+	u.labeledCard("当前中转", [][2]string{
+		{"线路名称", link.Name}, {"客户端用户", link.UserName}, {"出站 tag", model.RelayOutboundTag(link.Name)},
+		{"落地地址", net.JoinHostPort(link.Upstream.Server, strconv.Itoa(link.Upstream.Port))},
+		{"落地协议", landingProtocolLabel(link.Upstream.Security)}, {"状态", enabledLabel(link.Enabled)},
+	})
+	u.menuChoice("1", "导出客户端配置（原生 JSON / Clash）")
+	u.menuChoice("2", "测试落地 TCP 连通性")
+	u.menuChoice("3", "更新落地连接信息")
+	u.menuChoice("4", "轮换中转客户端 UUID")
+	action := "停用线路"
+	if !link.Enabled {
+		action = "启用线路"
+	}
+	u.menuChoice("5", action)
+	u.menuChoice("6", "删除线路")
+	u.menuChoice("0/q", "返回")
+	selected, err := u.chooseNumber("请选择", 0, 6, 0)
+	if err != nil {
+		return err
+	}
+	switch selected {
+	case 0:
+		return errCancelled
+	case 1:
+		u.menuChoice("1", "原生 JSON")
+		u.menuChoice("2", "Clash/Mihomo YAML")
+		format, err := u.chooseNumberCancelable("请选择客户端格式", 1, 2, 1)
+		if err != nil {
+			return err
+		}
+		kind := "native"
+		if format == 2 {
+			kind = "clash"
+		}
+		b, err := m.RelayClient(ctx, kind, link.Name)
+		if err != nil {
+			return err
+		}
+		_, err = u.out.Write(b)
+		return err
+	case 2:
+		if err := m.TestRelay(ctx, link.Name); err != nil {
+			return err
+		}
+		fmt.Fprintln(u.out, "落地端点 TCP 可达；此检查不验证 UUID 或完整代理链路。")
+		return nil
+	case 3:
+		peer, err := m.askLandingSource(ctx, u)
+		if err != nil {
+			return err
+		}
+		if err := u.confirm("更新上游落地？本机中转 UUID 和启停状态保持不变。"); err != nil {
+			return err
+		}
+		return m.saveRelayInteractive(ctx, u, link.Name, peer, true)
+	case 4:
+		if err := u.confirm("轮换中转 UUID？该线路旧客户端将立即失效，需要重新导出。"); err != nil {
+			return err
+		}
+		return m.ChangeLink(ctx, "relay", link.Name, "rotate")
+	case 5:
+		command := "enable"
+		if link.Enabled {
+			command = "disable"
+		}
+		return m.ChangeLink(ctx, "relay", link.Name, command)
+	default:
+		if err := u.confirm("删除中转线路？对应用户、路由和出站将被移除。"); err != nil {
+			return err
+		}
+		return m.ChangeLink(ctx, "relay", link.Name, "remove")
+	}
 }
 
 func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
@@ -1853,7 +1935,11 @@ func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
 		return nil
 	}
 	for i, item := range items {
-		u.menuBadge(strconv.Itoa(i+1), item.Name, "["+enabledLabel(item.Enabled)+"]")
+		title := item.Name + " · 当前 " + strings.ToUpper(state.Node.Security)
+		if !item.UsesPrimaryInbound() {
+			title = fmt.Sprintf("%s · TLS :%d", item.Name, item.Port)
+		}
+		u.menuBadge(strconv.Itoa(i+1), title, "["+enabledLabel(item.Enabled)+"]")
 	}
 	u.menuChoice("0/q", "返回")
 	choice, err := u.chooseNumber("请选择落地接入", 0, len(items), 1)
@@ -1866,15 +1952,23 @@ func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
 	item := items[choice-1]
 	u.clearScreen()
 	u.pageHeader("Xray（Docker）", "管理落地接入", item.Name)
+	endpoint := fmt.Sprintf("复用当前 %s 入站 :%d", strings.ToUpper(state.Node.Security), state.Node.Port)
+	security := state.Node.Security
+	if !item.UsesPrimaryInbound() {
+		endpoint = fmt.Sprintf("独立 TLS 端口 %d · %s", item.Port, item.SNI)
+		security = item.Security
+	}
+	u.labeledCard("当前落地", [][2]string{{"接入名称", item.Name}, {"接入用户", item.UserName}, {"落地协议", landingProtocolLabel(security)}, {"接入方式", endpoint}, {"状态", enabledLabel(item.Enabled)}})
 	u.menuChoice("1", "显示可复制的落地连接文本")
+	u.menuChoice("2", "轮换接入 UUID")
 	action := "停用接入"
 	if !item.Enabled {
 		action = "启用接入"
 	}
-	u.menuChoice("2", action)
-	u.menuChoice("3", "删除接入")
+	u.menuChoice("3", action)
+	u.menuChoice("4", "删除接入")
 	u.menuChoice("0/q", "返回")
-	selected, err := u.chooseNumber("请选择", 0, 3, 0)
+	selected, err := u.chooseNumber("请选择", 0, 4, 0)
 	if err != nil || selected == 0 {
 		if err == nil {
 			return errCancelled
@@ -1886,14 +1980,26 @@ func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
 		if err != nil {
 			return err
 		}
-		b, _ := jsonBytes(peer)
+		b, err := landingText(peer)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(u.out, "请复制下面完整的 JSON 文本：")
 		fmt.Fprint(u.out, string(b))
-		return u.pause()
+		return nil
 	}
-	command := map[int]string{2: "disable", 3: "remove"}[selected]
-	if item.Enabled && selected == 2 {
-		command = "disable"
-	} else if !item.Enabled && selected == 2 {
+	command := "disable"
+	if selected == 2 {
+		if err := u.confirm("轮换落地 UUID？使用旧连接文本的中转机将失效，需要重新导入。"); err != nil {
+			return err
+		}
+		command = "rotate"
+	} else if selected == 4 {
+		if err := u.confirm("删除落地接入？使用该 UUID 的中转机将立即断开。"); err != nil {
+			return err
+		}
+		command = "remove"
+	} else if !item.Enabled {
 		command = "enable"
 	}
 	return m.ChangeLink(ctx, "landing", item.Name, command)
@@ -1912,7 +2018,7 @@ func (m *Manager) printLinkGraph(u *ui, node model.Node) error {
 		}
 		fmt.Fprintf(u.out, "落地接入 %s [%s · %s]\n  └─ direct（本机出口）\n", access.UserName, enabledLabel(access.Enabled), protocol)
 	}
-	return u.pause()
+	return nil
 }
 
 func linkProtocolDisplay(securities []string) string {
@@ -1956,38 +2062,4 @@ func landingProtocolLabel(security string) string {
 	default:
 		return strings.ToUpper(strings.TrimSpace(security))
 	}
-}
-
-func (m *Manager) changeLinkInteractive(ctx context.Context, u *ui, kind, name string, enabled bool) error {
-	u.clearScreen()
-	title := "管理中转线路"
-	if kind == "landing" {
-		title = "管理落地接入"
-	}
-	u.pageHeader("Xray（Docker）", title, name)
-	action := "停用线路"
-	if !enabled {
-		action = "启用线路"
-	}
-	u.menuChoice("1", action)
-	u.menuChoice("2", "删除线路")
-	u.menuChoice("0/q", "返回")
-	choice, err := u.chooseNumber("请选择", 0, 2, 0)
-	if err != nil || choice == 0 {
-		if err == nil {
-			return errCancelled
-		}
-		return err
-	}
-	command := "disable"
-	if !enabled {
-		command = "enable"
-	}
-	if choice == 2 {
-		if err = u.confirm("删除线路 " + name + "？"); err != nil {
-			return err
-		}
-		command = "remove"
-	}
-	return m.ChangeLink(ctx, kind, name, command)
 }
