@@ -53,6 +53,46 @@ func (r *dockerTerminalInput) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+func TestLandingPeerRemainsVisibleUntilReturn(t *testing.T) {
+	for _, action := range []string{"show", "create"} {
+		t.Run(action, func(t *testing.T) {
+			t.Setenv("TERM", "xterm")
+			ctx := context.Background()
+			m, _ := deployed(t)
+			answers := []string{"3\n", "1\n", "nihao\n", "\n", "0\n"}
+			if action == "show" {
+				if _, err := m.AddLanding(ctx, "nihao", "current", 0); err != nil {
+					t.Fatal(err)
+				}
+				answers = []string{"4\n", "1\n", "1\n", "\n", "0\n"}
+			}
+			var out dockerTerminalOutput
+			m.out, m.errOut = &out, &out
+			in := &dockerTerminalInput{answers: answers, output: &out}
+			if err := m.linkMenu(ctx, newUI(in, &out)); err != nil {
+				t.Fatal(err)
+			}
+			if len(in.screens) != len(answers) {
+				t.Fatalf("connection text was cleared without waiting for Enter: %d prompts, want %d", len(in.screens), len(answers))
+			}
+			peer, err := m.peer(ctx, "nihao")
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := jsonBytes(peer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if screen := in.screens[3]; !strings.Contains(screen, string(data)) || !strings.Contains(screen, "按 Enter 返回菜单") {
+				t.Fatalf("copyable connection text disappeared before the return prompt: %s", screen)
+			}
+			if screen := in.screens[4]; !strings.Contains(screen, "中转与落地线路") || strings.Contains(screen, peer.UUID) {
+				t.Fatalf("Enter did not return to a clean links menu: %s", screen)
+			}
+		})
+	}
+}
+
 func TestDockerMenusReplacePreviousScreen(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	m, _ := testManager(t)

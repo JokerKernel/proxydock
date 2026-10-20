@@ -1792,7 +1792,7 @@ func (m *Manager) addLandingInteractive(ctx context.Context, u *ui, node model.N
 	fmt.Fprintln(u.out, "落地连接信息：")
 	b, _ := jsonBytes(peer)
 	fmt.Fprint(u.out, string(b))
-	return nil
+	return u.pause()
 }
 
 func (m *Manager) addRelayInteractive(ctx context.Context, u *ui) error {
@@ -1888,7 +1888,7 @@ func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
 		}
 		b, _ := jsonBytes(peer)
 		fmt.Fprint(u.out, string(b))
-		return nil
+		return u.pause()
 	}
 	command := map[int]string{2: "disable", 3: "remove"}[selected]
 	if item.Enabled && selected == 2 {
