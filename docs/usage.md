@@ -131,7 +131,7 @@ sudo proxydock config relay enable relay-one
 sudo proxydock config relay remove relay-one
 ```
 
-白名单优先于黑名单和默认私网阻断；`whitelist` 模式只允许白名单，空白名单拒绝代理请求。访问策略关闭时保留名单数据，之后可通过 `switch on` 恢复。规则作用于代理请求目标，REALITY 回落继续使用专用限制。
+白名单优先于黑名单和默认私网阻断；`whitelist` 模式只允许白名单，空白名单拒绝代理请求。清空名单仅删除名单内容，保留访问模式和开关状态；在启用访问控制的 `whitelist` 模式下清空白名单后，全部代理请求仍被拒绝，恢复放行需添加白名单或显式切换模式。访问策略关闭时保留名单数据，之后可通过 `switch on` 恢复。规则作用于代理请求目标，REALITY 回落继续使用专用限制。
 
 落地 `reality` 接入共享 REALITY 主入站；独立 TLS 接入使用自己的端口和证书。TLS 主节点新增落地接入时选择 `--security tls`。
 

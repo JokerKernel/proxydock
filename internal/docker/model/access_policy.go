@@ -114,9 +114,6 @@ func (p AccessPolicy) ClearList(listName string) (AccessPolicy, error) {
 	switch listName {
 	case "white":
 		p.Whitelist = nil
-		if p.EffectiveMode() == AccessModeWhitelist {
-			p.Mode = AccessModeDefault
-		}
 	case "black":
 		p.Blacklist = nil
 	default:

@@ -69,3 +69,31 @@ func TestAccessPolicyPortsRoundTripAndIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestClearAccessListPreservesModeAndSwitch(t *testing.T) {
+	white := []AccessEntry{{Type: AccessEntryDomain, Value: "example.com", Ports: "80,443"}}
+	black := []AccessEntry{{Type: AccessEntryIP, Value: "1.2.3.4", Ports: "553"}}
+	for _, mode := range []string{"", AccessModeDefault, AccessModeWhitelist} {
+		for _, disabled := range []bool{false, true} {
+			for _, listName := range []string{"white", "black"} {
+				policy := AccessPolicy{Mode: mode, Disabled: disabled, Whitelist: white, Blacklist: black}
+				got, err := policy.ClearList(listName)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := policy
+				if listName == "white" {
+					want.Whitelist = nil
+				} else {
+					want.Blacklist = nil
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("clear %s changed policy beyond its list: got %+v, want %+v", listName, got, want)
+				}
+				if mode == AccessModeWhitelist && !disabled && !got.Active() {
+					t.Fatal("clearing a list disabled whitelist-only access control")
+				}
+			}
+		}
+	}
+}

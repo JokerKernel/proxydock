@@ -1342,7 +1342,11 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 		case "delete":
 			err = m.removeAccessEntry(ctx, u, listName, page)
 		case "clear":
-			if err = u.confirm("清空" + name + "？"); err == nil {
+			message := "清空" + name + "？"
+			if listName == "white" {
+				message += "保留当前访问模式和开关；访问控制启用时，仅白名单模式将拒绝全部代理请求。"
+			}
+			if err = u.confirm(message); err == nil {
 				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.ClearList(listName) })
 				page = 0
 			}

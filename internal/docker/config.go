@@ -524,10 +524,10 @@ func accessPolicySummary(policy model.AccessPolicy) string {
 	white := len(policy.Whitelist) > 0
 	black := len(policy.Blacklist) > 0
 	if policy.EffectiveMode() == model.AccessModeWhitelist {
-		if black {
-			return "白名单优先，黑名单继续拦截"
+		if !white {
+			return "白名单为空，拒绝全部代理请求"
 		}
-		return "白名单优先，现有拦截规则兜底"
+		return "仅允许白名单，其余拒绝"
 	}
 	if white && !black {
 		return "白名单优先，现有拦截规则兜底"
