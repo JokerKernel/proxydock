@@ -650,7 +650,7 @@ func (m *Manager) printConfigCard(u *ui) {
 		)
 	}
 	if hasNode {
-		rows = append(rows, [2]string{"访问模式", accessModeLabel(node.AccessPolicy.Mode)}, [2]string{"访问名单", fmt.Sprintf("白名单 %d 条 · 黑名单 %d 条", len(node.AccessPolicy.Whitelist), len(node.AccessPolicy.Blacklist))})
+		rows = append(rows, [2]string{"访问模式", accessPolicyModeLabel(node.AccessPolicy)}, [2]string{"访问名单", fmt.Sprintf("白名单 %d 条 · 黑名单 %d 条", len(node.AccessPolicy.Whitelist), len(node.AccessPolicy.Blacklist))})
 	}
 	port := "未生成"
 	if hasNode {
@@ -1245,7 +1245,7 @@ func (m *Manager) printAccessCard(u *ui, policy model.AccessPolicy) {
 		finalAction = "其余拒绝"
 	}
 	order = append(order, finalAction)
-	u.labeledCard("访问策略", [][2]string{{"访问控制", accessSwitchLabel(policy)}, {"访问模式", accessModeLabel(policy.Mode)}, {"规则顺序", strings.Join(order, " → ")}, {"默认动作", defaultAction}})
+	u.labeledCard("访问策略", [][2]string{{"访问控制", accessSwitchLabel(policy)}, {"访问模式", accessPolicyModeLabel(policy)}, {"规则顺序", strings.Join(order, " → ")}, {"默认动作", defaultAction}})
 }
 
 func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
@@ -1261,7 +1261,7 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 	defaultChoice := 1
 	for i, mode := range modes {
 		label := accessModeLabel(mode)
-		if mode == policy.Mode || mode == model.AccessModeAuto && policy.Mode == "" && len(policy.Whitelist) == 0 {
+		if mode == policy.Mode || mode == model.AccessModeAuto && policy.Mode == "" {
 			label += "（当前）"
 			defaultChoice = i + 1
 		}
@@ -1286,7 +1286,7 @@ func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
 	}
 	message := "将访问模式切换为" + accessModeLabel(next.Mode) + "？手动选择后，增删名单不会自动切换模式。"
 	if mode == model.AccessModeAuto {
-		message = "恢复自动选择？有白名单时仅允许白名单；没有白名单时恢复默认模式，首次添加白名单后自动切换。"
+		message = "恢复自动选择？白名单有内容时仅允许白名单；清空或删除最后一条后自动恢复默认模式。"
 	}
 	if err = u.confirm(message); err != nil {
 		return err
@@ -1351,7 +1351,7 @@ func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) er
 		case "clear":
 			message := "清空" + name + "？"
 			if listName == "white" {
-				message += "保留当前访问模式和开关；访问控制启用时，仅白名单模式将拒绝全部代理请求。"
+				message += "保留当前访问模式和开关；自动选择将恢复默认模式；访问控制启用时，手动仅白名单模式仍拒绝全部代理请求。"
 			}
 			if err = u.confirm(message); err == nil {
 				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.ClearList(listName) })

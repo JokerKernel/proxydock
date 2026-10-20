@@ -104,8 +104,8 @@ func TestAccessModeSelectionAndFirstWhitelist(t *testing.T) {
 		name, mode, list, wantMode string
 		existing, empty, disabled  bool
 	}{
-		{name: "first-white", list: "white", wantMode: AccessModeWhitelist},
-		{name: "first-white-disabled", list: "white", wantMode: AccessModeWhitelist, disabled: true},
+		{name: "first-white", list: "white"},
+		{name: "first-white-disabled", list: "white", disabled: true},
 		{name: "only-black", list: "black"},
 		{name: "empty-batch", list: "white", empty: true},
 		{name: "manual-default", mode: AccessModeDefault, list: "white", wantMode: AccessModeDefault},
@@ -143,9 +143,6 @@ func TestAccessModeSelectionAndFirstWhitelist(t *testing.T) {
 				}
 				want := policy
 				want.Mode = ""
-				if hasWhite {
-					want.Mode = AccessModeWhitelist
-				}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("restoring auto changed the wrong fields: got %+v, want %+v", got, want)
 				}
@@ -164,6 +161,45 @@ func TestAccessModeSelectionAndFirstWhitelist(t *testing.T) {
 		var restored AccessPolicy
 		if err := json.Unmarshal(data, &restored); err != nil || restored.Mode != mode {
 			t.Fatalf("manual mode lost on reload: %s, %v", data, err)
+		}
+	}
+}
+
+func TestAutomaticAccessModeTracksWhitelistAcrossReloads(t *testing.T) {
+	entry := AccessEntry{Type: AccessEntryDomain, Value: "example.com", Ports: "443"}
+	for _, mode := range []string{"", AccessModeAuto, AccessModeDefault, AccessModeWhitelist} {
+		for _, disabled := range []bool{false, true} {
+			policy, err := (AccessPolicy{Mode: mode, Disabled: disabled}).Normalize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, hasWhite := range []bool{false, true, false, true} {
+				if hasWhite {
+					policy, err = policy.AddEntries("white", []AccessEntry{entry})
+				} else {
+					policy, err = policy.ClearList("white")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(policy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(data, &policy); err != nil {
+					t.Fatal(err)
+				}
+				wantMode, wantSaved := mode, mode
+				if mode == "" || mode == AccessModeAuto {
+					wantSaved, wantMode = "", AccessModeDefault
+					if hasWhite {
+						wantMode = AccessModeWhitelist
+					}
+				}
+				if policy.Mode != wantSaved || policy.EffectiveMode() != wantMode || policy.Disabled != disabled {
+					t.Fatalf("mode=%q white=%t disabled=%t: unexpected policy %+v (effective %q)", mode, hasWhite, disabled, policy, policy.EffectiveMode())
+				}
+			}
 		}
 	}
 }

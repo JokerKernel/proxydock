@@ -36,7 +36,7 @@ func TestClearWhitelistRetainsAccessRestrictions(t *testing.T) {
 					if err := m.accessListMenu(ctx, newUI(in, &out), "white"); err != nil {
 						t.Fatal(err)
 					}
-					if !strings.Contains(out.String(), "保留当前访问模式和开关") || !strings.Contains(out.String(), "访问控制启用时，仅白名单模式将拒绝全部代理请求") {
+					if !strings.Contains(out.String(), "保留当前访问模式和开关") || !strings.Contains(out.String(), "手动仅白名单模式仍拒绝全部代理请求") {
 						t.Fatalf("clear confirmation did not explain the result: %s", out.String())
 					}
 				}
@@ -100,23 +100,28 @@ func TestWhitelistSummaryMatchesEffectivePolicy(t *testing.T) {
 func TestAccessAutomaticModeWorkflow(t *testing.T) {
 	m, _ := deployed(t)
 	for _, step := range []struct {
-		args []string
-		mode string
+		args            []string
+		mode, effective string
 	}{
-		{[]string{"add", "black", "blocked.example.com"}, ""},
-		{[]string{"add", "white", "example.com"}, model.AccessModeWhitelist},
-		{[]string{"mode", "default"}, model.AccessModeDefault},
-		{[]string{"add", "white", "other.example.com", "--ports", "553"}, model.AccessModeDefault},
-		{[]string{"clear", "white"}, model.AccessModeDefault},
-		{[]string{"add", "white", "example.com"}, model.AccessModeDefault},
-		{[]string{"mode", "auto"}, model.AccessModeWhitelist},
-		{[]string{"remove", "white", "example.com"}, model.AccessModeWhitelist},
-		{[]string{"mode", "auto"}, ""},
-		{[]string{"add", "white", "example.com"}, model.AccessModeWhitelist},
-		{[]string{"clear", "white"}, model.AccessModeWhitelist},
-		{[]string{"mode", "auto"}, ""},
-		{[]string{"mode", "default"}, model.AccessModeDefault},
-		{[]string{"add", "white", "example.com"}, model.AccessModeDefault},
+		{[]string{"add", "black", "blocked.example.com"}, "", model.AccessModeDefault},
+		{[]string{"add", "white", "example.com"}, "", model.AccessModeWhitelist},
+		{[]string{"add", "white", "other.example.com", "--ports", "553"}, "", model.AccessModeWhitelist},
+		{[]string{"remove", "white", "example.com"}, "", model.AccessModeWhitelist},
+		{[]string{"remove", "white", "other.example.com", "--ports", "553"}, "", model.AccessModeDefault},
+		{[]string{"add", "white", "example.com"}, "", model.AccessModeWhitelist},
+		{[]string{"clear", "white"}, "", model.AccessModeDefault},
+		{[]string{"mode", "default"}, model.AccessModeDefault, model.AccessModeDefault},
+		{[]string{"add", "white", "example.com"}, model.AccessModeDefault, model.AccessModeDefault},
+		{[]string{"clear", "white"}, model.AccessModeDefault, model.AccessModeDefault},
+		{[]string{"add", "white", "example.com"}, model.AccessModeDefault, model.AccessModeDefault},
+		{[]string{"mode", "auto"}, "", model.AccessModeWhitelist},
+		{[]string{"remove", "white", "example.com"}, "", model.AccessModeDefault},
+		{[]string{"mode", "whitelist"}, model.AccessModeWhitelist, model.AccessModeWhitelist},
+		{[]string{"add", "white", "example.com"}, model.AccessModeWhitelist, model.AccessModeWhitelist},
+		{[]string{"clear", "white"}, model.AccessModeWhitelist, model.AccessModeWhitelist},
+		{[]string{"add", "white", "example.com"}, model.AccessModeWhitelist, model.AccessModeWhitelist},
+		{[]string{"remove", "white", "example.com"}, model.AccessModeWhitelist, model.AccessModeWhitelist},
+		{[]string{"mode", "auto"}, "", model.AccessModeDefault},
 	} {
 		if err := accessCLI(m, step.args...); err != nil {
 			t.Fatalf("%v: %v", step.args, err)
@@ -128,6 +133,9 @@ func TestAccessAutomaticModeWorkflow(t *testing.T) {
 		if state.Node.AccessPolicy.Mode != step.mode {
 			t.Fatalf("%v: mode=%q, want %q", step.args, state.Node.AccessPolicy.Mode, step.mode)
 		}
+		if got := state.Node.AccessPolicy.EffectiveMode(); got != step.effective {
+			t.Fatalf("%v: effective mode=%q, want %q", step.args, got, step.effective)
+		}
 		finalDeny := false
 		blacklist := false
 		for _, item := range configRoot(t, readFile(t, m.paths.Config()))["routing"].(map[string]any)["rules"].([]any) {
@@ -135,7 +143,7 @@ func TestAccessAutomaticModeWorkflow(t *testing.T) {
 			finalDeny = finalDeny || tag == "access-final"
 			blacklist = blacklist || strings.HasPrefix(tag, "black-")
 		}
-		wantDeny := step.mode == model.AccessModeWhitelist
+		wantDeny := step.effective == model.AccessModeWhitelist
 		if finalDeny != wantDeny || blacklist == wantDeny {
 			t.Fatalf("%v: final-deny=%t blacklist=%t, mode=%q", step.args, finalDeny, blacklist, step.mode)
 		}
@@ -150,10 +158,11 @@ func TestAccessModeMenuRecordsManualDefaultAndRestoresAuto(t *testing.T) {
 		hasWhite, cancel           bool
 	}{
 		{name: "manual-default-from-unset", answers: []string{"1\n", "y\n"}, want: model.AccessModeDefault, afterAdd: model.AccessModeDefault},
-		{name: "restore-unset", mode: model.AccessModeDefault, answers: []string{"3\n", "y\n"}, afterAdd: model.AccessModeWhitelist},
-		{name: "restore-with-whitelist", mode: model.AccessModeDefault, hasWhite: true, answers: []string{"3\n", "y\n"}, want: model.AccessModeWhitelist, afterAdd: model.AccessModeWhitelist},
-		{name: "restore-empty-deny", mode: model.AccessModeWhitelist, answers: []string{"3\n", "y\n"}, afterAdd: model.AccessModeWhitelist},
-		{name: "cancel-manual-choice", answers: []string{"1\n", "q\n"}, cancel: true, afterAdd: model.AccessModeWhitelist},
+		{name: "restore-unset", mode: model.AccessModeDefault, answers: []string{"3\n", "y\n"}},
+		{name: "restore-with-whitelist", mode: model.AccessModeDefault, hasWhite: true, answers: []string{"3\n", "y\n"}},
+		{name: "restore-empty-deny", mode: model.AccessModeWhitelist, answers: []string{"3\n", "y\n"}},
+		{name: "cancel-manual-choice", answers: []string{"1\n", "q\n"}, cancel: true},
+		{name: "auto-with-whitelist-is-current", hasWhite: true, answers: []string{"\n"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("TERM", "xterm")
@@ -181,6 +190,9 @@ func TestAccessModeMenuRecordsManualDefaultAndRestoresAuto(t *testing.T) {
 			if !strings.Contains(out.String(), "恢复自动选择") {
 				t.Fatal("mode menu did not expose auto restoration")
 			}
+			if tc.hasWhite && tc.mode == "" && (!strings.Contains(out.String(), "仅允许白名单访问（自动选择）") || !strings.Contains(out.String(), "-- 当前")) {
+				t.Fatalf("auto mode was not marked current with a whitelist: %s", out.String())
+			}
 			if err := accessCLI(m, "add", "white", "new.example.com"); err != nil {
 				t.Fatal(err)
 			}
@@ -192,6 +204,70 @@ func TestAccessModeMenuRecordsManualDefaultAndRestoresAuto(t *testing.T) {
 				t.Fatalf("manual intent was lost after adding a rule: %+v", state.Node.AccessPolicy)
 			}
 		})
+	}
+}
+
+func TestAccessMenuEmptyWhitelistRespectsModeSelection(t *testing.T) {
+	for _, mode := range []string{"", model.AccessModeDefault, model.AccessModeWhitelist} {
+		for _, hasBlack := range []bool{false, true} {
+			for _, action := range []string{"clear", "remove"} {
+				name := mode + "/" + action + map[bool]string{false: "/no-black", true: "/with-black"}[hasBlack]
+				t.Run(name, func(t *testing.T) {
+					t.Setenv("TERM", "xterm")
+					ctx := context.Background()
+					m, _ := deployed(t)
+					policy := model.AccessPolicy{Mode: mode, Whitelist: []model.AccessEntry{accessEntry(t, "example.com")}}
+					if hasBlack {
+						policy.Blacklist = []model.AccessEntry{accessEntry(t, "blocked.example.com")}
+					}
+					if err := m.SetPolicy(ctx, policy); err != nil {
+						t.Fatal(err)
+					}
+					var out dockerTerminalOutput
+					answers := []string{"3\n", "y\n", "0\n"}
+					if action == "remove" {
+						answers = []string{"1\n", "0\n"}
+					}
+					in := &dockerTerminalInput{answers: answers, output: &out}
+					u := newUI(in, &out)
+					var err error
+					if action == "clear" {
+						err = m.accessListMenu(ctx, u, "white")
+					} else {
+						err = m.removeAccessEntry(ctx, u, "white", 0)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					state, err := m.LoadState()
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := state.Node.AccessPolicy
+					if got.Mode != mode || got.Disabled || len(got.Whitelist) != 0 || !reflect.DeepEqual(got.Blacklist, policy.Blacklist) {
+						t.Fatalf("list operation changed mode, switch, or blacklist: %+v", got)
+					}
+					finalDeny, blackRules := false, false
+					for _, item := range configRoot(t, readFile(t, m.paths.Config()))["routing"].(map[string]any)["rules"].([]any) {
+						rule := item.(map[string]any)
+						tag, _ := rule["ruleTag"].(string)
+						finalDeny = finalDeny || tag == "access-final"
+						blackRules = blackRules || strings.HasPrefix(tag, "black-")
+						if rule["outboundTag"] == "access-direct" {
+							t.Fatalf("empty whitelist retained a whitelist rule: %+v", rule)
+						}
+					}
+					wantDeny := mode == model.AccessModeWhitelist
+					if finalDeny != wantDeny || blackRules != (hasBlack && !wantDeny) {
+						t.Fatalf("incorrect compiled policy: final-deny=%t black-rules=%t", finalDeny, blackRules)
+					}
+					m.printAccessCard(u, got)
+					if mode == "" && !strings.Contains(out.String(), "默认模式（自动选择）") {
+						t.Fatalf("empty automatic policy was mislabeled: %s", out.String())
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -210,7 +286,7 @@ func TestFirstWhitelistMenuSelectsModeWithoutEnablingControl(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state.Node.AccessPolicy.Mode != model.AccessModeWhitelist || state.Node.AccessPolicy.Disabled != disabled {
+		if state.Node.AccessPolicy.Mode != "" || state.Node.AccessPolicy.EffectiveMode() != model.AccessModeWhitelist || state.Node.AccessPolicy.Disabled != disabled {
 			t.Fatalf("automatic mode changed the control switch: %+v", state.Node.AccessPolicy)
 		}
 	}

@@ -81,6 +81,7 @@ func TestPortsGroupOnlyCompatibleDestinationsAndKeepRelayScope(t *testing.T) {
 		LandingAccesses: []model.LandingAccess{{Name: "office", Security: "tls", Port: 9443, Enabled: true}},
 		RelayLinks:      []model.RelayLink{{Name: "relay", UserName: "relay-user", Enabled: true}},
 		AccessPolicy: model.AccessPolicy{
+			Mode: model.AccessModeDefault,
 			Whitelist: []model.AccessEntry{
 				{Type: "domain", Value: "a.example.com", IncludeSubdomains: true, Ports: "443"},
 				{Type: "domain", Value: "b.example.com", Ports: "443"},
@@ -249,7 +250,7 @@ func TestMergedPortsPreserveEachDestinationsScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := append([]model.AccessEntry(nil), tc.entries...)
-			n := model.Node{InboundTag: "main", AccessPolicy: model.AccessPolicy{Whitelist: tc.entries, Blacklist: tc.entries}}
+			n := model.Node{InboundTag: "main", AccessPolicy: model.AccessPolicy{Mode: model.AccessModeDefault, Whitelist: tc.entries, Blacklist: tc.entries}}
 			root := testRoot()
 			if err := Apply(root, n); err != nil {
 				t.Fatal(err)
