@@ -5,14 +5,14 @@
 ```text
 cmd/proxydock/       程序入口
 internal/cli/        独立根命令、版本和终端接入
-internal/selfupdate/ 程序更新与卸载，执行内置安装脚本
+internal/selfupdate/ 程序更新与卸载，下载、校验并执行在线管理脚本
 internal/docker/     配置、菜单、Compose、镜像、状态、事务和清理
 internal/docker/model/   节点、策略及线路模型
 internal/docker/xray/    Xray JSON 渲染和修改
 internal/docker/export/  Mihomo YAML 导出
 internal/terminal/   自有终端颜色输出
 internal/version/    构建元数据
-scripts/             构建及程序安装脚本，Go embed 入口
+scripts/             构建及程序安装脚本
 ```
 
 Go 模块为 `proxydock`，依赖标准库和 Cobra。Docker 子包的依赖边界由测试检查。
@@ -42,7 +42,7 @@ make cross
 
 `make check` 执行 Go race 测试、`go vet`、Shell 语法和安装流程检查。测试使用模拟 Docker、模拟下载和临时目录，不操作系统安装或真实容器。
 
-`scripts/embed.go` 嵌入 `install.sh`，`internal/selfupdate` 负责暂存和执行它。安装脚本处理版本发现、校验和原子替换；程序更新和卸载命令由 CLI 层管理。
+`internal/selfupdate` 每次从本仓库 main 分支下载 `scripts/install.sh`，检查 HTTPS、主机白名单、重定向次数、下载超时、大小上限、文本格式和 Bash 语法，再暂存并执行同一份脚本。准备阶段显示来源、重定向后地址、大小和 SHA-256；脚本输出直接连接终端，保留颜色和下载进度。指定版本仅通过子进程环境传递，取消操作会终止脚本进程组并清理临时文件。安装脚本处理版本发现、发布文件校验和原子替换；程序更新和卸载命令由 CLI 层管理。
 
 ## 真实运行验收
 

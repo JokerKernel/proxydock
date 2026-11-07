@@ -44,7 +44,9 @@ sudo proxydock update
 sudo proxydock update --version VERSION
 ```
 
-`update` 使用随当前程序内置的安装脚本；不在运行时下载并执行 main 分支的新脚本。更新流程成功后，重新运行 `proxydock` 使用新程序。
+`update` 每次从 `https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh` 下载最新管理脚本，再执行安装或更新。`--version` 只指定目标程序的 Release 版本，管理脚本仍使用 main 分支最新版。更新流程成功后，重新运行 `proxydock` 使用新程序。
+
+程序使用 HTTPS 和 GitHub 主机白名单限制脚本来源及重定向，下载超时为 45 秒，脚本大小上限为 2 MiB。执行前检查文本格式和 `bash -n` 语法，显示脚本来源、重定向后地址、大小及 SHA-256；该 SHA-256 用于标识本次下载内容，不与预先固定的脚本哈希比对。通过检查后将同一份脚本写入私有临时文件执行，完成或失败后删除临时文件。下载或校验失败会直接报错，不执行管理脚本。
 
 安装目标固定为 `/usr/local/sbin/proxydock`。`update` 更新管理程序，`upgrade` 升级 Xray 镜像。程序更新和卸载均保留容器、镜像和实例数据。
 
@@ -64,6 +66,8 @@ sudo bash /tmp/proxydock-install.sh uninstall
 ```
 
 卸载不需要确认，只删除 `/usr/local/sbin/proxydock`；已卸载时再次执行会直接返回。
+
+`proxydock uninstall` 与 `update` 一样，先联网下载并校验最新管理脚本，再传入 `uninstall` 执行。无法联网时，可使用已经下载并审阅过的本地脚本卸载。
 
 若需要移除 Docker 实例及数据，先使用 `proxydock remove --yes`，再按需执行 `proxydock cleanup --yes`，最后卸载程序。
 

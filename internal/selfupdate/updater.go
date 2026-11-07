@@ -1,17 +1,18 @@
-// Package selfupdate runs ProxyDock's embedded program installer.
+// Package selfupdate downloads and runs ProxyDock's current management script.
 package selfupdate
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
 	"proxydock/internal/terminal"
-	"proxydock/scripts"
 )
 
 type Options struct {
@@ -25,6 +26,9 @@ type Runner interface {
 }
 
 type Updater struct {
+	Client         *http.Client
+	ScriptURL      string
+	AllowedHosts   []string
 	Runner         Runner
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
@@ -37,35 +41,60 @@ func (u Updater) Run(ctx context.Context, opts Options) error {
 	if opts.Uninstall && opts.Version != "" {
 		return fmt.Errorf("版本选项仅用于更新程序")
 	}
-	if opts.Version != "" {
-		previous, existed := os.LookupEnv("PROXYDOCK_VERSION")
-		if err := os.Setenv("PROXYDOCK_VERSION", opts.Version); err != nil {
-			return fmt.Errorf("准备安装脚本: %w", err)
-		}
-		defer func() {
-			if existed {
-				_ = os.Setenv("PROXYDOCK_VERSION", previous)
-				return
-			}
-			_ = os.Unsetenv("PROXYDOCK_VERSION")
-		}()
+	stdout, stderr := u.Stdout, u.Stderr
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = stdout
+	}
+	operation := "安装/更新"
+	if opts.Uninstall {
+		operation = "卸载"
+	}
+	scriptURL := u.ScriptURL
+	if scriptURL == "" {
+		scriptURL = defaultScriptURL
+	}
+	detail := func(name, text string) {
+		// Match ProxyForge's 22-column management preparation output.
+		padding := strings.Repeat(" ", max(0, 22-terminal.DisplayWidth(name)))
+		fmt.Fprintf(stderr, "%s%s │ %s\n", name, padding, text)
+	}
+	detail("准备程序管理脚本", "下载并验证 ProxyDock "+operation+"脚本")
+	detail("脚本来源", scriptURL)
+	script, err := u.downloadScript(ctx, scriptURL)
+	if err != nil {
+		return fmt.Errorf("准备 ProxyDock %s脚本: %w", operation, err)
 	}
 	file, err := os.CreateTemp("", "proxydock-management-*.sh")
 	if err != nil {
 		return fmt.Errorf("准备安装脚本: %w", err)
 	}
 	defer os.Remove(file.Name())
-	_, err = io.WriteString(file, scripts.Installer)
+	if err = file.Chmod(0700); err == nil {
+		_, err = file.Write(script.content)
+	}
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return fmt.Errorf("写入安装脚本: %w", err)
 	}
+	detail("校验脚本语法", "bash -n "+file.Name())
+	if output, err := exec.CommandContext(ctx, "bash", "-n", file.Name()).CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("安装脚本 bash -n 校验失败: %s: %w", output, err)
+	}
+	detail("脚本校验结果", "bash -n，校验通过")
+	detail("重定向后地址", script.finalURL)
+	detail("脚本大小", fmt.Sprintf("%d bytes", len(script.content)))
+	detail("脚本 SHA-256", script.sha256)
+	detail("启动程序管理", "ProxyDock "+operation+"流程")
 	args := []string{file.Name()}
-	action := "update"
 	if opts.Uninstall {
-		action = "uninstall"
 		args = append(args, "uninstall")
 	}
 	if opts.AssumeYes {
@@ -75,18 +104,18 @@ func (u Updater) Run(ctx context.Context, opts Options) error {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
-	stdout, stderr := u.Stdout, u.Stderr
-	if stdout == nil {
-		stdout = io.Discard
-	}
-	if stderr == nil {
-		stderr = stdout
-	}
 	// The installer renders its own colors and checks terminal descriptors for
 	// download progress. Pass through the actual output instead of color pipes.
 	stdout, stderr = terminal.RawWriter(stdout), terminal.RawWriter(stderr)
-	if err := runner.Run(ctx, u.Stdin, stdout, stderr, "bash", args...); err != nil {
-		return fmt.Errorf("执行 ProxyDock 程序 %s 失败: %w", action, err)
+	command := "bash"
+	if opts.Version != "" {
+		// Override only the child environment; concurrent updates must not mutate
+		// the parent process's PROXYDOCK_VERSION.
+		command = "env"
+		args = append([]string{"PROXYDOCK_VERSION=" + opts.Version, "bash"}, args...)
+	}
+	if err := runner.Run(ctx, u.Stdin, stdout, stderr, command, args...); err != nil {
+		return fmt.Errorf("执行 ProxyDock %s脚本: %w", operation, err)
 	}
 	return nil
 }

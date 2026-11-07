@@ -64,7 +64,7 @@ sudo proxydock remove --yes
 sudo proxydock cleanup --yes
 ```
 
-`update` 更新 ProxyDock 程序，`upgrade` 升级 Xray 镜像。程序更新和卸载通过命令行执行。程序更新使用随二进制内置的安装脚本，安装和校验行为与一键安装一致。脚本也支持 `sudo bash scripts/install.sh` 和 `sudo bash scripts/install.sh uninstall`。
+`update` 更新 ProxyDock 程序，`upgrade` 升级 Xray 镜像。程序更新和卸载通过命令行执行，每次从本仓库 GitHub main 分支下载最新 `scripts/install.sh`，检查来源、格式和 Bash 语法后执行，并显示脚本来源和 SHA-256。两条命令均需联网；也可直接运行本地脚本 `sudo bash scripts/install.sh` 或 `sudo bash scripts/install.sh uninstall`，其中本地卸载不访问网络。
 
 ## 文档
 
