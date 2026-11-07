@@ -139,11 +139,15 @@ print_completion() {
   elif [[ "${installation_action}" == "replace" ]]; then
     action_label="重新安装完成"
   fi
+  local run_command=${install_path}
+  if [[ ${EUID} -ne 0 ]]; then
+    run_command="sudo ${install_path}"
+  fi
   printf '\n'
   card_open
-  card_line "${action_label}" "${color_bold_green}"
-  card_line "版本：${resolved_version}" "${color_blue}"
-  card_line "位置：${install_path}" "${color_blue}"
+  card_line "$(paint "${color_bold_green}" "${action_label}") · $(paint "${color_blue}" "${resolved_version}")" ""
+  card_line "位置  ${install_path}" "${color_blue}"
+  card_line "启动  ${run_command}" ""
   card_close
 }
 

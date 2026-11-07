@@ -143,7 +143,7 @@ test_successful_upgrade_has_clear_progress_and_completion() (
   [[ $(stat -c '%a' "${install_path}") == 755 ]] || fail "installed program permissions are not 0755"
   [[ "${output}" == *'│ 发布信息'*'│ 当前版本：v1.2.2'*'│ 目标版本：v1.2.3'*'│ 执行操作：更新'* ]] || fail "release card is incomplete: ${output}"
   [[ "${output}" == *'[步骤] 下载发布文件'*'发布文件下载完成'*'[步骤] 校验发布文件'*'SHA-256 校验通过'*'[步骤] 安装程序'*'│ 更新完成'* ]] || fail "progress stages are out of order: ${output}"
-  [[ "${output}" == *'│ 版本：v1.2.3'*'│ 位置：'*"${install_path}"* ]] || fail "completion card is incomplete: ${output}"
+  [[ "${output}" == *'│ 更新完成 · v1.2.3'*'│ 位置  '*"${install_path}"*'│ 启动  '*"${install_path}"* ]] || fail "completion card is incomplete: ${output}"
   [[ "${output}" != *'运行命令：'* && "${output}" != *'/4）'* && "${output}" != *'版本更新范围'* ]] || fail "extra installer decorations: ${output}"
   [[ "${output}" == *'│ 发布文件下载完成'*'│ SHA-256 校验通过'* ]] || fail "progress result cards missing: ${output}"
   [[ "${output}" != *'commit: example'* && "${output}" != *'build date: example'* ]] || fail "raw build details leaked into the installer interface"
