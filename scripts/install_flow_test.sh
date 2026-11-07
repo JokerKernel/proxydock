@@ -143,9 +143,9 @@ test_successful_upgrade_has_clear_progress_and_completion() (
   [[ $(stat -c '%a' "${install_path}") == 755 ]] || fail "installed program permissions are not 0755"
   [[ "${output}" == *'│ 发布信息'*'│ 当前版本：v1.2.2'*'│ 目标版本：v1.2.3'*'│ 执行操作：更新'* ]] || fail "release card is incomplete: ${output}"
   [[ "${output}" == *'[步骤] 下载发布文件'*'发布文件下载完成'*'[步骤] 校验发布文件'*'SHA-256 校验通过'*'[步骤] 安装程序'*'│ 更新完成'* ]] || fail "progress stages are out of order: ${output}"
-  [[ "${output}" == *'│ 程序版本：v1.2.3'*'│ 安装位置：'*'│ 运行命令：'*"${install_path}"* ]] || fail "completion card is incomplete: ${output}"
-  [[ "${output}" == *'（1/4）'*'（2/4）'*'（3/4）'*'（4/4）'* ]] || fail "numbered stages missing: ${output}"
-  [[ "${output}" == *'[完成] 发布文件下载完成'*'[完成] SHA-256 校验通过'* ]] || fail "compact progress results missing: ${output}"
+  [[ "${output}" == *'│ 版本：v1.2.3'*'│ 位置：'*"${install_path}"* ]] || fail "completion card is incomplete: ${output}"
+  [[ "${output}" != *'运行命令：'* && "${output}" != *'/4）'* && "${output}" != *'版本更新范围'* ]] || fail "extra installer decorations: ${output}"
+  [[ "${output}" == *'│ 发布文件下载完成'*'│ SHA-256 校验通过'* ]] || fail "progress result cards missing: ${output}"
   [[ "${output}" != *'commit: example'* && "${output}" != *'build date: example'* ]] || fail "raw build details leaked into the installer interface"
   if compgen -G "${install_dir}/.proxydock.new.*" > /dev/null; then fail "staged program was not cleaned"; fi
 )
@@ -166,7 +166,7 @@ test_download_failure_preserves_existing_program() (
     local output
     if output=$(run_installer 2>&1); then fail "${failure} download failure was ignored"; fi
     [[ $(cat "${install_path}") == 'original program' ]] || fail "download failure changed the original program"
-    [[ "${output}" == *'操作失败'*'原程序未更改'* && "${output}" != *'│ 安装完成'* ]] || fail "download error is unclear: ${output}"
+    [[ "${output}" == *'[错误]'*'原程序未更改'* && "${output}" != *'│ 安装完成'* ]] || fail "download error is unclear: ${output}"
   ); done
 )
 
@@ -221,7 +221,7 @@ test_invalid_candidate_preserves_existing_program() (
     local output
     if output=$(run_installer 2>&1); then fail "${failure} failure was ignored"; fi
     cmp -s "${install_path}" "${fixture_root}/original" || fail "${failure} failure changed the existing program"
-    [[ "${output}" == *'操作失败'* && "${output}" != *'│ 更新完成'* ]] || fail "${failure} failure displayed a success card: ${output}"
+    [[ "${output}" == *'[错误]'* && "${output}" != *'│ 更新完成'* ]] || fail "${failure} failure displayed a success card: ${output}"
     if compgen -G "${install_dir}/.proxydock.new.*" > /dev/null; then fail "${failure} left a staged program behind"; fi
   ); done
 )

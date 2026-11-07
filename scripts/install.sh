@@ -68,23 +68,11 @@ info() {
 
 step() {
   printf '\n'
-  local text=$1
-  if [[ -n "${2:-}" ]]; then
-    text+="：$2"
-  fi
-  detail "步骤" "${text}" "${color_bold_orange}"
+  detail "步骤" "$1" "${color_bold_orange}"
 }
 
 result() {
-  printf '\n'
-  card_open
-  card_line "$1"
-  card_line "$2" "${3-${color_bold_green}}"
-  card_close
-}
-
-success() {
-  detail "完成" "$1" "${color_bold_green}"
+  print_card "$2" "${color_bold_green}"
 }
 
 warn() {
@@ -92,7 +80,7 @@ warn() {
 }
 
 die() {
-  detail "操作失败" "$*" "${color_bold_red}" >&2
+  detail "错误" "$*" "${color_bold_red}" >&2
   exit 1
 }
 
@@ -107,6 +95,13 @@ card_line() {
 
 card_close() {
   printf '%s\n' "$(paint "${color_bold_orange}" '╰──────────────────────────────────────────────')"
+}
+
+print_card() {
+  printf '\n'
+  card_open
+  card_line "$1" "${2:-${color_orange}}"
+  card_close
 }
 
 print_header() {
@@ -131,8 +126,8 @@ print_release_summary() {
   card_open
   card_line "发布信息"
   card_line "平台：Linux/$1" ""
-  card_line "当前版本：${current_display}" "${color_blue}"
-  card_line "目标版本：${resolved_version}" "${color_blue}"
+  card_line "当前版本：${current_display}"
+  card_line "目标版本：${resolved_version}"
   card_line "执行操作：${action_display}" ""
   card_close
 }
@@ -147,13 +142,8 @@ print_completion() {
   printf '\n'
   card_open
   card_line "${action_label}" "${color_bold_green}"
-  card_line "程序版本：${resolved_version}" "${color_blue}"
-  card_line "安装位置：${install_path}" "${color_blue}"
-  if [[ ${EUID} -eq 0 ]]; then
-    card_line "运行命令：${install_path}" ""
-  else
-    card_line "运行命令：sudo ${install_path}" ""
-  fi
+  card_line "版本：${resolved_version}" "${color_blue}"
+  card_line "位置：${install_path}" "${color_blue}"
   card_close
 }
 
@@ -199,14 +189,14 @@ remove_proxydock_binary() {
 
 uninstall_proxydock() {
   print_header "自身卸载"
-  step "检查安装状态" "ProxyDock"
+  step "检查安装状态"
   if ! proxydock_binary_exists; then
     result "卸载结果" "ProxyDock 当前未安装，无需卸载。"
     return
   fi
 
   info "卸载位置" "${install_path}"
-  step "删除程序文件" "ProxyDock 二进制"
+  step "删除程序文件"
   remove_proxydock_binary
   if proxydock_binary_exists; then
     die "卸载后仍检测到文件：${install_path}"
@@ -579,7 +569,7 @@ main() {
   trap 'warn "操作已取消" "安装流程已终止"; exit 143' TERM
 
   print_header
-  step "检查发布版本（1/4）" "GitHub Release"
+  step "检查发布版本"
   if [[ "${requested_version}" == "latest" ]]; then
     if resolve_latest_version "${release_base}"; then
       release_base="https://github.com/${repository}/releases/download/${resolved_version}"
@@ -601,18 +591,15 @@ main() {
       return
     fi
     if [[ "${installation_action}" == "newer" ]]; then
-      result "更新结果" "当前版本高于目标版本，已跳过以避免降级。" "${color_bold_yellow}"
+      result "更新结果" "当前版本高于目标版本，已跳过以避免降级。"
       return
     fi
-    if [[ "${installation_action}" == "upgrade" ]]; then
-      info "版本更新范围" "${current_version} → ${resolved_version}"
-    elif [[ "${installation_action}" == "replace" ]]; then
+    if [[ "${installation_action}" == "replace" ]]; then
       warn "版本识别警告" "无法识别当前版本 ${current_version}，将重新安装 ${resolved_version}"
     fi
   fi
 
-  step "下载发布文件（2/4）"
-  info "读取发布清单" "Linux/${architecture}"
+  step "下载发布文件"
   download "${release_base}/SHA256SUMS" "${temporary_dir}/SHA256SUMS" || \
     die "下载校验清单 SHA256SUMS 失败，请检查网络、代理或发布文件是否完整；原程序未更改"
   select_asset "${temporary_dir}/SHA256SUMS" "${architecture}"
@@ -623,18 +610,18 @@ main() {
       die "version 与校验清单中的二进制文件名不一致"
   fi
 
-  info "下载发布文件" "${selected_asset}"
+  info "正在下载" "${selected_asset}"
   download "${release_base}/${selected_asset}" "${temporary_dir}/${selected_asset}" true 300 || \
     die "下载发布文件 ${selected_asset} 失败，请检查网络或代理；原程序未更改"
-  success "发布文件下载完成"
+  print_card "发布文件下载完成" "${color_bold_green}"
 
-  step "校验发布文件（3/4）" "SHA-256"
+  step "校验发布文件"
   printf '%s  %s\n' "${selected_checksum}" "${selected_asset}" |
     (cd "${temporary_dir}" && sha256sum --check --status -) || die "SHA-256 校验失败"
-  success "SHA-256 校验通过"
+  result "文件校验结果" "SHA-256 校验通过"
 
-  step "安装程序（4/4）" "校验候选程序后原子替换"
-  info "安装位置" "${install_path}"
+  step "安装程序"
+  info "正在写入" "${install_path}"
   [[ ! -d "${install_path}" ]] || die "安装目标是目录，拒绝覆盖：${install_path}"
   if [[ ! -d "${install_dir}" ]]; then
     install -d -m 0755 "${install_dir}" || die "无法创建安装目录：${install_dir}"
@@ -648,7 +635,6 @@ main() {
   candidate_version=${candidate_output%%$'\n'*}
   [[ "${candidate_version}" == "proxydock ${resolved_version}" ]] || \
     die "候选程序版本与发布版本不一致，原程序已保留"
-  info "程序校验结果" "版本与运行检查通过"
   mv -fT -- "${staged_path}" "${install_path}" || die "原子替换程序失败"
   staged_path=""
 

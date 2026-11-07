@@ -28,7 +28,7 @@ test_automatic_mode_skips_when_already_current() (
   [[ "${output}" == *"当前版本"* && "${output}" == *"v1.2.3"* ]] || fail "missing current version summary"
   [[ "${output}" == *"目标版本"* && "${output}" == *"v1.2.3"* ]] || fail "missing target version summary"
   [[ "${output}" == *"当前已是最新正式版本，无需更新。"* ]] || fail "missing up-to-date result"
-  [[ "${output}" == *"更新结果"* ]] || fail "missing update result label"
+  [[ "${output}" != *"│ 更新结果"* ]] || fail "result card contains an extra heading"
   [[ "${output}" != *$'\033['* ]] || fail "redirected output contains ANSI controls"
   [[ "${output}" != *"SHA256SUMS"* ]] || fail "downloaded release files for current version"
 )
@@ -57,7 +57,7 @@ test_no_color_is_respected() (
 
   local output
   output=$(result "纯文本结果" "详情")
-  [[ "${output}" != *$'\033['* && "${output}" == *"纯文本结果"* && "${output}" == *"│ 详情"* ]] || fail "NO_COLOR output was decorated: ${output}"
+  [[ "${output}" != *$'\033['* && "${output}" != *"纯文本结果"* && "${output}" == *"│ 详情"* ]] || fail "NO_COLOR result card differs: ${output}"
 )
 
 test_version_comparison_and_classification() (
