@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"proxydock/internal/terminal"
 	"proxydock/scripts"
 )
 
@@ -81,6 +82,9 @@ func (u Updater) Run(ctx context.Context, opts Options) error {
 	if stderr == nil {
 		stderr = stdout
 	}
+	// The installer renders its own colors and checks terminal descriptors for
+	// download progress. Pass through the actual output instead of color pipes.
+	stdout, stderr = terminal.RawWriter(stdout), terminal.RawWriter(stderr)
 	if err := runner.Run(ctx, u.Stdin, stdout, stderr, "bash", args...); err != nil {
 		return fmt.Errorf("执行 ProxyDock 程序 %s 失败: %w", action, err)
 	}

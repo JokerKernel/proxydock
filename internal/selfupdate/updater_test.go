@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"proxydock/internal/terminal"
 	"proxydock/scripts"
 )
 
@@ -18,12 +19,14 @@ type runnerStub struct {
 	command, path, body, version string
 	args                         []string
 	input                        io.Reader
+	stdout, stderr               io.Writer
 	err                          error
 }
 
-func (r *runnerStub) Run(_ context.Context, input io.Reader, stdout, _ io.Writer, command string, args ...string) error {
+func (r *runnerStub) Run(_ context.Context, input io.Reader, stdout, stderr io.Writer, command string, args ...string) error {
 	r.command, r.path, r.args, r.input = command, args[0], append([]string(nil), args...), input
 	r.version = os.Getenv("PROXYDOCK_VERSION")
+	r.stdout, r.stderr = stdout, stderr
 	content, err := os.ReadFile(r.path)
 	if err != nil {
 		return err
@@ -38,6 +41,22 @@ func (r *runnerStub) Run(_ context.Context, input io.Reader, stdout, _ io.Writer
 	r.body = string(content)
 	_, _ = io.WriteString(stdout, "installer output\n")
 	return r.err
+}
+
+func TestInstallerReceivesOriginalOutputWriters(t *testing.T) {
+	runner := &runnerStub{}
+	var stdout, stderr bytes.Buffer
+	u := Updater{
+		Runner: runner,
+		Stdout: terminal.NewColorWriter(&stdout, true),
+		Stderr: terminal.NewColorWriter(&stderr, true),
+	}
+	if err := u.Run(context.Background(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.stdout != &stdout || runner.stderr != &stderr {
+		t.Fatal("installer output is still wrapped, preventing terminal detection")
+	}
 }
 
 func TestRunEmbeddedInstallerWithSeparateArgumentsAndAttachedOutput(t *testing.T) {

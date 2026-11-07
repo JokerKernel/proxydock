@@ -70,14 +70,42 @@ test_version_comparison_and_classification() (
   compare_versions v2.0.0 v1.9.9
   [[ ${version_order} -eq 1 ]] || fail "newer major version was not higher"
   compare_versions v1.0.0-beta.2 v1.0.0-beta.11
-  [[ ${version_order} -eq 1 ]] || fail "prerelease labels were not compared as text"
+  [[ ${version_order} -eq -1 ]] || fail "numeric prerelease identifiers were compared as text"
   compare_versions v1.0.0+build.1 v1.0.0+build.2
   [[ ${version_order} -eq 0 ]] || fail "build metadata changed version order"
+
+  local ordered=(v1.0.0-alpha v1.0.0-alpha.1 v1.0.0-alpha.beta v1.0.0-beta v1.0.0-beta.2 v1.0.0-beta.11 v1.0.0-rc.1 v1.0.0)
+  local index
+  for ((index = 1; index < ${#ordered[@]}; index++)); do
+    compare_versions "${ordered[index - 1]}" "${ordered[index]}"
+    [[ ${version_order} -eq -1 ]] || fail "incorrect prerelease order: ${ordered[index - 1]} ${ordered[index]}"
+    compare_versions "${ordered[index]}" "${ordered[index - 1]}"
+    [[ ${version_order} -eq 1 ]] || fail "incorrect reversed prerelease order"
+  done
+  compare_versions v1.0.0-rc.1+build.7 v1.0.0-rc.1+build.8
+  [[ ${version_order} -eq 0 ]] || fail "prerelease build metadata changed version order"
+  compare_versions v99999999999999999999.0.0 v2.0.0
+  [[ ${version_order} -eq 1 ]] || fail "large version number overflowed"
+  compare_versions v1.0.0-99999999999999999999 v1.0.0-100000000000000000000
+  [[ ${version_order} -eq -1 ]] || fail "large prerelease number overflowed"
+  local invalid
+  for invalid in v01.0.0 v1.0.0-01 v1.0.0-rc..1 v1.0.0+ v1.0.0-; do
+    if compare_versions "${invalid}" v1.0.0; then fail "invalid version accepted: ${invalid}"; fi
+  done
 
   detect_current_version() { current_version=v1.2.2; current_installed=true; }
   resolved_version=v1.2.3
   classify_installation
   [[ "${installation_action}" == "upgrade" ]] || fail "older installation was not classified as upgrade"
+)
+
+test_help_is_offline_and_unprivileged() (
+  source "${script_dir}/install.sh"
+  require_root() { fail "help required root"; }
+  download() { fail "help accessed the network"; }
+  local output
+  output=$(main --help)
+  [[ "${output}" == *'PROXYDOCK_VERSION'* && "${output}" == *'uninstall'* ]] || fail "help is incomplete"
 )
 
 test_arguments() (
@@ -206,6 +234,7 @@ test_color_controls
 test_no_color_is_respected
 test_version_comparison_and_classification
 test_arguments
+test_help_is_offline_and_unprivileged
 test_uninstall_removes_only_proxydock_binary
 test_uninstall_is_idempotent
 test_api_failure_retries_without_proxy

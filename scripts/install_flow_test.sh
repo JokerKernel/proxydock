@@ -15,7 +15,9 @@ fixture() {
   mkdir -p "${install_dir}"
   require_root() { return; }
   uname() { if [[ "$1" == -m ]]; then printf 'x86_64\n'; else printf 'Linux\n'; fi; }
-  detect_current_version() { current_version=${fake_version:-unknown}; current_installed=${fake_installed:-false}; }
+  if [[ "${1:-mock}" != real ]]; then
+    detect_current_version() { current_version=${fake_version:-unknown}; current_installed=${fake_installed:-false}; }
+  fi
   printf '#!/usr/bin/env bash\nprintf "proxydock v1.2.3\\n"\n# release\n' > "${fixture_root}/release"
   release_checksum=$(sha256sum "${fixture_root}/release")
   release_checksum=${release_checksum%% *}
@@ -141,9 +143,63 @@ test_successful_upgrade_has_clear_progress_and_completion() (
   [[ $(stat -c '%a' "${install_path}") == 755 ]] || fail "installed program permissions are not 0755"
   [[ "${output}" == *'│ 发布信息'*'│ 当前版本：v1.2.2'*'│ 目标版本：v1.2.3'*'│ 执行操作：更新'* ]] || fail "release card is incomplete: ${output}"
   [[ "${output}" == *'[步骤] 下载发布文件'*'发布文件下载完成'*'[步骤] 校验发布文件'*'SHA-256 校验通过'*'[步骤] 安装程序'*'│ 更新完成'* ]] || fail "progress stages are out of order: ${output}"
-  [[ "${output}" == *'│ 程序版本：v1.2.3'*'│ 安装位置：'*'│ 运行命令：sudo '* ]] || fail "completion card is incomplete: ${output}"
+  [[ "${output}" == *'│ 程序版本：v1.2.3'*'│ 安装位置：'*'│ 运行命令：'*"${install_path}"* ]] || fail "completion card is incomplete: ${output}"
+  [[ "${output}" == *'（1/4）'*'（2/4）'*'（3/4）'*'（4/4）'* ]] || fail "numbered stages missing: ${output}"
+  [[ "${output}" == *'[完成] 发布文件下载完成'*'[完成] SHA-256 校验通过'* ]] || fail "compact progress results missing: ${output}"
   [[ "${output}" != *'commit: example'* && "${output}" != *'build date: example'* ]] || fail "raw build details leaked into the installer interface"
   if compgen -G "${install_dir}/.proxydock.new.*" > /dev/null; then fail "staged program was not cleaned"; fi
+)
+
+test_download_failure_preserves_existing_program() (
+  for failure in manifest binary; do (
+    fixture
+    PROXYDOCK_VERSION=v1.2.3
+    printf 'original program\n' > "${install_path}"
+    download() {
+      if [[ "$1" == */SHA256SUMS && "${failure}" == binary ]]; then
+        printf '%s' "${manifest_body}" > "$2"
+        return
+      fi
+      printf 'partial download\n' > "$2"
+      return 1
+    }
+    local output
+    if output=$(run_installer 2>&1); then fail "${failure} download failure was ignored"; fi
+    [[ $(cat "${install_path}") == 'original program' ]] || fail "download failure changed the original program"
+    [[ "${output}" == *'操作失败'*'原程序未更改'* && "${output}" != *'│ 安装完成'* ]] || fail "download error is unclear: ${output}"
+  ); done
+)
+
+test_broken_installation_is_replaced() (
+  for failure in permissions runtime prefix; do (
+    fixture real
+    case "${failure}" in
+      permissions) printf 'broken\n' > "${install_path}" ;;
+      runtime) printf '#!/usr/bin/env bash\nprintf "proxydock v1.2.3\\n"\nexit 1\n' > "${install_path}"; chmod +x "${install_path}" ;;
+      prefix) printf '#!/usr/bin/env bash\nprintf "v1.2.3\\n"\n' > "${install_path}"; chmod +x "${install_path}" ;;
+    esac
+    local output
+    output=$(run_installer)
+    [[ "${output}" == *'执行操作：重新安装'*'重新安装完成'* ]] || fail "broken installation was skipped: ${output}"
+    cmp -s "${install_path}" "${fixture_root}/release" || fail "broken program was not repaired"
+  ); done
+)
+
+test_prerelease_numeric_upgrade_is_not_skipped() (
+  fixture
+  fake_version=v1.2.3-beta.2
+  fake_installed=true
+  PROXYDOCK_VERSION=v1.2.3-beta.11+build.7
+  asset_name="proxydock_linux_amd64_${PROXYDOCK_VERSION}"
+  printf '#!/usr/bin/env bash\nprintf "proxydock %s\\n"\n' "${PROXYDOCK_VERSION}" > "${fixture_root}/release"
+  release_checksum=$(sha256sum "${fixture_root}/release")
+  release_checksum=${release_checksum%% *}
+  # A valid checksum manifest may omit its final newline.
+  printf -v manifest_body '%s  %s' "${release_checksum}" "${asset_name}"
+  local output
+  output=$(run_installer)
+  [[ "${output}" == *'执行操作：更新'*'更新完成'* ]] || fail "numeric prerelease upgrade was skipped: ${output}"
+  cmp -s "${install_path}" "${fixture_root}/release" || fail "prerelease was not installed"
 )
 
 test_invalid_candidate_preserves_existing_program() (
@@ -190,4 +246,7 @@ test_pinned_version_uses_environment
 test_successful_upgrade_has_clear_progress_and_completion
 test_invalid_candidate_preserves_existing_program
 test_install_destination_directory_is_preserved
+test_download_failure_preserves_existing_program
+test_broken_installation_is_replaced
+test_prerelease_numeric_upgrade_is_not_skipped
 printf 'install_flow_test: ok\n'
