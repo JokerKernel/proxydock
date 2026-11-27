@@ -1,0 +1,183 @@
+package docker
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"runtime"
+	"strings"
+
+	"proxydock/internal/docker/model"
+)
+
+var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*$`)
+
+// Called only after the new deployment is committed. Never force removal of
+// an image that Docker still associates with another container or image tag.
+func (m *Manager) removeReplacedImage(ctx context.Context, old, current Metadata) {
+	if old.ImageID == current.ImageID {
+		return
+	}
+	if _, err := m.dockerOp(ctx, opLabel{phase: phaseResult, level: levelStep, name: "清理旧镜像"}, "image", "rm", old.ImageID); err != nil {
+		m.op(phaseResult, levelWarn, "旧镜像保留", "更新已成功，旧镜像清理失败: "+err.Error())
+	}
+}
+
+func normalizeVersion(version string) (string, error) {
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if !versionPattern.MatchString(v) {
+		return "", fmt.Errorf("版本格式无效，请输入官方具体版本，如 26.3.27")
+	}
+	return v, nil
+}
+
+func normalizeImageSelection(version string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(version)) {
+	case "", "latest":
+		return "latest", nil
+	case "pre-release":
+		return "pre-release", nil
+	default:
+		return normalizeVersion(version)
+	}
+}
+
+func (md Metadata) imageSelection() string {
+	if md.Channel == "pinned" {
+		return md.RequestedVersion
+	}
+	return md.Channel
+}
+
+func checkPreparedVersion(md Metadata, version string) error {
+	selection, err := normalizeImageSelection(version)
+	if err != nil {
+		return err
+	}
+	matched := false
+	switch selection {
+	case "latest":
+		matched = md.Channel == "latest"
+	case "pre-release":
+		matched = md.Channel == "pre-release"
+	default:
+		matched = selection == md.RequestedVersion
+	}
+	if matched {
+		return nil
+	}
+	return fmt.Errorf("镜像已准备为 %s（%s），请先通过升级入口切换版本", md.RequestedVersion, md.Channel)
+}
+
+func (m *Manager) prepareImage(ctx context.Context, version string, known *Metadata) (Metadata, error) {
+	v, err := normalizeImageSelection(version)
+	if err != nil {
+		return Metadata{}, err
+	}
+	channel := "pinned"
+	switch v {
+	case "latest":
+		channel = "latest"
+	case "pre-release":
+		channel = "pre-release"
+	}
+	tag := Repository + ":" + v
+	m.op(phaseCheck, levelStep, "拉取镜像", tag)
+	fmt.Fprintln(m.errOut)
+	err = m.dockerStreamOp(ctx, opLabel{}, m.out, m.errOut, "image", "pull", tag)
+	m.breakOp()
+	if err != nil {
+		return Metadata{}, fmt.Errorf("拉取官方版本镜像失败: %w", err)
+	}
+	b, err := m.docker(ctx, "image", "inspect", tag)
+	if err != nil {
+		return Metadata{}, err
+	}
+	var images []struct {
+		ID           string
+		RepoDigests  []string
+		Architecture string
+		Os           string
+		Config       struct {
+			User string
+		}
+	}
+	if err = json.Unmarshal(b, &images); err != nil || len(images) != 1 {
+		return Metadata{}, fmt.Errorf("镜像详情无效")
+	}
+	image := images[0]
+	if !validImageID(image.ID) || image.Architecture != runtime.GOARCH || image.Os != "linux" {
+		return Metadata{}, fmt.Errorf("镜像 ID 或平台不符合本机 Linux %s", runtime.GOARCH)
+	}
+	ref := ""
+	for _, r := range image.RepoDigests {
+		if validImageRef(r) {
+			ref = r
+			break
+		}
+	}
+	if ref == "" {
+		return Metadata{}, fmt.Errorf("镜像缺少官方仓库 digest")
+	}
+	imageUser, err := m.resolveImageUser(ctx, image.ID, image.Config.User)
+	if err != nil {
+		return Metadata{}, err
+	}
+	if known != nil && image.ID == known.ImageID {
+		if channel == "pinned" && v != known.RequestedVersion {
+			return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
+		}
+		md := *known
+		md.ImageRef, md.Channel, md.ImageUser = ref, channel, imageUser
+		return md, nil
+	}
+	output, err := m.coreRun(ctx, opLabel{}, Metadata{ImageID: image.ID, RunAsRoot: true}, nil, "version")
+	if err != nil {
+		return Metadata{}, fmt.Errorf("镜像版本检测失败: %w", err)
+	}
+	line := strings.Split(strings.TrimSpace(string(output)), "\n")[0]
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != "Xray" {
+		return Metadata{}, fmt.Errorf("镜像实际版本输出无效")
+	}
+	actualVersion, err := normalizeVersion(fields[1])
+	if err != nil {
+		return Metadata{}, fmt.Errorf("镜像实际版本输出无效: %w", err)
+	}
+	if channel == "pinned" && actualVersion != v {
+		return Metadata{}, fmt.Errorf("镜像实际版本与请求版本不一致")
+	}
+	md := Metadata{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance, ImageRef: ref, ImageID: image.ID, Version: line, RequestedVersion: actualVersion, Channel: channel, ImageUser: imageUser, DesiredState: "stopped", UpdatedAt: m.now().UTC()}
+	return md, nil
+}
+func parseKeyPair(b []byte) (model.KeyPair, error) {
+	var pair model.KeyPair
+	for _, line := range strings.Split(string(b), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		values := strings.Fields(value)
+		if len(values) == 0 {
+			continue
+		}
+		switch key {
+		case "PrivateKey":
+			pair.Private = values[0]
+		case "Password (PublicKey)":
+			pair.Public = values[0]
+		}
+	}
+	if pair.Private == "" || pair.Public == "" {
+		return pair, fmt.Errorf("镜像 REALITY 密钥输出格式不受支持")
+	}
+	return pair, nil
+}
+func (m *Manager) keyPair(ctx context.Context, md Metadata) (model.KeyPair, error) {
+	b, err := m.coreRun(ctx, opLabel{}, md, nil, "x25519")
+	if err != nil {
+		return model.KeyPair{}, fmt.Errorf("生成 REALITY 密钥失败: %w", err)
+	}
+	return parseKeyPair(b)
+}

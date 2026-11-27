@@ -1,0 +1,181 @@
+package docker
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+
+	"proxydock/internal/terminal"
+)
+
+var errCancelled = errors.New("用户取消")
+var errBack = errors.New("返回菜单")
+var errInterrupted = errors.New("已取消")
+var errQuit = errors.New("退出")
+
+type ui struct {
+	reader      *bufio.Reader
+	raw         io.Reader
+	out         io.Writer
+	interactive bool
+	signals     *commandSignals
+	intrR       *os.File
+}
+
+func newUI(input io.Reader, out io.Writer) *ui {
+	r, ok := input.(*bufio.Reader)
+	if !ok {
+		r = bufio.NewReader(input)
+	}
+	interactiveInput := terminalInput(input)
+	if reporter, ok := input.(interface{ IsTerminal() bool }); ok {
+		interactiveInput = reporter.IsTerminal()
+	} else if _, buffered := input.(*bufio.Reader); buffered {
+		// The main menu passes its shared stdin reader so buffered input stays
+		// with the same owner when entering and leaving the Docker menu.
+		interactiveInput = terminalInput(os.Stdin)
+	}
+	interactiveOutput := false
+	if reporter, ok := out.(interface{ IsTerminal() bool }); ok {
+		interactiveOutput = reporter.IsTerminal()
+	} else if f, ok := out.(*os.File); ok {
+		info, err := f.Stat()
+		interactiveOutput = err == nil && info.Mode()&os.ModeCharDevice != 0
+	}
+	return &ui{reader: r, raw: input, out: out, interactive: interactiveInput && interactiveOutput && os.Getenv("TERM") != "dumb"}
+}
+func (u *ui) clearScreen() {
+	if u.interactive {
+		fmt.Fprint(u.out, "\033[H\033[2J\033[3J")
+	}
+}
+func (u *ui) pause() error {
+	if !u.interactive {
+		return nil
+	}
+	fmt.Fprint(u.out, "\n按 Enter 返回菜单……")
+	_, err := u.readLine()
+	if errors.Is(err, errInterrupted) {
+		fmt.Fprintln(u.out)
+		return errQuit
+	}
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+func terminalInput(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+func (m *Manager) confirmInput(input io.Reader, yes bool, text string) error {
+	if yes {
+		return nil
+	}
+	if !terminalInput(input) {
+		return fmt.Errorf("非交互操作必须显式提供 --yes 或 --force")
+	}
+	return newUI(input, m.out).confirm(text)
+}
+
+func (m *Manager) Edit(ctx context.Context, input io.Reader) error {
+	if !terminalInput(input) && !terminalInput(os.Stdin) {
+		return fmt.Errorf("编辑配置需要交互终端")
+	}
+	return m.withLock(ctx, func() error {
+		md, _, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
+		}
+		b, err := readPrivate(m.paths.Config())
+		if err != nil {
+			return err
+		}
+		state, err := m.LoadState()
+		if err != nil {
+			return err
+		}
+		editor := ""
+		for _, name := range []string{"vim", "nano", "vi"} {
+			if path, e := m.lookPath(name); e == nil {
+				editor = path
+				break
+			}
+		}
+		if editor == "" {
+			return fmt.Errorf("未找到 vim/nano/vi")
+		}
+		if err = privateDir(m.paths.Staging()); err != nil {
+			return err
+		}
+		f, err := os.CreateTemp(m.paths.Staging(), "edit-*.json")
+		if err != nil {
+			return err
+		}
+		path := f.Name()
+		defer os.Remove(path)
+		if err = f.Chmod(0600); err == nil {
+			_, err = f.Write(b)
+		}
+		if e := f.Close(); err == nil {
+			err = e
+		}
+		if err != nil {
+			return err
+		}
+		u := newUI(input, m.out)
+		for {
+			cmd := exec.CommandContext(ctx, editor, path)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = terminal.RawWriter(m.out)
+			cmd.Stderr = terminal.RawWriter(m.errOut)
+			if err = cmd.Run(); err != nil {
+				return err
+			}
+			edited, err := readPrivate(path)
+			if err != nil {
+				return err
+			}
+			if string(edited) == string(b) {
+				m.op(phaseResult, levelResult, "更新结果", "配置未变化")
+				return nil
+			}
+			candidate, prepareErr := m.prepareEditedConfig(edited, state.Node)
+			err = prepareErr
+			if err == nil {
+				// Editing may take time: refresh the container before applying,
+				// without repeating environment checks or validating twice.
+				in, inspectErr := m.inspect(ctx)
+				if inspectErr != nil {
+					return inspectErr
+				}
+				if in != nil && (in.Image != md.ImageID || in.State.Paused) {
+					return fmt.Errorf("编辑期间容器状态或镜像已改变")
+				}
+				err = m.applyConfig(ctx, md, in, state.Node, candidate, false, "配置已生效")
+				var validationErr *configurationValidationError
+				if err == nil || !errors.As(err, &validationErr) {
+					return err
+				}
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			var validationErr *configurationValidationError
+			if !errors.As(err, &validationErr) {
+				terminal.WriteOperation(m.errOut, terminal.LevelError, "校验结果", err.Error())
+			}
+			if err = u.confirm("重新编辑？"); err != nil {
+				return err
+			}
+		}
+	})
+}

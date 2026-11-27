@@ -1,0 +1,38 @@
+name: proxydock-xray
+
+services:
+  xray:
+    image: "{{ .Image }}"
+    container_name: proxydock-xray
+    restart: unless-stopped
+{{ .Network }}    command: ["run", "-config", "/usr/local/etc/xray/config.json"]
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - type: bind
+        source: ./config
+        target: /usr/local/etc/xray
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./tls
+        target: /etc/xray/tls
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+      - {{ .LogTmpfs }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 10s
+    labels:
+      io.proxydock.managed: "true"
+      io.proxydock.core: "xray"
+      io.proxydock.instance: "xray-docker"

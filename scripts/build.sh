@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Match release builds and keep local/cross binaries independent of libc.
+export CGO_ENABLED=${CGO_ENABLED:-0}
+
+VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
+COMMIT=${COMMIT:-$(git rev-parse --verify HEAD 2>/dev/null || echo unknown)}
+BUILD_DATE=${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+OUTPUT=${OUTPUT:-proxydock}
+
+version_package=proxydock/internal/version
+ldflags="-s -w"
+ldflags+=" -X ${version_package}.Version=${VERSION}"
+ldflags+=" -X ${version_package}.Commit=${COMMIT}"
+ldflags+=" -X ${version_package}.BuildDate=${BUILD_DATE}"
+
+go build -trimpath -ldflags="${ldflags}" -o "${OUTPUT}" .
+chmod 0755 "${OUTPUT}"
+
+printf 'built %s: version=%s commit=%s build_date=%s\n' \
+  "${OUTPUT}" "${VERSION}" "${COMMIT}" "${BUILD_DATE}"

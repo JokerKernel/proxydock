@@ -1,0 +1,2065 @@
+package docker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"proxydock/internal/docker/model"
+)
+
+func (m *Manager) consumeInterrupt(err error) (error, bool) {
+	if !errors.Is(err, errInterrupted) {
+		return err, false
+	}
+	m.op(phaseResult, levelResult, "操作结果", "已取消")
+	return nil, true
+}
+
+func (m *Manager) askGenerate(input io.Reader, opts model.GenerateOptions) (model.GenerateOptions, error) {
+	return m.askGenerateUI(context.Background(), newUI(input, m.out), opts)
+}
+
+func (m *Manager) Menu(ctx context.Context, input io.Reader) error {
+	if err := m.rootCheck(); err != nil {
+		return err
+	}
+	u := newUI(input, m.out)
+	detachSignals := attachMenuSignals(ctx, u)
+	defer detachSignals()
+	previous := m.review
+	m.review = u
+	defer func() { m.review = previous }()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		statusCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		s, _ := m.menuStatus(statusCtx)
+		cancel()
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）")
+		u.instanceCard(Container, "["+s.Label+"]", s.Version, s.Detail, m.instanceRows(s))
+		u.menuChoice("1", "安装与更新（部署容器和更新容器）")
+		u.menuChoice("2", "服务端配置（生成、修改、查看与服务管理）")
+		u.menuChoice("3", "客户端配置（显示普通节点或中转节点配置）")
+		fmt.Fprintln(u.out)
+		u.menuChoice("4", "删除实例数据（清理容器，永久删除配置、凭据、证书和备份）")
+		u.menuChoice("5", "恢复中断操作（回滚未完成的配置修改或升级）")
+		u.menuChoice("0/q", "退出")
+		choice, err := u.chooseNumber("请选择", 0, 5, -1)
+		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if choice == 0 {
+			return nil
+		}
+		u.clearScreen()
+		shouldPause := true
+		switch choice {
+		case 1:
+			err = m.deployInteractive(ctx, u)
+		case 2:
+			shouldPause = false
+			err = m.configMenu(ctx, u)
+		case 3:
+			var showed bool
+			showed, err = m.clientMenu(ctx, u)
+			shouldPause = showed
+		case 4:
+			err = m.confirmCleanup(ctx, u)
+		case 5:
+			err = m.Recover(ctx)
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
+			return nil
+		}
+		if errors.Is(err, errBack) {
+			continue
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+			shouldPause = true
+		}
+		cancelled := errors.Is(err, errCancelled)
+		if cancelled {
+			switch choice {
+			case 1:
+				fmt.Fprintln(m.out, "已取消"+m.containerImageMenu()+"。")
+			case 4:
+				fmt.Fprintln(m.out, "已取消清理。")
+			default:
+				fmt.Fprintln(m.out, "已取消。")
+			}
+			err = nil
+		} else if err != nil && ctx.Err() == nil {
+			m.printMenuError(err)
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
+		}
+		if shouldPause || cancelled || err != nil {
+			if err := u.pause(); err != nil {
+				if errors.Is(err, io.EOF) || errors.Is(err, errQuit) {
+					return nil
+				}
+				return err
+			}
+		}
+	}
+}
+
+func (m *Manager) deployInteractive(ctx context.Context, u *ui) error {
+	selection := ""
+	if md, err := m.metadata(); err == nil {
+		selection = md.imageSelection()
+	}
+	network := ""
+	runAsRoot := false
+	runAsRootSet := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		shownRoot := m.savedRunAsRoot()
+		if runAsRootSet {
+			shownRoot = runAsRoot
+		}
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", m.containerImageMenu())
+		u.labeledCard("当前内核", m.deployCardRows(selection, network, shownRoot))
+		u.menuChoice("1", m.containerImageMenu())
+		u.menuChoice("2", "选择版本")
+		u.menuChoice("3", "指定版本")
+		u.menuChoice("4", "网络方式（宿主机网络或端口映射）")
+		u.menuChoice("5", "运行用户（镜像默认或 root）")
+		u.menuChoice("0/q", "返回")
+		choice, err := u.chooseNumber("请选择", 0, 5, -1)
+		if err != nil {
+			return err
+		}
+		switch choice {
+		case 0:
+			return errBack
+		case 1:
+			return m.confirmDeploy(ctx, u, selection, network, shownRoot)
+		case 2:
+			next, chooseErr := m.chooseDeployChannel(u, selection)
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			selection = next
+		case 3:
+			version, askErr := m.askDeployVersion(u)
+			if errors.Is(askErr, errCancelled) {
+				continue
+			}
+			if askErr != nil {
+				return askErr
+			}
+			selection = version
+		case 4:
+			next, chooseErr := m.chooseDeployNetwork(u, network)
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			if _, metaErr := m.metadata(); metaErr == nil && canonicalNetwork(next) != canonicalNetwork(m.savedNetwork()) {
+				if err = m.confirmSetNetwork(ctx, u, next); errors.Is(err, errCancelled) {
+					continue
+				} else if err != nil {
+					return err
+				}
+			}
+			network = next
+		case 5:
+			next, chooseErr := m.chooseRunAsRoot(u, shownRoot, "Xray（Docker）", m.containerImageMenu())
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			if _, metaErr := m.metadata(); metaErr == nil && next != m.savedRunAsRoot() {
+				if err = m.confirmSetRunAsRoot(ctx, u, next); errors.Is(err, errCancelled) {
+					continue
+				} else if err != nil {
+					return err
+				}
+			}
+			runAsRoot = next
+			runAsRootSet = true
+		}
+	}
+}
+
+func (m *Manager) deployCardRows(selection, network string, runAsRoot bool) [][2]string {
+	version := "尚未部署"
+	if md, err := m.metadata(); err == nil {
+		if selection == "" {
+			selection = md.imageSelection()
+		}
+		switch {
+		case strings.TrimSpace(md.Version) != "":
+			version = strings.TrimSpace(md.Version)
+		case md.RequestedVersion != "":
+			version = md.RequestedVersion
+		default:
+			version = "无法读取"
+		}
+	}
+	target := "稳定版（latest）"
+	switch selection {
+	case "pre-release":
+		target = "pre-release"
+	default:
+		if selection != "" && selection != "latest" {
+			target = "指定版本 " + selection
+		}
+	}
+	mode := network
+	if mode == "" {
+		mode = m.savedNetwork()
+	}
+	return [][2]string{{"内核", "Xray（Docker）"}, {"版本号", version}, {"安装渠道", target}, {"网络方式", networkLabel(mode)}, {"运行用户", runUserLabel(runAsRoot)}}
+}
+
+func (m *Manager) savedRunAsRoot() bool {
+	md, err := m.metadata()
+	if err != nil {
+		return false
+	}
+	return md.RunAsRoot
+}
+
+func (m *Manager) chooseRunAsRoot(u *ui, current bool, crumb ...string) (bool, error) {
+	u.clearScreen()
+	u.pageHeader(append(crumb, "运行用户")...)
+	u.menuChoice("1", "镜像默认（使用官方镜像自带用户）")
+	u.menuChoice("2", "root（以 0:0 启动）")
+	u.menuChoice("0/q", "返回")
+	def := 1
+	if current {
+		def = 2
+	}
+	choice, err := u.chooseNumberCancelable("请选择运行用户", 1, 2, def)
+	if err != nil {
+		return false, err
+	}
+	return choice == 2, nil
+}
+
+func (m *Manager) confirmSetRunAsRoot(ctx context.Context, u *ui, root bool) error {
+	effect := "容器使用镜像自带用户"
+	if root {
+		effect = "容器以 root（0:0）启动"
+	}
+	items := []string{"重写 Compose 文件", "重建容器并保持当前运行状态", effect}
+	if md, err := m.metadata(); err == nil && md.ComposeSHA256 == "" {
+		items = []string{"保存运行用户设置，生成节点配置时生效", effect}
+	}
+	u.confirmationPanel("操作确认：切换运行用户", []string{"目标实例：" + Container, "运行用户：" + runUserLabel(root)}, confirmSection{title: "将执行", items: items})
+	if err := u.confirm("切换容器运行用户？"); err != nil {
+		return err
+	}
+	return m.SetRunAsRoot(ctx, root)
+}
+
+func (m *Manager) savedNetwork() string {
+	md, err := m.metadata()
+	if err != nil {
+		return defaultNetwork
+	}
+	return canonicalNetwork(md.Network)
+}
+
+func (m *Manager) chooseDeployNetwork(u *ui, selection string) (string, error) {
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", m.containerImageMenu(), "网络方式")
+	u.menuChoice("1", "端口映射（发布监听端口，回落仅容器内使用）")
+	u.menuChoice("2", "宿主机网络（容器直接使用宿主机网络栈）")
+	u.menuChoice("0/q", "返回")
+	current := selection
+	if current == "" {
+		current = m.savedNetwork()
+	}
+	def := 1
+	if canonicalNetwork(current) == networkHost {
+		def = 2
+	}
+	choice, err := u.chooseNumberCancelable("请选择网络方式", 1, 2, def)
+	if err != nil {
+		return "", err
+	}
+	if choice == 2 {
+		return networkHost, nil
+	}
+	return networkPublish, nil
+}
+
+func (m *Manager) confirmSetNetwork(ctx context.Context, u *ui, network string) error {
+	items := []string{"重写 Compose 文件", "重建容器并保持当前运行状态", "容器改为使用宿主机网络"}
+	if canonicalNetwork(network) == networkPublish {
+		items[2] = "监听端口按相同端口发布，回落仅容器内使用"
+	}
+	if md, err := m.metadata(); err == nil && md.ComposeSHA256 == "" {
+		items = []string{"保存网络方式，生成节点配置时生效", items[2]}
+	}
+	u.confirmationPanel("操作确认：切换网络方式", []string{"目标实例：" + Container, "网络方式：" + networkLabel(network)}, confirmSection{title: "将执行", items: items})
+	if err := u.confirm("切换 Docker 网络方式？"); err != nil {
+		return err
+	}
+	return m.SetNetwork(ctx, network)
+}
+
+func (m *Manager) chooseDeployChannel(u *ui, selection string) (string, error) {
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", m.containerImageMenu(), "选择版本")
+	u.menuChoice("1", "稳定版（latest）")
+	u.menuChoice("2", "pre-release")
+	u.menuChoice("0/q", "返回")
+	def := 1
+	if selection == "pre-release" {
+		def = 2
+	}
+	choice, err := u.chooseNumberCancelable("请选择版本渠道", 1, 2, def)
+	if err != nil {
+		return "", err
+	}
+	if choice == 2 {
+		return "pre-release", nil
+	}
+	return "latest", nil
+}
+
+func (m *Manager) askDeployVersion(u *ui) (string, error) {
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", m.containerImageMenu(), "指定版本")
+	fmt.Fprintln(u.out, "请输入官方版本号，例如 26.3.27。")
+	u.menuChoice("0/q", "返回")
+	fmt.Fprintln(u.out)
+	for {
+		value, err := u.ask("版本号", "")
+		if err != nil {
+			return "", err
+		}
+		if value == "0" {
+			return "", errCancelled
+		}
+		if value == "" {
+			fmt.Fprintln(u.out, "版本号不能为空。")
+			continue
+		}
+		version, err := normalizeVersion(value)
+		if err != nil {
+			fmt.Fprintf(u.out, "%v。\n", err)
+			continue
+		}
+		return version, nil
+	}
+}
+
+func (m *Manager) confirmDeploy(ctx context.Context, u *ui, version, network string, runAsRoot bool) error {
+	mode := network
+	if mode == "" {
+		mode = m.savedNetwork()
+	}
+	if md, e := m.metadata(); e == nil {
+		if strings.TrimSpace(version) == "" {
+			version = md.imageSelection()
+		}
+		items := []string{"拉取选定镜像并记录 digest", "保留现有 UUID、密钥、证书和线路", "失败时回滚到当前镜像和运行状态", "更新成功后删除本次替换的旧镜像"}
+		if md.ComposeSHA256 == "" {
+			items = []string{"拉取并校验选定镜像，更新部署参数", "生成节点配置时再写入 Compose 并启动容器", "更新成功后删除本次替换的旧镜像"}
+		}
+		u.confirmationPanel("操作确认：更新", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: items})
+		if err := u.confirm("确认更新？"); err != nil {
+			return err
+		}
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "更新过程")
+		return m.upgrade(ctx, version, network, "")
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+	u.confirmationPanel("操作确认：安装", []string{"目标实例：" + Container, "安装版本：" + shownVersion(version), "网络方式：" + networkLabel(mode), "运行用户：" + runUserLabel(runAsRoot)}, confirmSection{title: "将执行", items: []string{"拉取并校验官方镜像，记录 digest", "保存网络方式和运行用户等部署参数", "生成节点配置时再写入 Compose 并启动容器"}})
+	if err := u.confirm("确认安装？"); err != nil {
+		return err
+	}
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "安装过程")
+	if strings.TrimSpace(network) == "" {
+		network = defaultNetwork
+	}
+	return m.prepareWithNetwork(ctx, version, network, runAsRoot)
+}
+
+func (m *Manager) containerImageMenu() string {
+	if _, err := m.metadata(); err == nil {
+		return "更新"
+	}
+	return "安装"
+}
+
+func shownVersion(version string) string {
+	switch strings.ToLower(strings.TrimSpace(version)) {
+	case "", "latest":
+		return "稳定版（latest）"
+	case "pre-release":
+		return "pre-release"
+	default:
+		return "指定版本 " + version
+	}
+}
+
+func (m *Manager) confirmCleanup(ctx context.Context, u *ui) error {
+	lease, err := m.BeginCleanup(ctx)
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	sections := []confirmSection{{title: "将执行", items: []string{"停止并移除本实例容器，再清理实例数据", "停止或移除失败则中止删除", "清理本项目的空闲默认网络"}}, {title: "永久删除", items: []string{"配置、凭据、证书和备份", "部署记录、访问控制、落地与中转数据"}}, {title: "保留", items: []string{"Docker 镜像、ProxyDock 程序和用户导出配置"}}, {title: "数据保护", items: []string{"此操作不会创建新备份"}}}
+	prompt := "清理本实例容器，并永久删除 Docker Xray 配置、凭据、证书和备份？"
+	if lease.conflict != nil {
+		sections[0].items[0] = "停止并移除上述同名容器，再清理本实例数据"
+		sections = append([]confirmSection{{title: "同名容器冲突", items: lease.conflictDetails()}}, sections...)
+		prompt = "确认停止并移除上述同名容器，并永久删除本实例数据？"
+	}
+	u.confirmationPanel("危险操作确认：删除实例数据", []string{"目标实例：" + Instance}, sections...)
+	if err := u.confirm(prompt); err != nil {
+		return err
+	}
+	lease.approveConflict()
+	return lease.Cleanup()
+}
+
+func (m *Manager) instanceRows(status Status) [][2]string {
+	port := "未生成"
+	if s, err := m.LoadState(); err == nil {
+		if s.Node.Port >= 1 && s.Node.Port <= 65535 {
+			port = strconv.Itoa(s.Node.Port)
+		} else if s.Node.UUID != "" || s.Node.SNI != "" {
+			port = "无法读取"
+		}
+	}
+	rows := [][2]string{{"容器状态", containerStateLabel(status.ContainerState)}, {"监听端口", port}, {"网络方式", networkLabel(m.savedNetwork())}, {"运行用户", runUserLabel(m.savedRunAsRoot())}}
+	if md, err := m.metadata(); err == nil {
+		rows = append(rows, [2]string{"更新渠道", "[" + channelLabel(md.Channel) + "]"})
+	}
+	return rows
+}
+
+func containerStateLabel(state string) string {
+	labels := map[string]string{
+		"created": "已创建", "running": "运行中", "paused": "已暂停",
+		"restarting": "重启中", "removing": "移除中", "exited": "已停止", "dead": "已失效",
+	}
+	if state == "absent" {
+		return "不存在"
+	}
+	if label, ok := labels[state]; ok {
+		return label + "（" + state + "）"
+	}
+	return "未知"
+}
+
+func (m *Manager) configMenu(ctx context.Context, u *ui) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "服务端配置")
+		m.printConfigCard(u)
+		u.menuChoice("1", "生成/更新配置（完整覆盖现有配置，不合并原配置）")
+		u.menuChoice("2", "查看配置（显示当前 JSON，含敏感凭据）")
+		u.menuChoice("3", "修改配置（DNS、出站 IP、重置节点与 SNI 检测）")
+		u.menuChoice("4", "编辑配置（vim / nano / vi）")
+		u.menuChoice("5", "日志级别（调整内核日志详细程度）")
+		u.menuChoice("6", "服务管理（启动、停止、状态与日志）")
+		u.menuChoice("7", "中转与落地配置（同端口按用户分流）")
+		u.menuChoice("0/q", "返回")
+		choice, err := u.chooseNumber("请选择", 0, 7, 0)
+		if err != nil {
+			return err
+		}
+		if choice == 0 {
+			return nil
+		}
+		u.clearScreen()
+		shouldPause := true
+		switch choice {
+		case 1:
+			err = m.generateInteractive(ctx, u, false)
+			if errors.Is(err, errCancelled) {
+				fmt.Fprintln(m.out, "已取消生成服务端配置。")
+				err = nil
+				shouldPause = false
+			}
+		case 2:
+			err = m.showServerConfig(u)
+		case 3:
+			shouldPause = false
+			err = m.modifyMenu(ctx, u)
+		case 4:
+			err = m.Edit(ctx, u.reader)
+		case 5:
+			err = m.logMenu(ctx, u)
+		case 6:
+			shouldPause = false
+			err = m.serviceMenu(ctx, u)
+		case 7:
+			shouldPause = false
+			err = m.linkMenu(ctx, u)
+		}
+		if errors.Is(err, errQuit) || errors.Is(err, io.EOF) {
+			return err
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+			shouldPause = true
+		}
+		if err != nil && ctx.Err() == nil {
+			m.printMenuError(err)
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
+		}
+		if shouldPause || err != nil {
+			if err := u.pause(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (m *Manager) generateInteractive(ctx context.Context, u *ui, deploy bool) error {
+	if _, err := m.preparedMetadata(); err != nil {
+		return err
+	}
+	if _, e := os.Stat(m.paths.Config()); e == nil {
+		u.confirmationPanel("操作确认：生成服务端配置", []string{"目标实例：" + Container}, confirmSection{title: "将执行", items: []string{"备份当前服务端配置", "完整覆盖现有配置，不合并原配置", "使用当前镜像校验新配置", "应用配置并启动容器，已移除时重新创建"}}, confirmSection{title: "配置保护", items: []string{"未选择清除时，保留已有落地接入和中转线路"}})
+		if err := u.confirm("完整生成会覆盖手动配置，确认继续？"); err != nil {
+			return err
+		}
+	}
+	opts, err := m.askGenerateUI(ctx, u, model.GenerateOptions{})
+	if err != nil {
+		return err
+	}
+	return m.Generate(ctx, opts, deploy)
+}
+
+func (m *Manager) showServerConfig(u *ui) error {
+	u.pageHeader("Xray（Docker）", "查看服务端配置")
+	b, err := m.ServerConfig()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(u.out, "警告：当前服务端配置可能包含 UUID、REALITY 私钥等敏感信息，请勿泄露。")
+	fmt.Fprintln(u.out, "----------------------------------------")
+	fmt.Fprint(u.out, string(b))
+	if len(b) == 0 || b[len(b)-1] != '\n' {
+		fmt.Fprintln(u.out)
+	}
+	return nil
+}
+
+func (m *Manager) printConfigCard(u *ui) {
+	service := "无法读取"
+	statusCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if st, err := m.menuStatus(statusCtx); err == nil || st.Label != "" {
+		service = st.Label
+	}
+	cancel()
+	s, cfg, cfgErr := m.managedConfig()
+	state, stateErr := s, cfgErr
+	if cfgErr != nil {
+		state, stateErr = m.LoadState()
+	}
+	node := state.Node
+	hasConfig := cfgErr == nil
+	if hasConfig {
+		node = s.Node
+	}
+	hasNode := stateErr == nil && (node.UUID != "" || node.SNI != "" || node.Port != 0 || node.Server != "")
+	read := func(load func() (string, error)) string {
+		if !hasConfig {
+			if hasNode {
+				return "无法读取"
+			}
+			return "未生成"
+		}
+		value, err := load()
+		if err != nil || value == "" {
+			return "无法读取"
+		}
+		return value
+	}
+	rows := [][2]string{{"运行用户", runUserLabel(m.savedRunAsRoot())}, {"日志级别", read(func() (string, error) {
+		level, err := m.codec.CurrentLogLevel(cfg)
+		return cardText(logLevelLabel(level)), err
+	})}, {"服务状态", service}}
+	relayTotal, relayOn := countEnabled(node.RelayLinks, func(item model.RelayLink) bool { return item.Enabled })
+	landingTotal, landingOn := countEnabled(node.LandingAccesses, func(item model.LandingAccess) bool { return item.Enabled })
+	rows = append(rows, [2]string{"中转", linkSummary(hasNode, stateErr == nil || hasConfig, relayTotal, relayOn)}, [2]string{"落地", linkSummary(hasNode, stateErr == nil || hasConfig, landingTotal, landingOn)}, [2]string{"DNS 设置", read(func() (string, error) {
+		profile, err := m.codec.CurrentDNSProfile(cfg)
+		return cardText(dnsLabel(profile)), err
+	})}, [2]string{"出站 IP", read(func() (string, error) {
+		strategy, err := m.codec.CurrentOutboundIPStrategy(cfg)
+		return cardText(outboundLabel(strategy)), err
+	})})
+	if hasNode && node.XrayFallbackGuard {
+		rows = append(rows, [2]string{"回落 IP", read(func() (string, error) {
+			strategy, err := m.codec.CurrentFallbackIPStrategy(cfg)
+			return cardText(outboundLabel(strategy)), err
+		})})
+	}
+	if hasNode && node.IsTLS() {
+		rows = append(rows, [2]string{"节点协议", "VLESS + RAW + TLS + Vision"}, [2]string{"证书验证", "固定指纹"})
+	} else if hasNode {
+		rows = append(rows,
+			[2]string{"SNI 防护", guardText(node.XrayFallbackGuard, "按 SNI 域名规则限制回落", "不检查回落 SNI 域名")},
+			[2]string{"严格模式", strictText(node)},
+			[2]string{"HTTP Host", hostText(node)},
+		)
+	}
+	if hasNode {
+		rows = append(rows, [2]string{"访问模式", accessPolicyModeLabel(node.AccessPolicy)}, [2]string{"访问名单", fmt.Sprintf("白名单 %d 条 · 黑名单 %d 条", len(node.AccessPolicy.Whitelist), len(node.AccessPolicy.Blacklist))})
+	}
+	port := "未生成"
+	if hasNode {
+		if node.Port >= 1 && node.Port <= 65535 {
+			port = strconv.Itoa(node.Port)
+		} else {
+			port = "无法读取"
+		}
+	}
+	sni := "未生成"
+	if hasNode {
+		sni = strings.TrimSpace(node.SNI)
+		if sni == "" {
+			sni = "无法读取"
+		}
+	}
+	rows = append(rows, [2]string{"端口", port}, [2]string{"SNI", sni})
+	u.labeledCard("当前配置", rows)
+}
+
+func guardText(enabled bool, on, off string) string {
+	if enabled {
+		return "已开启  -- " + on
+	}
+	return "未开启  -- " + off
+}
+
+func strictText(node model.Node) string {
+	if !node.XrayFallbackGuard {
+		return "未开启  -- 未启用 SNI 防护"
+	}
+	if node.XrayFallbackExactDomain {
+		return "已开启  -- 仅允许完整 SNI 域名"
+	}
+	return "未开启  -- 允许 SNI 域名及其子域名"
+}
+
+func hostText(node model.Node) string {
+	if !node.XrayFallbackGuard {
+		return "未开启  -- 未启用 SNI 防护"
+	}
+	if node.XrayFallbackHTTPDomain {
+		return "已开启  -- 按 SNI 域名规则检查明文 Host"
+	}
+	return "不限制  -- 不检查明文 HTTP Host"
+}
+
+func (m *Manager) modifyMenu(ctx context.Context, u *ui) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		state, stateErr := m.LoadState()
+		tlsMode := stateErr == nil && state.Node.IsTLS()
+		hasFallback := stateErr == nil && state.Node.XrayFallbackGuard
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "修改配置")
+		m.printConfigCard(u)
+		u.menuChoice("1", "访问控制（白名单、黑名单与仅允许白名单）")
+		if tlsMode {
+			u.menuChoice("2", "重置 UUID（保留 TLS 证书）")
+			u.menuChoice("3", "重新生成 TLS 证书（保留 UUID）")
+		} else {
+			u.menuChoice("2", "重置节点凭证（UUID、REALITY 密钥和 short ID；保留 SNI/target）")
+			u.menuChoice("3", "重置 SNI/target（保留节点凭证）")
+		}
+		u.menuChoice("4", "出站 IP（优先或仅使用 IPv4 / IPv6）")
+		maxChoice := 4
+		fallbackChoice := 0
+		if hasFallback {
+			maxChoice++
+			fallbackChoice = maxChoice
+			u.menuChoice(strconv.Itoa(fallbackChoice), "回落 IP（回落访问目标站的 IPv4 / IPv6）")
+		}
+		maxChoice++
+		dnsChoice := maxChoice
+		u.menuChoice(strconv.Itoa(dnsChoice), "DNS 设置（系统 DNS、明文 DNS 或 DoH）")
+		sniChoice := 0
+		if !tlsMode {
+			maxChoice++
+			sniChoice = maxChoice
+			u.menuChoice(strconv.Itoa(sniChoice), "REALITY SNI 候选检测（重新测试，不修改配置）")
+		}
+		u.menuChoice("0/q", "返回")
+		choice, err := u.chooseNumber("请选择", 0, maxChoice, 0)
+		if err != nil {
+			return err
+		}
+		if choice == 0 {
+			return nil
+		}
+		u.clearScreen()
+		shouldPause := true
+		switch {
+		case choice == 1:
+			shouldPause = false
+			err = m.accessMenu(ctx, u)
+		case choice == 2 && tlsMode:
+			err = m.confirmReset(ctx, u, model.ResetOptions{Credentials: true}, "重置 UUID 会使现有客户端失效，TLS 证书保持不变。")
+		case choice == 2:
+			err = m.confirmReset(ctx, u, model.ResetOptions{Credentials: true}, "轮换凭据会使现有客户端失效，SNI 和 target 保持不变。")
+		case choice == 3 && tlsMode:
+			err = m.confirmReset(ctx, u, model.ResetOptions{RotateCertificate: true}, "重新生成 TLS 证书后，需要用新指纹更新客户端。")
+		case choice == 3:
+			err = m.resetSNIInteractive(ctx, u)
+		case choice == 4:
+			err = m.strategyMenu(ctx, u, "outbound-ip")
+		case choice == fallbackChoice:
+			err = m.strategyMenu(ctx, u, "fallback-ip")
+		case choice == dnsChoice:
+			err = m.dnsMenu(ctx, u)
+		case sniChoice > 0 && choice == sniChoice:
+			err = m.retestSNICandidates(ctx, u)
+		}
+		if errors.Is(err, errQuit) || errors.Is(err, io.EOF) {
+			return err
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+			shouldPause = true
+		}
+		if err != nil {
+			m.printMenuError(err)
+		}
+		if shouldPause || err != nil {
+			if err := u.pause(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (m *Manager) confirmReset(ctx context.Context, u *ui, opts model.ResetOptions, message string) error {
+	u.confirmationPanel("操作确认：重置节点", []string{"目标实例：" + Container}, confirmSection{title: "重要影响", items: []string{message, "需要重新导出受影响的客户端配置"}})
+	if err := u.confirm(message); err != nil {
+		return err
+	}
+	return m.Reset(ctx, opts)
+}
+
+func (m *Manager) resetSNIInteractive(ctx context.Context, u *ui) error {
+	state, err := m.LoadState()
+	if err != nil {
+		return err
+	}
+	if state.Node.IsTLS() {
+		return fmt.Errorf("TLS 节点请通过轮换证书更新 SNI")
+	}
+	server := strings.TrimSpace(state.Node.Server)
+	u.pageHeader("Xray（Docker）", "重置节点")
+	sni, err := u.ask("新的 REALITY SNI（输入域名；直接回车自动测速候选）", "")
+	if err != nil {
+		return err
+	}
+	sni = strings.TrimSpace(sni)
+	manual := sni != ""
+	if sni == "" {
+		selected, selectErr := m.selectSNICandidate(ctx, u, server)
+		if selectErr != nil {
+			return selectErr
+		}
+		sni = selected
+		if u.interactive {
+			u.clearScreen()
+			u.pageHeader("Xray（Docker）", "重置节点")
+			fmt.Fprintf(u.out, "已选择 REALITY SNI：%s\n", sni)
+		}
+	}
+	if manual {
+		if err = m.confirmManualSNI(ctx, u, sni, server); err != nil {
+			return err
+		}
+	}
+	target, err := u.ask("新的 REALITY target", net.JoinHostPort(sni, "443"))
+	if err != nil {
+		return err
+	}
+	u.confirmationPanel(
+		"危险操作确认：重置节点",
+		[]string{"目标实例：" + Container, "新 SNI：" + sni, "新 Target：" + target},
+		confirmSection{title: "将更新", items: []string{"受管入站的 SNI 和 target"}},
+		confirmSection{title: "将保留", items: []string{"UUID、REALITY 密钥和 short ID", "修改前会备份当前配置"}},
+		confirmSection{title: "重要影响", items: []string{"所有旧客户端配置中的 SNI/target 会立即失效"}},
+	)
+	if err = u.confirm("重置节点 SNI 和 target？"); err != nil {
+		return err
+	}
+	return m.Reset(ctx, model.ResetOptions{SNI: sni, Target: target})
+}
+
+func (m *Manager) dnsMenu(ctx context.Context, u *ui) error {
+	_, cfg, err := m.managedConfig()
+	if err != nil {
+		return err
+	}
+	current, err := m.codec.CurrentDNSProfile(cfg)
+	if err != nil {
+		return err
+	}
+	profiles := m.codec.DNSProfiles()
+	u.pageHeader("Xray（Docker）", "DNS 设置")
+	fmt.Fprintf(u.out, "当前配置：%s\n\n", cardText(dnsLabel(current)))
+	defaultChoice := 1
+	for index, profile := range profiles {
+		u.menuChoice(strconv.Itoa(index+1), dnsLabel(profile))
+		if profile == current {
+			defaultChoice = index + 1
+		}
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择 DNS", 0, len(profiles), defaultChoice)
+	if err != nil || choice == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	selected := profiles[choice-1]
+	if selected == current {
+		fmt.Fprintf(u.out, "[提示] DNS 已经是 %s，无需修改。\n", cardText(dnsLabel(selected)))
+		return nil
+	}
+	u.confirmationPanel("操作确认：设置 DNS", []string{"目标实例：" + Container, "当前配置：" + cardText(dnsLabel(current)), "新的配置：" + cardText(dnsLabel(selected))}, confirmSection{title: "将执行", items: []string{"按 Xray 格式更新 DNS 配置", "使用当前镜像校验候选配置", "备份并原子更新当前服务端配置", "容器正在运行时重建使设置立即生效"}})
+	if err = u.confirm("更新 DNS 设置？"); err != nil {
+		return err
+	}
+	return m.PatchSetting(ctx, "dns", selected)
+}
+
+func (m *Manager) logMenu(ctx context.Context, u *ui) error {
+	_, cfg, err := m.managedConfig()
+	if err != nil {
+		return err
+	}
+	current, err := m.codec.CurrentLogLevel(cfg)
+	if err != nil {
+		return err
+	}
+	levels := m.codec.LogLevels()
+	u.pageHeader("Xray（Docker）", "服务端配置", "日志级别")
+	fmt.Fprintf(u.out, "当前级别：%s\n\n", cardText(logLevelLabel(current)))
+	defaultChoice := 1
+	for index, level := range levels {
+		u.menuChoice(strconv.Itoa(index+1), logLevelLabel(level))
+		if level == current {
+			defaultChoice = index + 1
+		}
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择日志级别", 0, len(levels), defaultChoice)
+	if err != nil || choice == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	selected := levels[choice-1]
+	if selected == current {
+		fmt.Fprintf(u.out, "[提示] 日志级别已经是 %s，无需修改。\n", cardText(logLevelLabel(selected)))
+		return nil
+	}
+	u.confirmationPanel("操作确认：设置日志级别", []string{"目标实例：" + Container, "当前级别：" + cardText(logLevelLabel(current)), "新的级别：" + cardText(logLevelLabel(selected))}, confirmSection{title: "将执行", items: []string{"只修改日志级别", "使用当前镜像校验候选配置", "备份并原子更新当前服务端配置"}})
+	if err = u.confirm("更新日志级别？"); err != nil {
+		return err
+	}
+	return m.PatchSetting(ctx, "log", selected)
+}
+
+func (m *Manager) strategyMenu(ctx context.Context, u *ui, setting string) error {
+	_, cfg, err := m.managedConfig()
+	if err != nil {
+		return err
+	}
+	var current string
+	if setting == "fallback-ip" {
+		current, err = m.codec.CurrentFallbackIPStrategy(cfg)
+	} else {
+		current, err = m.codec.CurrentOutboundIPStrategy(cfg)
+	}
+	if err != nil {
+		return err
+	}
+	strategies := m.codec.OutboundIPStrategies()
+	title := "出站 IP"
+	if setting == "fallback-ip" {
+		title = "回落 IP"
+	}
+	u.pageHeader("Xray（Docker）", title)
+	fmt.Fprintf(u.out, "当前生效：%s\n\n", cardText(outboundLabel(current)))
+	defaultChoice := -1
+	for index, strategy := range strategies {
+		label := outboundChoice(strategy)
+		if strategy == current {
+			label = "[当前] " + label
+			defaultChoice = index + 1
+		}
+		u.menuChoice(strconv.Itoa(index+1), label)
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择"+title, 0, len(strategies), defaultChoice)
+	if err != nil || choice == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	selected := strategies[choice-1]
+	if selected == current {
+		fmt.Fprintf(u.out, "[提示] %s 已经是 %s，无需修改。\n", title, cardText(outboundLabel(selected)))
+		return nil
+	}
+	u.confirmationPanel("操作确认：设置"+title, []string{"目标实例：" + Container, "当前生效：" + cardText(outboundLabel(current)), "新的策略：" + cardText(outboundLabel(selected))}, confirmSection{title: "将执行", items: []string{"更新 Xray 地址族策略", "使用当前镜像校验候选配置", "备份并原子更新当前服务端配置", "容器正在运行时重建使设置立即生效"}})
+	if err = u.confirm("更新" + title + "？"); err != nil {
+		return err
+	}
+	return m.PatchSetting(ctx, setting, selected)
+}
+
+func (m *Manager) serviceMenu(ctx context.Context, u *ui) error {
+	actions := map[int]string{1: "start", 2: "stop", 3: "restart", 5: "logs"}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "服务端配置", "服务管理")
+		u.menuChoice("1", "启动（启动容器）")
+		u.menuChoice("2", "停止（停止容器）")
+		u.menuChoice("3", "重启（重启使配置立即生效）")
+		u.menuChoice("4", "状态（查看容器运行状态）")
+		u.menuChoice("5", "最近日志（查看容器最近记录）")
+		u.menuChoice("6", "实时日志（Ctrl+C 返回）")
+		u.menuChoice("7", "运行用户（镜像默认或 root）")
+		u.menuChoice("0/q", "返回")
+		choice, err := u.chooseNumber("请选择", 0, 7, 4)
+		if err != nil {
+			return err
+		}
+		if choice == 0 {
+			return nil
+		}
+		if choice == 7 {
+			next, chooseErr := m.chooseRunAsRoot(u, m.savedRunAsRoot(), "Xray（Docker）", "服务端配置", "服务管理")
+			if errors.Is(chooseErr, errCancelled) {
+				continue
+			}
+			if chooseErr != nil {
+				return chooseErr
+			}
+			if _, metaErr := m.metadata(); os.IsNotExist(metaErr) {
+				fmt.Fprintln(u.out, "请先部署实例。")
+				if err := u.pause(); err != nil {
+					return err
+				}
+				continue
+			} else if metaErr != nil {
+				return metaErr
+			}
+			if next == m.savedRunAsRoot() {
+				fmt.Fprintf(u.out, "[提示] 运行用户已经是 %s，无需修改。\n", runUserLabel(next))
+				if err := u.pause(); err != nil {
+					return err
+				}
+				continue
+			}
+			err = m.confirmSetRunAsRoot(ctx, u, next)
+			if errors.Is(err, errCancelled) {
+				continue
+			}
+			if errors.Is(err, errQuit) || errors.Is(err, io.EOF) {
+				return err
+			}
+			if handled, pause := m.consumeInterrupt(err); pause {
+				err = handled
+			}
+			if err != nil && ctx.Err() == nil {
+				m.printMenuError(err)
+			}
+			if ctx.Err() != nil {
+				if err != nil {
+					return err
+				}
+				return ctx.Err()
+			}
+			if err := u.pause(); err != nil {
+				return err
+			}
+			continue
+		}
+		u.clearScreen()
+		if choice == 6 {
+			u.pageHeader("Xray（Docker）", "服务端配置", "服务管理", "实时日志")
+			err = m.followLogs(ctx, u)
+			if errors.Is(err, errQuit) {
+				return err
+			}
+			if err != nil && ctx.Err() == nil {
+				m.printMenuError(err)
+				if err := u.pause(); err != nil {
+					return err
+				}
+			}
+			if ctx.Err() != nil {
+				if err != nil {
+					return err
+				}
+				return ctx.Err()
+			}
+			continue
+		}
+		if choice == 4 {
+			st, e := m.Status(ctx)
+			u.pageHeader("Xray（Docker）", "服务端配置", "服务管理", "状态")
+			u.instanceCard(Container, "["+st.Label+"]", st.Version, st.Detail, m.instanceRows(st))
+			err = e
+		} else {
+			b, e := m.Service(ctx, actions[choice])
+			fmt.Fprint(m.out, string(b))
+			if len(b) > 0 && b[len(b)-1] != '\n' {
+				fmt.Fprintln(m.out)
+			}
+			err = e
+		}
+		if errors.Is(err, errQuit) {
+			return err
+		}
+		if next, pause := m.consumeInterrupt(err); pause {
+			err = next
+		}
+		if err != nil && ctx.Err() == nil {
+			m.printMenuError(err)
+		}
+		if errors.Is(err, io.EOF) {
+			return err
+		}
+		if ctx.Err() != nil {
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
+		}
+		if err := u.pause(); err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) clientMenu(ctx context.Context, u *ui) (bool, error) {
+	u.pageHeader("Xray（Docker）", "客户端配置")
+	u.menuChoice("1", "普通节点 · Clash YAML（Mihomo/Clash Meta）")
+	u.menuChoice("2", "普通节点 · 原生 JSON（Xray 客户端）")
+	u.menuChoice("3", "中转节点客户端配置（选择线路与格式）")
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择", 0, 3, 1)
+	if err != nil || choice == 0 {
+		return false, err
+	}
+	if choice == 3 {
+		return m.relayClientMenu(ctx, u)
+	}
+	format := "clash"
+	if choice == 2 {
+		format = "native"
+	}
+	return true, m.printClient(ctx, u, format, "")
+}
+
+func (m *Manager) relayClientMenu(ctx context.Context, u *ui) (bool, error) {
+	state, err := m.LoadState()
+	if err != nil {
+		return true, err
+	}
+	links := state.Node.RelayLinks
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "客户端配置", "中转节点")
+	if len(links) == 0 {
+		fmt.Fprintln(u.out, "尚未配置中转线路，请先从服务端配置中添加中转线路。")
+		return true, nil
+	}
+	for i, link := range links {
+		title := link.Name
+		if link.UserName != "" && link.UserName != link.Name {
+			title += " · 用户 " + link.UserName
+		}
+		u.menuBadge(strconv.Itoa(i+1), title, "["+enabledLabel(link.Enabled)+"]")
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择中转线路", 0, len(links), 1)
+	if err != nil || choice == 0 {
+		return false, err
+	}
+	selected := links[choice-1]
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "客户端配置", "中转节点", selected.Name)
+	u.menuChoice("1", "原生 JSON（Xray 客户端）")
+	u.menuChoice("2", "Clash YAML（Mihomo/Clash Meta）")
+	u.menuChoice("0/q", "返回")
+	formatChoice, err := u.chooseNumber("请选择客户端格式", 0, 2, 1)
+	if err != nil || formatChoice == 0 {
+		return false, err
+	}
+	format := "native"
+	if formatChoice == 2 {
+		format = "clash"
+	}
+	return true, m.printClient(ctx, u, format, selected.Name)
+}
+
+func (m *Manager) printClient(ctx context.Context, u *ui, format, name string) error {
+	b, err := m.Client(ctx, format, name)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(u.out, string(b))
+	if len(b) == 0 || b[len(b)-1] != '\n' {
+		fmt.Fprintln(u.out)
+	}
+	return nil
+}
+
+func (m *Manager) accessMenu(ctx context.Context, u *ui) error {
+	for {
+		s, err := m.readManagedState(ctx)
+		if err != nil {
+			return err
+		}
+		policy := s.Node.AccessPolicy
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "访问控制")
+		m.printAccessCard(u, policy)
+		u.menuChoice("1", "切换访问模式")
+		u.menuChoice("2", fmt.Sprintf("白名单管理（%d 条）", len(policy.Whitelist)))
+		u.menuChoice("3", fmt.Sprintf("黑名单管理（%d 条）", len(policy.Blacklist)))
+		switchAction := "关闭访问控制（保留模式和名单）"
+		if policy.Disabled {
+			switchAction = "启用访问控制（应用保存的模式和名单）"
+		}
+		u.menuChoice("4", switchAction)
+		u.menuChoice("0/q", "返回")
+		choice, err := u.chooseNumber("请选择", 0, 4, 0)
+		if err != nil {
+			return err
+		}
+		switch choice {
+		case 0:
+			return nil
+		case 1:
+			err = m.accessModeMenu(ctx, u)
+		case 2:
+			err = m.accessListMenu(ctx, u, "white")
+		case 3:
+			err = m.accessListMenu(ctx, u, "black")
+		case 4:
+			next := policy
+			next.Disabled = !policy.Disabled
+			message := "关闭访问控制？保留模式和两份名单，恢复原有拦截规则。"
+			if !next.Disabled {
+				message = "启用访问控制？按保存的模式和两份名单应用规则。"
+			}
+			if err = u.confirm(message); err == nil {
+				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) {
+					p.Disabled = next.Disabled
+					return p, nil
+				})
+			}
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) printAccessCard(u *ui, policy model.AccessPolicy) {
+	var order []string
+	if !policy.Disabled && len(policy.Whitelist) > 0 {
+		order = append(order, "白名单放行")
+	}
+	if policy.BlacklistEnabled() && len(policy.Blacklist) > 0 {
+		order = append(order, "黑名单拒绝")
+	}
+	order = append(order, "原有拦截")
+	defaultAction := "放行"
+	finalAction := "其余放行"
+	if !policy.Disabled && policy.EffectiveMode() == model.AccessModeWhitelist {
+		defaultAction = "拒绝；白名单为空时全部拒绝。"
+		finalAction = "其余拒绝"
+	}
+	order = append(order, finalAction)
+	u.labeledCard("访问策略", [][2]string{{"访问控制", accessSwitchLabel(policy)}, {"访问模式", accessPolicyModeLabel(policy)}, {"规则顺序", strings.Join(order, " → ")}, {"默认动作", defaultAction}})
+}
+
+func (m *Manager) accessModeMenu(ctx context.Context, u *ui) error {
+	s, err := m.readManagedState(ctx)
+	if err != nil {
+		return err
+	}
+	policy := s.Node.AccessPolicy
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "访问控制", "切换访问模式")
+	m.printAccessCard(u, policy)
+	modes := []string{model.AccessModeDefault, model.AccessModeWhitelist, model.AccessModeAuto}
+	defaultChoice := 1
+	for i, mode := range modes {
+		label := accessModeLabel(mode)
+		if mode == policy.Mode || mode == model.AccessModeAuto && policy.Mode == "" {
+			label += "（当前）"
+			defaultChoice = i + 1
+		}
+		u.menuChoice(strconv.Itoa(i+1), label)
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择访问模式", 0, len(modes), defaultChoice)
+	if err != nil || choice == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	mode := modes[choice-1]
+	next, err := policy.SelectMode(mode)
+	if err != nil {
+		return err
+	}
+	if next.Mode == policy.Mode {
+		fmt.Fprintln(u.out, "[提示] 访问模式没有变化。")
+		return nil
+	}
+	message := "将访问模式切换为" + accessModeLabel(next.Mode) + "？手动选择后，增删名单不会自动切换模式。"
+	if mode == model.AccessModeAuto {
+		message = "恢复自动选择？白名单有内容时仅允许白名单；清空或删除最后一条后自动恢复默认模式。"
+	}
+	if err = u.confirm(message); err != nil {
+		return err
+	}
+	return m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) {
+		return p.SelectMode(mode)
+	})
+}
+
+const accessListPageSize = 9
+
+func (m *Manager) accessListMenu(ctx context.Context, u *ui, listName string) error {
+	name := accessListName(listName)
+	page := 0
+	for {
+		entries, err := m.accessListEntries(ctx, listName)
+		if err != nil {
+			return err
+		}
+		start, _, pages := menuPageBounds(len(entries), page, accessListPageSize)
+		page = start / accessListPageSize
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "访问控制", name)
+		u.labeledCard("当前名单", accessListCardRows(name, entries, page))
+		u.printAccessRules(entries, page)
+		u.menuChoice("1", "添加规则（支持批量输入）")
+		if pages > 1 {
+			u.menuChoice("2", "删除规则（按页选择）")
+		} else {
+			u.menuChoice("2", "删除规则")
+		}
+		u.menuChoice("3", "清空名单")
+		u.menuChoice("0/q", "返回")
+		if nav := accessPageNav(page, pages); nav != "" {
+			fmt.Fprintln(u.out)
+			fmt.Fprintln(u.out, nav)
+		}
+		action, target, err := u.readAccessListCommand(page, pages)
+		if err != nil {
+			return err
+		}
+		switch action {
+		case "back":
+			return nil
+		case "next":
+			page++
+			continue
+		case "prev":
+			page--
+			continue
+		case "goto":
+			page = target
+			continue
+		case "add":
+			err = m.addAccessEntry(ctx, u, listName)
+			if err == nil {
+				// Newly added rules sit at the end. The next draw clamps this to the last page.
+				page = len(entries) + 1<<20
+			}
+		case "delete":
+			err = m.removeAccessEntry(ctx, u, listName, page)
+		case "clear":
+			message := "清空" + name + "？"
+			if listName == "white" {
+				message += "保留当前访问模式和开关；自动选择将恢复默认模式；访问控制启用时，手动仅白名单模式仍拒绝全部代理请求。"
+			}
+			if err = u.confirm(message); err == nil {
+				err = m.updatePolicy(ctx, func(p model.AccessPolicy) (model.AccessPolicy, error) { return p.ClearList(listName) })
+				page = 0
+			}
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) addAccessEntry(ctx context.Context, u *ui, listName string) error {
+	fmt.Fprintln(u.out, "\n支持多个目标，用空格、英文逗号或中文逗号分隔；输入 0/q 返回。")
+	value, err := u.ask("域名、IP 或 CIDR", "")
+	if err != nil {
+		return err
+	}
+	if value == "0" {
+		return errCancelled
+	}
+	entries, err := model.ParseAccessEntries(value, false)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(entries, func(entry model.AccessEntry) bool { return entry.Type == model.AccessEntryDomain }) {
+		u.menuChoice("1", "域名及其全部子域名（默认）")
+		u.menuChoice("2", "仅完整域名")
+		u.menuChoice("0/q", "返回")
+		choice, chooseErr := u.chooseNumberCancelable("请选择域名匹配方式", 1, 2, 1)
+		if chooseErr != nil {
+			return chooseErr
+		}
+		for i := range entries {
+			if entries[i].Type == model.AccessEntryDomain {
+				entries[i].IncludeSubdomains = choice != 2
+			}
+		}
+	}
+	fmt.Fprintln(u.out, "逐条设置目标端口；域名默认 80,443，IP/CIDR 默认所有端口；支持 80,443,8000-8100（也支持点号分隔），all 表示所有端口，q 返回。")
+	for i := range entries {
+		defaultPorts := "all"
+		if entries[i].Type == model.AccessEntryDomain {
+			defaultPorts = model.DefaultAccessDomainPorts
+		}
+		value, err := u.ask(entries[i].Value+" 的目标端口", defaultPorts)
+		if err != nil {
+			return err
+		}
+		entries[i].Ports, err = model.NormalizeAccessPorts(value)
+		if err != nil {
+			return fmt.Errorf("%s 的端口无效: %w", entries[i].Value, err)
+		}
+	}
+	return m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
+		return policy.AddEntries(listName, entries)
+	})
+}
+
+func (m *Manager) removeAccessEntry(ctx context.Context, u *ui, listName string, page int) error {
+	name := accessListName(listName)
+	for {
+		entries, err := m.accessListEntries(ctx, listName)
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			fmt.Fprintln(u.out, "当前名单是空的。")
+			return nil
+		}
+		start, end, pages := menuPageBounds(len(entries), page, accessListPageSize)
+		page = start / accessListPageSize
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "访问控制", name, "删除规则")
+		if pages > 1 {
+			fmt.Fprintf(u.out, "共 %d 条，第 %d/%d 页，输入编号删除。\n\n", len(entries), page+1, pages)
+		} else {
+			fmt.Fprintf(u.out, "共 %d 条，输入编号删除。\n\n", len(entries))
+		}
+		for i := start; i < end; i++ {
+			u.menuChoice(strconv.Itoa(i+1), accessEntryLabel(entries[i]))
+		}
+		if nav := accessPageNav(page, pages); nav != "" {
+			fmt.Fprintln(u.out)
+			fmt.Fprintln(u.out, nav)
+		}
+		u.menuChoice("0/q", "返回")
+		action, target, readErr := u.readAccessDeleteCommand(start, end, page, pages)
+		if readErr != nil {
+			return readErr
+		}
+		switch action {
+		case "back":
+			return nil
+		case "next":
+			page++
+			continue
+		case "prev":
+			page--
+			continue
+		case "goto":
+			page = target
+			continue
+		case "pick":
+			chosen := entries[target-1]
+			err = m.updatePolicy(ctx, func(policy model.AccessPolicy) (model.AccessPolicy, error) {
+				if listName == "black" {
+					policy.Blacklist = removeAccessEntryOnce(policy.Blacklist, chosen)
+				} else {
+					policy.Whitelist = removeAccessEntryOnce(policy.Whitelist, chosen)
+				}
+				return policy, nil
+			})
+		default:
+			continue
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) accessListEntries(ctx context.Context, listName string) ([]model.AccessEntry, error) {
+	s, err := m.readManagedState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if listName == "black" {
+		return s.Node.AccessPolicy.Blacklist, nil
+	}
+	return s.Node.AccessPolicy.Whitelist, nil
+}
+
+func accessListName(listName string) string {
+	if listName == "black" {
+		return "黑名单"
+	}
+	return "白名单"
+}
+
+func accessListCardRows(name string, entries []model.AccessEntry, page int) [][2]string {
+	start, _, pages := menuPageBounds(len(entries), page, accessListPageSize)
+	count := strconv.Itoa(len(entries)) + " 条"
+	if pages > 1 {
+		count += fmt.Sprintf(" · 第 %d/%d 页", start/accessListPageSize+1, pages)
+	}
+	rows := [][2]string{{"名单", name}, {"规则数量", count}}
+	if len(entries) == 0 {
+		rows = append(rows, [2]string{"名单内容", "暂无规则"})
+	}
+	return rows
+}
+
+func (u *ui) printAccessRules(entries []model.AccessEntry, page int) {
+	if len(entries) == 0 {
+		return
+	}
+	start, end, _ := menuPageBounds(len(entries), page, accessListPageSize)
+	for i := start; i < end; i++ {
+		fmt.Fprintf(u.out, "  %-3d %s\n", i+1, accessEntryLabel(entries[i]))
+	}
+	fmt.Fprintln(u.out)
+}
+
+func accessPageNav(page, pages int) string {
+	if pages <= 1 {
+		return ""
+	}
+	nav := make([]string, 0, 4)
+	if page+1 < pages {
+		nav = append(nav, "n 下一页")
+	}
+	if page > 0 {
+		nav = append(nav, "p 上一页")
+	}
+	nav = append(nav, "g/G 首/末页", "pN 跳页")
+	return "  " + strings.Join(nav, "  ·  ")
+}
+
+func menuPageBounds(total, page, pageSize int) (start, end, pages int) {
+	if pageSize <= 0 {
+		pageSize = 1
+	}
+	if total <= 0 {
+		return 0, 0, 1
+	}
+	pages = (total + pageSize - 1) / pageSize
+	if page < 0 {
+		page = 0
+	}
+	if page >= pages {
+		page = pages - 1
+	}
+	start = page * pageSize
+	end = start + pageSize
+	if end > total {
+		end = total
+	}
+	return start, end, pages
+}
+
+func parseAccessPageInput(value string, page, pages int) (string, int, bool) {
+	switch {
+	case strings.EqualFold(value, "n"):
+		if page+1 < pages {
+			return "next", 0, true
+		}
+	case value == "p":
+		if page > 0 {
+			return "prev", 0, true
+		}
+	case value == "g":
+		if pages > 1 {
+			return "goto", 0, true
+		}
+	case value == "G":
+		if pages > 1 {
+			return "goto", pages - 1, true
+		}
+	}
+	if pages > 1 && len(value) > 1 && (value[0] == 'p' || value[0] == 'P') {
+		target, err := strconv.Atoi(value[1:])
+		if err == nil && target >= 1 && target <= pages {
+			return "goto", target - 1, true
+		}
+	}
+	return "", 0, false
+}
+
+func parseAccessListInput(value string, page, pages int) (string, int, bool) {
+	switch {
+	case strings.EqualFold(value, "q") || value == "0":
+		return "back", 0, true
+	case value == "1":
+		return "add", 0, true
+	case value == "2":
+		return "delete", 0, true
+	case value == "3":
+		return "clear", 0, true
+	}
+	if action, target, ok := parseAccessPageInput(value, page, pages); ok {
+		return action, target, true
+	}
+	return "", 0, false
+}
+
+func parseAccessDeleteInput(value string, start, end, page, pages int) (string, int, bool) {
+	switch {
+	case strings.EqualFold(value, "q") || value == "0":
+		return "back", 0, true
+	}
+	if action, target, ok := parseAccessPageInput(value, page, pages); ok {
+		return action, target, true
+	}
+	choice, err := strconv.Atoi(value)
+	if err == nil && choice >= start+1 && choice <= end {
+		return "pick", choice, true
+	}
+	return "", 0, false
+}
+
+func (u *ui) readAccessListCommand(page, pages int) (string, int, error) {
+	hint := "无效选择，请输入 0 到 3 之间的数字。"
+	if pages > 1 {
+		hint = "无效选择，请输入菜单编号，或使用 n/p/g/G/pN 翻页。"
+	}
+	return u.readAccessCommand("❯ 请选择 [0]：", hint, func(value string) (string, int, bool) {
+		if value == "" {
+			return "back", 0, true
+		}
+		return parseAccessListInput(value, page, pages)
+	})
+}
+
+func (u *ui) readAccessDeleteCommand(start, end, page, pages int) (string, int, error) {
+	hint := fmt.Sprintf("无效选择，请输入 %d 到 %d 之间的数字，或输入 q/0 返回。", start+1, end)
+	if pages > 1 {
+		hint = fmt.Sprintf("无效选择，请输入本页编号 %d 到 %d，或使用 n/p/g/G/pN 翻页。输入 q/0 返回。", start+1, end)
+	}
+	return u.readAccessCommand("❯ 请选择要删除的规则：", hint, func(value string) (string, int, bool) {
+		if value == "" {
+			return "", 0, false
+		}
+		return parseAccessDeleteInput(value, start, end, page, pages)
+	})
+}
+
+func (u *ui) readAccessCommand(prompt, hint string, parse func(string) (string, int, bool)) (string, int, error) {
+	invalidShown := false
+	firstPrompt := true
+	for {
+		if firstPrompt {
+			fmt.Fprintln(u.out)
+			firstPrompt = false
+		}
+		fmt.Fprint(u.out, prompt)
+		line, err := u.readLine()
+		if errors.Is(err, errInterrupted) {
+			fmt.Fprintln(u.out)
+			return "", 0, errQuit
+		}
+		if err != nil && len(line) == 0 {
+			return "", 0, err
+		}
+		pasted := u.discardBufferedInput()
+		value := strings.TrimSpace(line)
+		if action, target, ok := parse(value); ok {
+			return action, target, nil
+		}
+		if u.interactive {
+			eraseChoiceRetry(u.out, false)
+		}
+		if pasted {
+			fmt.Fprintln(u.out, "检测到粘贴了多行内容，已忽略多余输入。")
+			invalidShown = true
+			continue
+		}
+		if value == "" || invalidShown {
+			continue
+		}
+		fmt.Fprintln(u.out, hint)
+		invalidShown = true
+	}
+}
+
+func removeAccessEntryOnce(list []model.AccessEntry, target model.AccessEntry) []model.AccessEntry {
+	filtered := make([]model.AccessEntry, 0, len(list))
+	removed := false
+	for _, item := range list {
+		if !removed && item == target {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func (m *Manager) linkMenu(ctx context.Context, u *ui) error {
+	for {
+		state, err := m.LoadState()
+		if err != nil {
+			return err
+		}
+		node := state.Node
+		u.clearScreen()
+		u.pageHeader("Xray（Docker）", "中转与落地线路")
+		relayTotal, relayOn := countEnabled(node.RelayLinks, func(item model.RelayLink) bool { return item.Enabled })
+		landingTotal, landingOn := countEnabled(node.LandingAccesses, func(item model.LandingAccess) bool { return item.Enabled })
+		port := "未生成"
+		if node.Port >= 1 && node.Port <= 65535 {
+			port = strconv.Itoa(node.Port)
+		} else if strings.TrimSpace(node.SNI) != "" {
+			port = "无法读取"
+		}
+		relaySecurity := make([]string, 0, len(node.RelayLinks))
+		for _, link := range node.RelayLinks {
+			relaySecurity = append(relaySecurity, link.Upstream.Security)
+		}
+		landingSecurity := make([]string, 0, len(node.LandingAccesses))
+		for _, access := range node.LandingAccesses {
+			landingSecurity = append(landingSecurity, access.Security)
+		}
+		u.labeledCard("当前线路", [][2]string{
+			{"监听端口", port},
+			{"中转", linkSummary(true, true, relayTotal, relayOn)},
+			{"中转协议", linkProtocolDisplay(relaySecurity)},
+			{"落地", linkSummary(true, true, landingTotal, landingOn)},
+			{"落地协议", linkProtocolDisplay(landingSecurity)},
+		})
+		u.menuChoice("1", "添加中转线路（专用用户流量转发到远程落地）")
+		u.menuChoice("2", "管理中转线路")
+		u.menuChoice("3", "创建落地接入（允许中转机连接本机）")
+		u.menuChoice("4", "管理落地接入")
+		u.menuChoice("5", "查看流量关系")
+		u.menuChoice("0/q", "返回")
+		choice, err := u.chooseNumber("请选择", 0, 5, 0)
+		if err != nil {
+			return err
+		}
+		if choice == 0 {
+			return nil
+		}
+		u.clearScreen()
+		switch choice {
+		case 1:
+			err = m.addRelayInteractive(ctx, u)
+		case 2:
+			err = m.manageRelays(ctx, u)
+		case 3:
+			err = m.addLandingInteractive(ctx, u, node)
+		case 4:
+			err = m.manageLandings(ctx, u)
+		case 5:
+			err = m.printLinkGraph(u, node)
+		}
+		if errors.Is(err, errCancelled) {
+			continue
+		}
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) || errors.Is(err, errQuit) || errors.Is(err, errBack) || errors.Is(err, errInterrupted) {
+				return err
+			}
+			m.printMenuError(err)
+		}
+		if err := u.pause(); err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) addLandingInteractive(ctx context.Context, u *ui, node model.Node) error {
+	u.pageHeader("Xray（Docker）", "创建落地接入")
+	protocol := "REALITY"
+	if node.IsTLS() {
+		protocol = "TLS"
+	}
+	u.menuChoice("1", fmt.Sprintf("使用当前协议（%s，复用端口 %d）", protocol, node.Port))
+	u.menuChoice("2", "创建 VLESS + RAW + TLS + Vision（随机高位独立端口）")
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumberCancelable("请选择落地接入协议", 1, 2, 1)
+	if err != nil {
+		return err
+	}
+	security := model.LandingSecurityCurrent
+	port := 0
+	if choice == 2 {
+		security = "tls"
+	}
+	name, err := u.ask("接入名称", nextLandingName(node))
+	if err != nil {
+		return err
+	}
+	peer, err := m.AddLanding(ctx, name, security, port)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(u.out, "落地连接信息：")
+	b, err := landingText(peer)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(u.out, string(b))
+	if peer.Security == model.LandingSecurityTLS && choice == 2 {
+		fmt.Fprintf(u.out, "请放行防火墙和云安全组 TCP 端口 %d。\n", peer.Port)
+	}
+	return nil
+}
+
+func (m *Manager) addRelayInteractive(ctx context.Context, u *ui) error {
+	u.pageHeader("Xray（Docker）", "添加中转线路")
+	peer, err := m.askLandingSource(ctx, u)
+	if err != nil {
+		return err
+	}
+	name, err := u.ask("线路名称", peer.Name)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(u.out, "落地：%s · %s\n", net.JoinHostPort(peer.Server, strconv.Itoa(peer.Port)), landingProtocolLabel(peer.Security))
+	if err := u.confirm("创建独立中转用户？该用户固定走指定落地，落地不可用时连接失败，不回退本机出口。"); err != nil {
+		return err
+	}
+	return m.saveRelayInteractive(ctx, u, name, peer, false)
+}
+
+func (m *Manager) manageRelays(ctx context.Context, u *ui) error {
+	state, err := m.LoadState()
+	if err != nil {
+		return err
+	}
+	links := state.Node.RelayLinks
+	u.pageHeader("Xray（Docker）", "管理中转线路")
+	if len(links) == 0 {
+		fmt.Fprintln(u.out, "尚未配置中转线路。")
+		return nil
+	}
+	for i, link := range links {
+		title := link.Name + " · " + model.RelayOutboundTag(link.Name) + " · " + net.JoinHostPort(link.Upstream.Server, strconv.Itoa(link.Upstream.Port))
+		u.menuBadge(strconv.Itoa(i+1), title, "["+enabledLabel(link.Enabled)+"]")
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择中转线路", 0, len(links), 1)
+	if err != nil || choice == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	link := links[choice-1]
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "管理中转线路", model.RelayOutboundTag(link.Name))
+	u.labeledCard("当前中转", [][2]string{
+		{"线路名称", link.Name}, {"客户端用户", link.UserName}, {"出站 tag", model.RelayOutboundTag(link.Name)},
+		{"落地地址", net.JoinHostPort(link.Upstream.Server, strconv.Itoa(link.Upstream.Port))},
+		{"落地协议", landingProtocolLabel(link.Upstream.Security)}, {"状态", enabledLabel(link.Enabled)},
+	})
+	u.menuChoice("1", "导出客户端配置（原生 JSON / Clash）")
+	u.menuChoice("2", "测试落地 TCP 连通性")
+	u.menuChoice("3", "更新落地连接信息")
+	u.menuChoice("4", "轮换中转客户端 UUID")
+	action := "停用线路"
+	if !link.Enabled {
+		action = "启用线路"
+	}
+	u.menuChoice("5", action)
+	u.menuChoice("6", "删除线路")
+	u.menuChoice("0/q", "返回")
+	selected, err := u.chooseNumber("请选择", 0, 6, 0)
+	if err != nil {
+		return err
+	}
+	switch selected {
+	case 0:
+		return errCancelled
+	case 1:
+		u.menuChoice("1", "原生 JSON")
+		u.menuChoice("2", "Clash/Mihomo YAML")
+		format, err := u.chooseNumberCancelable("请选择客户端格式", 1, 2, 1)
+		if err != nil {
+			return err
+		}
+		kind := "native"
+		if format == 2 {
+			kind = "clash"
+		}
+		b, err := m.RelayClient(ctx, kind, link.Name)
+		if err != nil {
+			return err
+		}
+		_, err = u.out.Write(b)
+		return err
+	case 2:
+		if err := m.TestRelay(ctx, link.Name); err != nil {
+			return err
+		}
+		fmt.Fprintln(u.out, "落地端点 TCP 可达；此检查不验证 UUID 或完整代理链路。")
+		return nil
+	case 3:
+		peer, err := m.askLandingSource(ctx, u)
+		if err != nil {
+			return err
+		}
+		if err := u.confirm("更新上游落地？本机中转 UUID 和启停状态保持不变。"); err != nil {
+			return err
+		}
+		return m.saveRelayInteractive(ctx, u, link.Name, peer, true)
+	case 4:
+		if err := u.confirm("轮换中转 UUID？该线路旧客户端将立即失效，需要重新导出。"); err != nil {
+			return err
+		}
+		return m.ChangeLink(ctx, "relay", link.Name, "rotate")
+	case 5:
+		command := "enable"
+		if link.Enabled {
+			command = "disable"
+		}
+		return m.ChangeLink(ctx, "relay", link.Name, command)
+	default:
+		if err := u.confirm("删除中转线路？对应用户、路由和出站将被移除。"); err != nil {
+			return err
+		}
+		return m.ChangeLink(ctx, "relay", link.Name, "remove")
+	}
+}
+
+func (m *Manager) manageLandings(ctx context.Context, u *ui) error {
+	state, err := m.LoadState()
+	if err != nil {
+		return err
+	}
+	items := state.Node.LandingAccesses
+	u.pageHeader("Xray（Docker）", "管理落地接入")
+	if len(items) == 0 {
+		fmt.Fprintln(u.out, "尚未配置落地接入。")
+		return nil
+	}
+	for i, item := range items {
+		title := item.Name + " · 当前 " + strings.ToUpper(state.Node.Security)
+		if !item.UsesPrimaryInbound() {
+			title = fmt.Sprintf("%s · TLS :%d", item.Name, item.Port)
+		}
+		u.menuBadge(strconv.Itoa(i+1), title, "["+enabledLabel(item.Enabled)+"]")
+	}
+	u.menuChoice("0/q", "返回")
+	choice, err := u.chooseNumber("请选择落地接入", 0, len(items), 1)
+	if err != nil || choice == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	item := items[choice-1]
+	u.clearScreen()
+	u.pageHeader("Xray（Docker）", "管理落地接入", item.Name)
+	endpoint := fmt.Sprintf("复用当前 %s 入站 :%d", strings.ToUpper(state.Node.Security), state.Node.Port)
+	security := state.Node.Security
+	if !item.UsesPrimaryInbound() {
+		endpoint = fmt.Sprintf("独立 TLS 端口 %d · %s", item.Port, item.SNI)
+		security = item.Security
+	}
+	u.labeledCard("当前落地", [][2]string{{"接入名称", item.Name}, {"接入用户", item.UserName}, {"落地协议", landingProtocolLabel(security)}, {"接入方式", endpoint}, {"状态", enabledLabel(item.Enabled)}})
+	u.menuChoice("1", "显示可复制的落地连接文本")
+	u.menuChoice("2", "轮换接入 UUID")
+	action := "停用接入"
+	if !item.Enabled {
+		action = "启用接入"
+	}
+	u.menuChoice("3", action)
+	u.menuChoice("4", "删除接入")
+	u.menuChoice("0/q", "返回")
+	selected, err := u.chooseNumber("请选择", 0, 4, 0)
+	if err != nil || selected == 0 {
+		if err == nil {
+			return errCancelled
+		}
+		return err
+	}
+	if selected == 1 {
+		peer, err := m.peer(ctx, item.Name)
+		if err != nil {
+			return err
+		}
+		b, err := landingText(peer)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(u.out, "请复制下面完整的 JSON 文本：")
+		fmt.Fprint(u.out, string(b))
+		return nil
+	}
+	command := "disable"
+	if selected == 2 {
+		if err := u.confirm("轮换落地 UUID？使用旧连接文本的中转机将失效，需要重新导入。"); err != nil {
+			return err
+		}
+		command = "rotate"
+	} else if selected == 4 {
+		if err := u.confirm("删除落地接入？使用该 UUID 的中转机将立即断开。"); err != nil {
+			return err
+		}
+		command = "remove"
+	} else if !item.Enabled {
+		command = "enable"
+	}
+	return m.ChangeLink(ctx, "landing", item.Name, command)
+}
+
+func (m *Manager) printLinkGraph(u *ui, node model.Node) error {
+	u.pageHeader("Xray（Docker）", "流量关系")
+	fmt.Fprintln(u.out, "普通用户\n  └─ direct（本机出口）")
+	for _, link := range node.RelayLinks {
+		fmt.Fprintf(u.out, "中转用户 %s [%s]\n  └─ %s:%d · %s\n", link.UserName, enabledLabel(link.Enabled), link.Upstream.Server, link.Upstream.Port, strings.ToUpper(model.NormalizeLandingSecurity(link.Upstream.Security)))
+	}
+	for _, access := range node.LandingAccesses {
+		protocol := strings.ToUpper(model.NormalizeLandingSecurity(access.Security)) + "（当前端口）"
+		if !access.UsesPrimaryInbound() {
+			protocol = fmt.Sprintf("TLS :%d", access.Port)
+		}
+		fmt.Fprintf(u.out, "落地接入 %s [%s · %s]\n  └─ direct（本机出口）\n", access.UserName, enabledLabel(access.Enabled), protocol)
+	}
+	return nil
+}
+
+func linkProtocolDisplay(securities []string) string {
+	if len(securities) == 0 {
+		return "未使用"
+	}
+	hasReality, hasTLS := false, false
+	var others []string
+	seenOther := map[string]struct{}{}
+	for _, security := range securities {
+		switch model.NormalizeLandingSecurity(security) {
+		case model.LandingSecurityTLS:
+			hasTLS = true
+		case model.LandingSecurityReality:
+			hasReality = true
+		default:
+			label := landingProtocolLabel(security)
+			if _, exists := seenOther[label]; exists {
+				continue
+			}
+			seenOther[label] = struct{}{}
+			others = append(others, label)
+		}
+	}
+	parts := make([]string, 0, 2+len(others))
+	if hasReality {
+		parts = append(parts, landingProtocolLabel(model.LandingSecurityReality))
+	}
+	if hasTLS {
+		parts = append(parts, landingProtocolLabel(model.LandingSecurityTLS))
+	}
+	return strings.Join(append(parts, others...), " · ")
+}
+
+func landingProtocolLabel(security string) string {
+	switch model.NormalizeLandingSecurity(security) {
+	case model.LandingSecurityTLS:
+		return "VLESS + RAW + TLS + Vision"
+	case model.LandingSecurityReality:
+		return "VLESS + RAW + REALITY + Vision"
+	default:
+		return strings.ToUpper(strings.TrimSpace(security))
+	}
+}

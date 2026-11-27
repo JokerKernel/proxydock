@@ -1,0 +1,175 @@
+package docker
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"proxydock/internal/docker/model"
+)
+
+type Metadata struct {
+	SchemaVersion    int       `json:"schema_version"`
+	ManagedBy        string    `json:"managed_by"`
+	InstanceID       string    `json:"instance_id"`
+	ImageRef         string    `json:"image_ref"`
+	ImageID          string    `json:"image_id"`
+	Version          string    `json:"version"`
+	RequestedVersion string    `json:"requested_version"`
+	Channel          string    `json:"channel"`
+	Network          string    `json:"network"`
+	ComposeSHA256    string    `json:"compose_sha256"`
+	ImageUser        string    `json:"image_user,omitempty"`
+	RunAsRoot        bool      `json:"run_as_root,omitempty"`
+	DesiredState     string    `json:"desired_state"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+type State struct {
+	SchemaVersion int        `json:"schema_version"`
+	ManagedBy     string     `json:"managed_by"`
+	InstanceID    string     `json:"instance_id"`
+	Node          model.Node `json:"node"`
+}
+
+func (m *Manager) metadata() (Metadata, error) {
+	var md Metadata
+	err := loadJSON(m.paths.Metadata(), &md)
+	if err != nil {
+		return md, err
+	}
+	if md.SchemaVersion != 1 || md.ManagedBy != "proxydock" || md.InstanceID != Instance || !validImageRef(md.ImageRef) || !validImageID(md.ImageID) || (md.DesiredState != "stopped" && md.DesiredState != "running") || (md.Channel != "pinned" && md.Channel != "latest" && md.Channel != "pre-release") || !validNetwork(md.Network) {
+		return md, fmt.Errorf("Docker 部署记录标识或镜像无效")
+	}
+	return md, nil
+}
+
+func (m *Manager) preparedMetadata() (Metadata, error) {
+	md, err := m.metadata()
+	if os.IsNotExist(err) {
+		return md, fmt.Errorf("尚未准备 Xray 镜像和部署参数，请先进入“安装与更新”完成安装")
+	}
+	if err != nil {
+		return md, err
+	}
+	if err := m.checkOwner(); err != nil {
+		return md, fmt.Errorf("实例数据不完整或归属记录无效，拒绝修改配置: %w", err)
+	}
+	return md, nil
+}
+
+func (m *Manager) LoadState() (State, error) {
+	var s State
+	err := loadJSON(m.paths.State(), &s)
+	if err != nil {
+		return s, err
+	}
+	if s.SchemaVersion != 1 || s.ManagedBy != "proxydock" || s.InstanceID != Instance || s.Node.Core != model.CoreXray || s.Node.ManagedBy != "proxydock" || s.Node.SchemaVersion != model.StateSchemaVersion || (s.Node.Security != model.LandingSecurityReality && s.Node.Security != model.LandingSecurityTLS) {
+		return s, fmt.Errorf("Docker 节点状态标识无效")
+	}
+	for _, access := range s.Node.LandingAccesses {
+		if (access.Security != model.LandingSecurityReality && access.Security != model.LandingSecurityTLS) || (access.Security == model.LandingSecurityReality && access.Port != 0) {
+			return s, fmt.Errorf("落地接入协议或端口无效")
+		}
+	}
+	for _, relay := range s.Node.RelayLinks {
+		if err := validatePeer(relay.Upstream); err != nil {
+			return s, err
+		}
+	}
+	return s, nil
+}
+func (m *Manager) managedFiles() []string {
+	return []string{m.paths.Compose(), m.paths.Config(), m.paths.Metadata(), m.paths.State()}
+}
+func (m *Manager) saveNode(n model.Node) error {
+	if n.Core != model.CoreXray || n.ManagedBy != "proxydock" || n.SchemaVersion != model.StateSchemaVersion || (n.Security != model.LandingSecurityReality && n.Security != model.LandingSecurityTLS) {
+		return fmt.Errorf("拒绝保存非 Docker Xray 节点")
+	}
+	s := State{SchemaVersion: model.StateSchemaVersion, ManagedBy: "proxydock", InstanceID: Instance, Node: n}
+	data, err := jsonBytes(s)
+	if err != nil {
+		return err
+	}
+	return m.stateWrite(m.paths.State(), data, 0600)
+}
+func (m *Manager) checkCompose(md Metadata) error {
+	if md.ComposeSHA256 == "" {
+		// A prepared image has no runtime definition until its first config.
+		for _, path := range []string{m.paths.Compose(), m.paths.Config(), m.paths.State()} {
+			if _, err := os.Lstat(path); err == nil {
+				return fmt.Errorf("尚未配置的部署存在配置文件，拒绝操作: %s", path)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	current, _, err := m.classifyCompose(md)
+	if err != nil || current {
+		return err
+	}
+	// An authentic copy of the previous root pin is still our file. Start,
+	// restart, upgrade, and the next compose rewrite move it to the image user.
+	return nil
+}
+
+func (m *Manager) saveDeploymentParameters(md Metadata) error {
+	md.UpdatedAt = m.now().UTC()
+	if err := saveJSON(m.paths.Metadata(), md); err != nil {
+		return err
+	}
+	m.op(phaseApply, levelStep, "保存部署参数", m.paths.Metadata())
+	return nil
+}
+func (m *Manager) managedConfig() (State, []byte, error) {
+	s, err := m.LoadState()
+	if err != nil {
+		return s, nil, err
+	}
+	b, err := readPrivate(m.paths.Config())
+	if err != nil {
+		return s, nil, err
+	}
+	if s.Node.ConfigSHA256 == "" || digest(b) != s.Node.ConfigSHA256 {
+		return s, nil, fmt.Errorf("配置与受管状态不一致；请重新生成配置或通过编辑入口恢复一致性")
+	}
+	return s, b, nil
+}
+
+func (m *Manager) readManagedState(ctx context.Context) (State, error) {
+	var state State
+	err := m.withLock(ctx, func() error {
+		if err := m.checkNoTransaction(); err != nil {
+			return err
+		}
+		if err := m.checkOwner(); err != nil {
+			return err
+		}
+		var err error
+		state, _, err = m.managedConfig()
+		return err
+	})
+	return state, err
+}
+
+// Read-only operations must not recover a transaction or consume partial state.
+func (m *Manager) checkNoTransaction() error {
+	if err := safePath(m.paths.Journal()); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(m.paths.Journal()); err == nil {
+		return fmt.Errorf("存在未完成事务，请先执行 proxydock recover")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+func (m *Manager) hasData() bool {
+	for _, p := range []string{m.paths.Data(), m.paths.Deploy(), m.paths.CleanupRecord()} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			return true
+		}
+	}
+	return false
+}

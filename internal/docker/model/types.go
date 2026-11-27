@@ -1,0 +1,154 @@
+package model
+
+import (
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"time"
+)
+
+const (
+	CoreXray               = "xray"
+	VisionFlow             = "xtls-rprx-vision"
+	LandingSecurityCurrent = "current"
+	LandingSecurityReality = "reality"
+	LandingSecurityTLS     = "tls"
+	DefaultUserName        = "one"
+	DefaultInboundTag      = "docker-one"
+	FallbackPortMin        = 30000
+	FallbackPortMax        = 65000
+	StateSchemaVersion     = 1
+)
+
+// LandingPeer is the portable, client-side description of a managed landing
+// access. It intentionally never contains the landing server's private key.
+type LandingPeer struct {
+	Name                       string `json:"name"`
+	Core                       string `json:"core"`
+	Security                   string `json:"security"`
+	Server                     string `json:"server"`
+	Port                       int    `json:"port"`
+	SNI                        string `json:"sni"`
+	UUID                       string `json:"uuid"`
+	PublicKey                  string `json:"public_key,omitempty"`
+	ShortID                    string `json:"short_id,omitempty"`
+	CertificateSHA256          string `json:"certificate_sha256,omitempty"`
+	CertificatePublicKeySHA256 string `json:"certificate_public_key_sha256,omitempty"`
+	Flow                       string `json:"flow"`
+}
+
+type LandingAccess struct {
+	Name                       string    `json:"name"`
+	UserName                   string    `json:"user_name"`
+	UUID                       string    `json:"uuid"`
+	Security                   string    `json:"security"`
+	Port                       int       `json:"port,omitempty"`
+	SNI                        string    `json:"sni,omitempty"`
+	CertificateFile            string    `json:"certificate_file,omitempty"`
+	KeyFile                    string    `json:"key_file,omitempty"`
+	CertificateSHA256          string    `json:"certificate_sha256,omitempty"`
+	CertificatePublicKeySHA256 string    `json:"certificate_public_key_sha256,omitempty"`
+	Enabled                    bool      `json:"enabled"`
+	UpdatedAt                  time.Time `json:"updated_at"`
+}
+
+func NormalizeLandingSecurity(security string) string {
+	return strings.ToLower(strings.TrimSpace(security))
+}
+
+func ValidCertificateSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
+}
+
+func ValidCertificatePublicKeySHA256(value string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	return err == nil && len(decoded) == 32 && base64.StdEncoding.EncodeToString(decoded) == value
+}
+
+func RelayOutboundTag(name string) string { return name + "-out" }
+
+func LandingTLSInboundTag(name string) string { return name + "-in" }
+
+type RelayLink struct {
+	Name      string      `json:"name"`
+	UserName  string      `json:"user_name"`
+	UUID      string      `json:"uuid"`
+	Enabled   bool        `json:"enabled"`
+	Upstream  LandingPeer `json:"upstream"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
+type Node struct {
+	AccessPolicySniffing    map[string]json.RawMessage `json:"access_policy_sniffing,omitempty"`
+	AccessPolicy            AccessPolicy               `json:"access_policy"`
+	Security                string                     `json:"security"`
+	TLSCertificate          *LandingAccess             `json:"tls_certificate,omitempty"`
+	SchemaVersion           int                        `json:"schema_version"`
+	ManagedBy               string                     `json:"managed_by"`
+	Core                    string                     `json:"core"`
+	InboundTag              string                     `json:"inbound_tag"`
+	Server                  string                     `json:"server"`
+	Port                    int                        `json:"port"`
+	SNI                     string                     `json:"sni"`
+	Target                  string                     `json:"target"`
+	UserName                string                     `json:"user_name"`
+	XrayFallbackGuard       bool                       `json:"xray_fallback_guard,omitempty"`
+	XrayFallbackPort        int                        `json:"xray_fallback_port,omitempty"`
+	XrayFallbackHTTPDomain  bool                       `json:"xray_fallback_http_domain,omitempty"`
+	XrayFallbackExactDomain bool                       `json:"xray_fallback_exact_domain,omitempty"`
+	UUID                    string                     `json:"uuid"`
+	PrivateKey              string                     `json:"private_key"`
+	PublicKey               string                     `json:"public_key"`
+	ShortID                 string                     `json:"short_id"`
+	CoreVersion             string                     `json:"core_version"`
+	ConfigSHA256            string                     `json:"config_sha256"`
+	UpdatedAt               time.Time                  `json:"updated_at"`
+	LandingAccesses         []LandingAccess            `json:"landing_accesses,omitempty"`
+	RelayLinks              []RelayLink                `json:"relay_links,omitempty"`
+}
+
+type GenerateOptions struct {
+	Security                string
+	RotateCertificate       bool
+	Server                  string
+	Port                    int
+	SNI                     string
+	Target                  string
+	UserName                string
+	InboundTag              string
+	StandardConfig          bool
+	XrayFallbackGuard       bool
+	XrayFallbackPort        int
+	XrayFallbackHTTPDomain  bool
+	XrayFallbackExactDomain bool
+	// ApplyFallbackPolicy writes the two domain flags even when they are false.
+	// The interactive menu sets it. CLI flags leave it unset and can only turn a flag on.
+	ApplyFallbackPolicy bool
+	RotateCredentials   bool
+	DropLinks           bool
+}
+
+type ResetOptions struct {
+	RotateCertificate bool
+	SNI               string
+	Target            string
+	// Credentials rotates UUID and, for REALITY, its key material and short ID.
+	Credentials bool
+}
+
+type KeyPair struct {
+	Private string
+	Public  string
+}
+
+func (n Node) IsTLS() bool { return n.Security == LandingSecurityTLS }
+
+// A zero-port access shares the primary inbound.
+func (a LandingAccess) UsesPrimaryInbound() bool {
+	return a.Port == 0
+}

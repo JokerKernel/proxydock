@@ -1,0 +1,4 @@
+/proxydock
+/dist/
+*.test
+*.out

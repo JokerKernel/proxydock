@@ -1,0 +1,955 @@
+package docker
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"proxydock/internal/docker/model"
+)
+
+func (m *Manager) ensureDirs() error {
+	if err := m.ensureOwner(); err != nil {
+		return err
+	}
+	for _, p := range []string{m.paths.Deploy(), filepath.Dir(m.paths.Config()), m.paths.TLS(), m.paths.Data(), m.paths.Staging()} {
+		if err := privateDir(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) ensureOwner() error {
+	if err := m.checkOwner(); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	for _, path := range []string{m.paths.Data(), m.paths.Deploy()} {
+		entries, err := os.ReadDir(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("目录含未受管文件，拒绝接管: %s", path)
+		}
+	}
+	return saveJSON(m.paths.Owner(), ownership{SchemaVersion: 1, ManagedBy: "proxydock", InstanceID: Instance})
+}
+
+type ownership struct {
+	SchemaVersion int    `json:"schema_version"`
+	ManagedBy     string `json:"managed_by"`
+	InstanceID    string `json:"instance_id"`
+}
+
+func (m *Manager) checkOwner() error {
+	var o ownership
+	if err := loadJSON(m.paths.Owner(), &o); err != nil {
+		return err
+	}
+	if o.SchemaVersion != 1 || o.ManagedBy != "proxydock" || o.InstanceID != Instance {
+		return fmt.Errorf("Docker 目录归属记录无效")
+	}
+	return nil
+}
+func (m *Manager) checkProject(ctx context.Context) error {
+	b, err := m.docker(ctx, "container", "ls", "--all", "--filter", "label=com.docker.compose.project="+Project, "--format", "{{.Names}}")
+	if err != nil {
+		return err
+	}
+	for _, name := range stringsFields(b) {
+		if name != Container {
+			return fmt.Errorf("Compose 项目含额外容器 %s，拒绝操作", name)
+		}
+	}
+	return nil
+}
+func stringsFields(b []byte) []string { return strings.Fields(string(b)) }
+func (m *Manager) prepareWithNetwork(ctx context.Context, version, network string, runAsRoot bool) error {
+	mode, err := normalizeNetwork(network)
+	if err != nil {
+		return err
+	}
+	if _, err = normalizeImageSelection(version); err != nil {
+		return err
+	}
+	return m.withLock(ctx, func() error {
+		if err := m.CheckReady(ctx); err != nil {
+			return err
+		}
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		if err := m.checkProject(ctx); err != nil {
+			return err
+		}
+		in, err := m.inspect(ctx)
+		if err != nil {
+			return err
+		}
+		if in != nil {
+			return fmt.Errorf("实例已存在，请使用升级入口")
+		}
+		_, err = m.metadata()
+		if err == nil {
+			return fmt.Errorf("镜像已准备，请使用部署或升级入口")
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		for _, p := range m.managedFiles() {
+			if _, err = os.Lstat(p); err == nil {
+				return fmt.Errorf("存在未受管文件 %s，拒绝覆盖", p)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		if err = m.ensureDirs(); err != nil {
+			return err
+		}
+		md, err := m.prepareImage(ctx, version, nil)
+		if err != nil {
+			return err
+		}
+		md.Network = mode
+		md.RunAsRoot = runAsRoot
+		if err = m.probeCapabilities(ctx, md); err != nil {
+			return err
+		}
+		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
+		m.op(phaseCheck, levelInfo, "运行用户", runUserLabel(runAsRoot))
+		if err = m.saveDeploymentParameters(md); err != nil {
+			return err
+		}
+		m.op(phaseResult, levelResult, "准备结果", fmt.Sprintf("Xray %s 已准备", md.RequestedVersion))
+		m.op(phaseResult, levelInfo, "下一步", "服务端配置 → 生成/更新配置，完成后自动启动容器")
+		return nil
+	})
+}
+func (m *Manager) probeCapabilities(ctx context.Context, md Metadata) error {
+	m.op(phaseCheck, levelStep, "镜像能力", "检查服务端与客户端配置支持")
+	keys, err := m.keyPair(ctx, md)
+	if err != nil {
+		return err
+	}
+	uuid, err := newUUID()
+	if err != nil {
+		return err
+	}
+	short, err := randomHex(8)
+	if err != nil {
+		return err
+	}
+	n := model.Node{Core: "xray", ManagedBy: "proxydock", SchemaVersion: model.StateSchemaVersion, Security: "reality", InboundTag: "docker-one", Server: "example.com", Port: 443, SNI: "example.com", Target: "example.com:443", UUID: uuid, UserName: "one", PrivateKey: keys.Private, PublicKey: keys.Public, ShortID: short, XrayFallbackGuard: true, XrayFallbackPort: 62000}
+	server, err := m.codec.RenderServer(n)
+	if err != nil {
+		return err
+	}
+	if err = m.validateBytesFor(ctx, md, server, "服务端配置"); err != nil {
+		return fmt.Errorf("镜像不支持受管服务端配置: %w", err)
+	}
+	client, err := m.codec.RenderClient(n)
+	if err != nil {
+		return err
+	}
+	return m.validateBytesFor(ctx, md, client, "客户端配置")
+}
+func (m *Manager) upgrade(ctx context.Context, version, network, runUser string) error {
+	requested := ""
+	if strings.TrimSpace(network) != "" {
+		mode, err := normalizeNetwork(network)
+		if err != nil {
+			return err
+		}
+		requested = mode
+	}
+	var requestedRoot *bool
+	if strings.TrimSpace(runUser) != "" {
+		root, err := parseRunUser(runUser)
+		if err != nil {
+			return err
+		}
+		requestedRoot = &root
+	}
+	if _, err := normalizeImageSelection(version); err != nil {
+		return err
+	}
+	return m.withLock(ctx, func() error {
+		if err := m.CheckReady(ctx); err != nil {
+			return err
+		}
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		old, err := m.metadata()
+		if err != nil {
+			return err
+		}
+		if err = m.checkCompose(old); err != nil {
+			return err
+		}
+		if err = m.checkProject(ctx); err != nil {
+			return err
+		}
+		in, err := m.inspect(ctx)
+		if err != nil {
+			return err
+		}
+		if in != nil && in.Image != old.ImageID {
+			return fmt.Errorf("实际容器镜像与记录不一致")
+		}
+		if in != nil && old.ComposeSHA256 == "" {
+			return fmt.Errorf("存在容器但缺少受管 Compose 记录")
+		}
+		if old.ComposeSHA256 != "" {
+			if _, err = m.docker(ctx, "image", "inspect", old.ImageID); err != nil {
+				return fmt.Errorf("回滚镜像不在本机，拒绝升级: %w", err)
+			}
+		}
+		selection := version
+		if strings.TrimSpace(selection) == "" {
+			selection = old.imageSelection()
+		}
+		md, err := m.prepareImage(ctx, selection, &old)
+		if err != nil {
+			return err
+		}
+		if requested == networkHost {
+			md.Network = networkHost
+		} else if requested == networkPublish {
+			md.Network = networkPublish
+		} else {
+			md.Network = old.Network
+		}
+		if requestedRoot != nil {
+			md.RunAsRoot = *requestedRoot
+		} else {
+			md.RunAsRoot = old.RunAsRoot
+		}
+		if old.ComposeSHA256 == "" {
+			if md.ImageID != old.ImageID {
+				if err = m.probeCapabilities(ctx, md); err != nil {
+					return err
+				}
+			}
+			if err = m.saveDeploymentParameters(md); err != nil {
+				return err
+			}
+			m.removeReplacedImage(ctx, old, md)
+			m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("Xray %s 已准备", md.RequestedVersion))
+			m.op(phaseResult, levelInfo, "下一步", "服务端配置 → 生成/更新配置，完成后自动启动容器")
+			return nil
+		}
+		if md.ImageID == old.ImageID && md.ImageRef == old.ImageRef {
+			next, composeErr := m.composeFor(md, nil)
+			if composeErr != nil {
+				return composeErr
+			}
+			current, composeErr := readPrivate(m.paths.Compose())
+			if composeErr != nil {
+				return composeErr
+			}
+			if string(current) != string(next) {
+				if err = m.refreshCompose(ctx, md, in); err != nil {
+					return err
+				}
+				m.op(phaseResult, levelResult, "网络方式", networkLabel(md.Network))
+				if requestedRoot != nil && *requestedRoot != old.RunAsRoot {
+					m.op(phaseResult, levelResult, "运行用户", runUserLabel(md.RunAsRoot))
+				}
+				return nil
+			}
+			if md.Channel != old.Channel {
+				md.UpdatedAt = m.now().UTC()
+				if err = saveJSON(m.paths.Metadata(), md); err != nil {
+					return err
+				}
+			}
+			m.op(phaseResult, levelResult, "升级结果", "镜像未变化，无需重建容器")
+			return nil
+		}
+		if err = m.probeCapabilities(ctx, md); err != nil {
+			return err
+		}
+		var state State
+		hasNode := false
+		if s, b, e := m.managedConfig(); e == nil {
+			state = s
+			hasNode = true
+			if err = m.validateBytes(ctx, md, b); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(e) {
+			return e
+		}
+		compose, err := m.composeFor(md, nil)
+		if err != nil {
+			return err
+		}
+		md.ComposeSHA256 = digest(compose)
+		md.DesiredState = "stopped"
+		if in != nil && in.State.Running {
+			md.DesiredState = "running"
+		}
+		j, err := m.begin("upgrade", in)
+		if err != nil {
+			return err
+		}
+		fail := func(e error) error { return m.rollback(j, e) }
+		if err = atomicWrite(m.paths.Compose(), compose, 0600); err != nil {
+			return fail(err)
+		}
+		m.op(phaseApply, levelStep, "写入编排", m.paths.Compose())
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
+			return fail(err)
+		}
+		if err = m.phase(&j, "files-committed"); err != nil {
+			return fail(err)
+		}
+		// Publish the selected user before recreate so file ownership follows it.
+		if err = saveJSON(m.paths.Metadata(), md); err != nil {
+			return fail(err)
+		}
+		if in != nil {
+			args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
+			if in.State.Running {
+				args = append(args, "-d")
+			} else {
+				args = append(args, "--no-start")
+			}
+			args = append(args, Service)
+			if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, args...); err != nil {
+				return fail(err)
+			}
+			if in.State.Running {
+				if !hasNode {
+					return fail(fmt.Errorf("运行实例缺少节点状态"))
+				}
+				ports := hostPorts(state.Node, md.Network)
+				m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+				if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+					return fail(err)
+				}
+				m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+			} else {
+				current, e := m.inspect(ctx)
+				if e != nil || current == nil || current.State.Running || current.Image != md.ImageID {
+					return fail(fmt.Errorf("停止实例升级后状态或镜像异常: %v", e))
+				}
+			}
+		}
+		if hasNode {
+			state.Node.CoreVersion = md.Version
+			state.Node.UpdatedAt = m.now().UTC()
+			if err = m.saveNode(state.Node); err != nil {
+				return fail(err)
+			}
+		}
+		if err = saveJSON(m.paths.Metadata(), md); err != nil {
+			return fail(err)
+		}
+		if err = m.commit(j); err != nil {
+			return fail(err)
+		}
+		m.removeReplacedImage(ctx, old, md)
+		m.op(phaseResult, levelResult, "升级结果", fmt.Sprintf("%s → %s", old.RequestedVersion, md.RequestedVersion))
+		return nil
+	})
+}
+
+func (m *Manager) refreshCompose(ctx context.Context, md Metadata, in *inspection) error {
+	if md.ComposeSHA256 == "" {
+		return m.saveDeploymentParameters(md)
+	}
+	var node *model.Node
+	if s, err := m.LoadState(); err == nil {
+		node = &s.Node
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	running := in != nil && in.State.Running
+	if running && node == nil {
+		return fmt.Errorf("运行实例缺少节点状态")
+	}
+	if running {
+		md.DesiredState = "running"
+	} else if in != nil {
+		md.DesiredState = "stopped"
+	}
+	j, err := m.begin("upgrade", in)
+	if err != nil {
+		return err
+	}
+	fail := func(e error) error { return m.rollback(j, e) }
+	if _, err = m.writeManagedCompose(&md, node); err != nil {
+		return fail(err)
+	}
+	if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "校验编排"}, "config", "--quiet"); err != nil {
+		return fail(fmt.Errorf("Compose 定义校验失败: %w", err))
+	}
+	if err = m.phase(&j, "files-committed"); err != nil {
+		return fail(err)
+	}
+	md.UpdatedAt = m.now().UTC()
+	if err = saveJSON(m.paths.Metadata(), md); err != nil {
+		return fail(err)
+	}
+	if in != nil {
+		args := []string{"up", "--no-deps", "--pull", "never", "--force-recreate"}
+		if running {
+			args = append(args, "-d")
+		} else {
+			args = append(args, "--no-start")
+		}
+		args = append(args, Service)
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重建容器"}, args...); err != nil {
+			return fail(err)
+		}
+		if running {
+			ports := hostPorts(*node, md.Network)
+			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+				return fail(err)
+			}
+			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+		} else {
+			current, err := m.inspect(ctx)
+			if err != nil {
+				return fail(err)
+			}
+			if current == nil || current.State.Running || current.Image != md.ImageID {
+				return fail(fmt.Errorf("停止实例重建后状态或镜像异常"))
+			}
+		}
+	}
+	return m.commit(j)
+}
+
+func (m *Manager) SetRunAsRoot(ctx context.Context, root bool) error {
+	return m.withLock(ctx, func() error {
+		// Selecting root must remain possible even if the current user cannot be
+		// resolved. All ownership, image, mount and Compose checks still apply.
+		md, in, err := m.prepareOperationWithUser(ctx, !root)
+		if err != nil {
+			return err
+		}
+		if md.RunAsRoot == root {
+			if md.ComposeSHA256 == "" {
+				m.op(phaseResult, levelResult, "运行用户", "未变化")
+				return nil
+			}
+			next, err := m.composeFor(md, nil)
+			if err != nil {
+				return err
+			}
+			current, err := readPrivate(m.paths.Compose())
+			if err != nil {
+				return err
+			}
+			if string(current) == string(next) {
+				m.op(phaseResult, levelResult, "运行用户", "未变化")
+				return nil
+			}
+		}
+		m.op(phaseCheck, levelInfo, "运行用户", runUserLabel(root))
+		md.RunAsRoot = root
+		if err = m.refreshCompose(ctx, md, in); err != nil {
+			return err
+		}
+		m.op(phaseResult, levelResult, "更新结果", "已切换为"+runUserLabel(root))
+		return nil
+	})
+}
+
+func (m *Manager) SetNetwork(ctx context.Context, network string) error {
+	mode, err := normalizeNetwork(network)
+	if err != nil {
+		return err
+	}
+	return m.withLock(ctx, func() error {
+		md, in, err := m.prepareOperation(ctx)
+		if err != nil {
+			return err
+		}
+		if canonicalNetwork(md.Network) == mode {
+			if md.ComposeSHA256 == "" {
+				m.op(phaseResult, levelResult, "网络方式", "未变化")
+				return nil
+			}
+			next, err := m.composeFor(md, nil)
+			if err != nil {
+				return err
+			}
+			current, err := readPrivate(m.paths.Compose())
+			if err != nil {
+				return err
+			}
+			if string(current) == string(next) {
+				m.op(phaseResult, levelResult, "网络方式", "未变化")
+				return nil
+			}
+		}
+		m.op(phaseCheck, levelInfo, "网络方式", networkLabel(mode))
+		md.Network = mode
+		if err = m.refreshCompose(ctx, md, in); err != nil {
+			return err
+		}
+		m.op(phaseResult, levelResult, "更新结果", "已切换为"+networkLabel(mode))
+		return nil
+	})
+}
+
+func (m *Manager) Remove(ctx context.Context) error {
+	return m.withLock(ctx, func() error {
+		if err := m.CheckReady(ctx); err != nil {
+			return err
+		}
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		if err := m.reapValidators(ctx); err != nil {
+			return err
+		}
+		if err := m.checkProject(ctx); err != nil {
+			return err
+		}
+		in, err := m.inspect(ctx)
+		if err != nil {
+			return err
+		}
+		if in == nil {
+			if err := m.removeManagedNetwork(ctx); err != nil {
+				return err
+			}
+			m.op(phaseResult, levelResult, "移除结果", "当前没有容器，配置和数据仍保留")
+			return nil
+		}
+		md, err := m.metadata()
+		if err != nil {
+			return err
+		}
+		if err = m.checkCompose(md); err != nil {
+			return err
+		}
+		if _, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "移除容器"}, "down"); err != nil {
+			return err
+		}
+		in, err = m.inspect(ctx)
+		if err != nil {
+			return err
+		}
+		if in != nil {
+			return fmt.Errorf("移除后仍存在容器，数据已保留")
+		}
+		if err = m.removeManagedNetwork(ctx); err != nil {
+			return err
+		}
+		md.DesiredState = "stopped"
+		md.UpdatedAt = m.now().UTC()
+		if err = saveJSON(m.paths.Metadata(), md); err != nil {
+			return err
+		}
+		m.op(phaseApply, levelInfo, "记录状态", "配置和数据保留")
+		m.op(phaseResult, levelResult, "移除结果", "容器已移除，配置、凭据和备份已保留")
+		return nil
+	})
+}
+func (m *Manager) CheckCleanup(ctx context.Context) error {
+	return m.checkCleanup(ctx, "")
+}
+
+func (m *Manager) inspectCleanupContainer(ctx context.Context, approvedID string) (*inspection, error) {
+	return m.inspectWithCheck(ctx, func(in *inspection) error {
+		if approvedID != "" && in.ID != approvedID {
+			return fmt.Errorf("同名容器已更换，请重新确认")
+		}
+		if err := m.checkOwned(in); err != nil && (approvedID == "" || in.ID != approvedID) {
+			return err
+		}
+		return nil
+	})
+}
+
+func (m *Manager) checkCleanup(ctx context.Context, approvedID string) error {
+	if err := m.rootCheck(); err != nil {
+		return err
+	}
+	if _, err := m.lookPath("docker"); err != nil {
+		if !m.hasData() {
+			return nil
+		}
+		return fmt.Errorf("存在 Docker 数据但 Docker 不可用，无法确认容器状态")
+	}
+	if err := m.CheckReady(ctx); err != nil {
+		return err
+	}
+	if err := m.checkProject(ctx); err != nil {
+		return err
+	}
+	in, err := m.inspectCleanupContainer(ctx, approvedID)
+	if err != nil {
+		return err
+	}
+	b, err := m.docker(ctx, "container", "ls", "--all", "--no-trunc", "--filter", "label=io.proxydock.instance="+Instance, "--format", "{{.ID}}")
+	if err != nil {
+		return err
+	}
+	for _, id := range stringsFields(b) {
+		if in == nil || id != in.ID {
+			return fmt.Errorf("仍存在 Docker Xray 临时/受管容器，请先恢复或移除")
+		}
+	}
+	if _, err = os.Stat(m.paths.Journal()); err == nil {
+		return fmt.Errorf("存在未完成事务，请先恢复")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
+		if err := safePath(path); err != nil {
+			return err
+		}
+	}
+	pending, err := m.cleanupPending()
+	if err != nil {
+		return err
+	}
+	if m.hasData() && !pending {
+		if err := m.checkOwner(); err != nil {
+			return fmt.Errorf("缺少有效归属记录，拒绝清理: %w", err)
+		}
+		if md, err := m.metadata(); err == nil {
+			if err = m.checkCompose(md); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+func (m *Manager) Cleanup(ctx context.Context) error {
+	lease, err := m.BeginCleanup(ctx)
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	return lease.Cleanup()
+}
+
+// CleanupLease holds the Docker lock across entry-layer coordination. The
+// module never calls back into native business code.
+type CleanupLease struct {
+	manager             *Manager
+	ctx                 context.Context
+	release             func()
+	conflict            *inspection
+	approvedContainerID string
+}
+
+func (m *Manager) BeginCleanup(ctx context.Context) (*CleanupLease, error) {
+	release, err := m.acquireLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var conflict *inspection
+	if _, err := m.lookPath("docker"); err == nil {
+		if err = m.checkDocker(); err == nil {
+			err = m.reapValidators(ctx)
+		}
+		if err != nil {
+			release()
+			return nil, err
+		}
+		in, err := m.inspectWithCheck(ctx, func(*inspection) error { return nil })
+		if err != nil {
+			release()
+			return nil, err
+		}
+		if in != nil && m.checkOwned(in) != nil {
+			conflict = in
+		}
+	}
+	// Eligibility is read-only. A conflicting container still needs explicit
+	// confirmation through this lease before any stop or removal is allowed.
+	conflictID := ""
+	if conflict != nil {
+		conflictID = conflict.ID
+	}
+	if err = m.checkCleanup(ctx, conflictID); err != nil {
+		release()
+		return nil, err
+	}
+	return &CleanupLease{manager: m, ctx: ctx, release: release, conflict: conflict}, nil
+}
+func (l *CleanupLease) Close() {
+	if l.release != nil {
+		l.release()
+		l.release = nil
+	}
+}
+func (l *CleanupLease) Cleanup() error {
+	if l.release == nil {
+		return fmt.Errorf("清理锁已释放")
+	}
+	if l.conflict != nil && l.approvedContainerID != l.conflict.ID {
+		return fmt.Errorf("同名容器不属于 ProxyDock，需明确确认后才能清理")
+	}
+	return l.manager.cleanupLocked(l.ctx, l.approvedContainerID)
+}
+func (m *Manager) cleanupLocked(ctx context.Context, approvedID string) error {
+	m.breakOp()
+	m.op(phaseCheck, levelInfo, "检查清理", "核验实例归属和数据目录")
+	if err := m.checkCleanup(ctx, approvedID); err != nil {
+		return err
+	}
+	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
+		if err := safePath(path); err != nil {
+			return err
+		}
+	}
+	if _, err := m.lookPath("docker"); err == nil {
+		in, err := m.inspectCleanupContainer(ctx, approvedID)
+		if err != nil {
+			return err
+		}
+		if in != nil {
+			if in.State.Running || in.State.Restarting {
+				if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "container", "stop", in.ID); err != nil {
+					return fmt.Errorf("停止容器失败，未删除实例数据: %w", err)
+				}
+				current, err := m.inspectContainerWithCheck(ctx, in.ID, func(current *inspection) error {
+					if current.ID != in.ID {
+						return fmt.Errorf("同名容器已更换，请重新确认")
+					}
+					if err := m.checkOwned(current); err != nil && (approvedID == "" || current.ID != approvedID) {
+						return err
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				if current.State.Running || current.State.Restarting {
+					return fmt.Errorf("容器尚未停止，未删除实例数据")
+				}
+			}
+			if _, err := m.dockerOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "移除容器"}, "container", "rm", in.ID); err != nil {
+				return fmt.Errorf("移除容器失败，未删除实例数据: %w", err)
+			}
+			current, err := m.inspectCleanupContainer(ctx, approvedID)
+			if err != nil {
+				return err
+			}
+			if current != nil {
+				return fmt.Errorf("移除后仍存在容器，未删除实例数据")
+			}
+		}
+		if err := m.removeManagedNetwork(ctx); err != nil {
+			return err
+		}
+	}
+	if m.hasData() {
+		if err := m.saveCleanupRecord(); err != nil {
+			return err
+		}
+	}
+	retained, err := m.cleanupRecordTemps()
+	if err != nil {
+		return err
+	}
+	for _, path := range []string{m.paths.Deploy(), m.paths.Data()} {
+		m.op(phaseApply, levelStep, "删除数据", path)
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+	}
+	if err := removePrivateFile(m.paths.CleanupRecord()); err != nil {
+		return err
+	}
+	if err := m.cleanupEmptyParents(); err != nil {
+		return err
+	}
+	m.op(phaseResult, levelInfo, "保留锁文件", m.paths.Lock()+"（并发保护）")
+	m.op(phaseResult, levelInfo, "保留资源", "ProxyDock 程序、Docker 镜像及用户导出配置（超出本次数据清理范围）")
+	result := "实例数据已清理，容器已移除；其他容器和镜像未改动"
+	if retained > 0 {
+		result += fmt.Sprintf("；保留 %d 个无法确认安全删除的残留", retained)
+	}
+	m.op(phaseResult, levelResult, "清理结果", result)
+	return nil
+}
+
+// Bounded operations deliberately preserve user stop state.
+func (m *Manager) Service(ctx context.Context, action string) ([]byte, error) {
+	switch action {
+	case "logs", "start", "stop", "restart":
+	default:
+		return nil, fmt.Errorf("服务操作无效")
+	}
+	if action == "logs" {
+		in, err := m.logContainer(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return m.docker(ctx, "logs", "--tail", "100", in.ID)
+	}
+	var output []byte
+	err := m.withLock(ctx, func() error {
+		if err := m.CheckReady(ctx); err != nil {
+			return err
+		}
+		if err := m.recoverLocked(ctx); err != nil {
+			return err
+		}
+		md, err := m.metadata()
+		if err != nil {
+			return err
+		}
+		if err = m.checkCompose(md); err != nil {
+			return err
+		}
+		if err = m.checkProject(ctx); err != nil {
+			return err
+		}
+		in, err := m.inspect(ctx)
+		if err != nil {
+			return err
+		}
+		if md.ComposeSHA256 == "" {
+			if in != nil {
+				return fmt.Errorf("存在容器但缺少受管 Compose 记录")
+			}
+			if action == "stop" {
+				m.op(phaseResult, levelResult, "服务结果", "当前没有容器")
+				return nil
+			}
+			return fmt.Errorf("尚未生成节点配置，请先生成配置")
+		}
+		// Stop must not recreate a running container. Start and restart move an
+		// authentic root pin onto the image user before they use the container.
+		if action == "start" || action == "restart" {
+			migrated, err := m.reconcileContainerUser(ctx, &md, in)
+			if err != nil {
+				return err
+			}
+			if migrated {
+				if in, err = m.inspect(ctx); err != nil {
+					return err
+				}
+			}
+		}
+		if action == "restart" && in == nil {
+			return fmt.Errorf("容器已移除，请先启动")
+		}
+		if action == "stop" && (in == nil || !in.State.Running && !in.State.Restarting) && md.DesiredState == "stopped" {
+			m.op(phaseResult, levelResult, "服务结果", "容器已停止")
+			return nil
+		}
+		var state State
+		if action != "stop" {
+			if in != nil && in.Image != md.ImageID {
+				return fmt.Errorf("实际容器镜像与记录不一致")
+			}
+			var b []byte
+			state, b, err = m.managedConfig()
+			if err != nil {
+				return err
+			}
+			if action == "start" && in != nil && in.State.Running && !in.State.Paused && !in.State.Restarting && in.State.Error == "" && md.DesiredState == "running" {
+				m.op(phaseResult, levelResult, "服务结果", "容器已运行")
+				return nil
+			}
+			if err = m.validateBytes(ctx, md, b); err != nil {
+				return err
+			}
+		}
+		// Service controls keep the existing definition and only atomically
+		// update desired_state. They do not require file snapshots or rollback.
+		switch action {
+		case "start":
+			output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "启动容器"}, "up", "-d", "--no-deps", "--pull", "never", Service)
+		case "stop":
+			if in != nil {
+				output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "停止容器"}, "stop", Service)
+			}
+		case "restart":
+			output, err = m.composeOp(ctx, opLabel{phase: phaseApply, level: levelStep, name: "重启容器"}, "restart", Service)
+		}
+		if err != nil {
+			return err
+		}
+		if action != "stop" {
+			ports := hostPorts(state.Node, md.Network)
+			m.op(phaseApply, levelInfo, "稳定检查", healthStartDetail(ports))
+			if err = m.healthCheck(ctx, ports, md.ImageID); err != nil {
+				return err
+			}
+			m.op(phaseApply, levelResult, "运行状态", "运行中，监听端口正常")
+			md.DesiredState = "running"
+		} else {
+			current, e := m.inspect(ctx)
+			if e != nil || current != nil && current.State.Running {
+				return fmt.Errorf("停止容器后状态异常: %v", e)
+			}
+			md.DesiredState = "stopped"
+			m.op(phaseApply, levelResult, "运行状态", "已停止")
+		}
+		md.UpdatedAt = m.now().UTC()
+		if err = saveJSON(m.paths.Metadata(), md); err != nil {
+			return err
+		}
+		result := "已重启"
+		switch action {
+		case "start":
+			result = "已启动"
+		case "stop":
+			result = "已停止"
+		}
+		m.op(phaseResult, levelResult, "服务结果", result)
+		return nil
+	})
+	return output, err
+}
+func (m *Manager) followLogs(ctx context.Context, u *ui) error {
+	followCtx, stop := borrowInterrupt(ctx)
+	err := m.FollowLogs(followCtx)
+	// The log process can exit on the terminal's SIGINT before followCtx records it.
+	interrupted := ctx.Err() == nil && (followCtx.Err() != nil || exitedOnInterrupt(err))
+	stop()
+	if u != nil {
+		u.discardPendingInput()
+	}
+	if interrupted {
+		return nil
+	}
+	return err
+}
+
+func (m *Manager) FollowLogs(ctx context.Context) error {
+	in, err := m.logContainer(ctx)
+	if err != nil {
+		return err
+	}
+	return m.dockerStream(ctx, m.out, m.errOut, "logs", "--tail", "100", "--follow", in.ID)
+}
+
+func (m *Manager) logContainer(ctx context.Context) (*inspection, error) {
+	if err := m.checkDocker(); err != nil {
+		return nil, err
+	}
+	in, err := m.inspect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, fmt.Errorf("容器已移除，没有可查看的日志")
+	}
+	return in, nil
+}

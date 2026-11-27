@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 可选 Tag。留空时执行普通构建
+        required: false
+        type: string
+
+run-name: ${{ (github.event_name == 'workflow_dispatch' && inputs.tag == '' && '手动构建') || format('发布 {0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ (github.event_name == 'push' && github.ref_name) || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || (github.event_name == 'push' && github.ref_name || '') }}
+
+jobs:
+  metadata:
+    name: Prepare metadata
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.metadata.outputs.publish }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      build_date: ${{ steps.metadata.outputs.build_date }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Read metadata
+        id: metadata
+        shell: bash
+        run: |
+          tag="${RELEASE_TAG}"
+          tag="${tag#"${tag%%[![:space:]]*}"}"
+          tag="${tag%"${tag##*[![:space:]]}"}"
+          if [[ -n "${tag}" ]]; then
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "release tag must use semantic version form such as v1.2.3 or v1.2.3-rc.1" >&2
+              exit 1
+            fi
+            if ! git show-ref --verify --quiet "refs/tags/${tag}"; then
+              echo "release tag does not exist: ${tag}" >&2
+              exit 1
+            fi
+            printf 'publish=true\n' >> "${GITHUB_OUTPUT}"
+          else
+            printf 'publish=false\n' >> "${GITHUB_OUTPUT}"
+          fi
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          printf 'build_date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    needs: metadata
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.metadata.outputs.tag }}
+      COMMIT: ${{ needs.metadata.outputs.commit }}
+      BUILD_DATE: ${{ needs.metadata.outputs.build_date }}
+      PUBLISH: ${{ needs.metadata.outputs.publish }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.metadata.outputs.publish == 'true' && needs.metadata.outputs.tag || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          if [[ "${PUBLISH}" == "true" ]]; then
+            OUTPUT="dist/proxydock_linux_${GOARCH}_${VERSION}" ./scripts/build.sh
+          else
+            OUTPUT="dist/proxydock-linux-${GOARCH}" ./scripts/build.sh
+          fi
+
+      - name: Verify embedded version
+        if: matrix.arch == 'amd64' && needs.metadata.outputs.publish == 'true'
+        run: |
+          version_output=$(dist/proxydock_linux_${{ matrix.arch }}_${VERSION} --version)
+          [[ "${version_output%%$'\n'*}" == "proxydock ${VERSION}" ]]
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.publish == 'true' && format('release-linux-{0}', matrix.arch) || format('proxydock-linux-{0}', matrix.arch) }}
+          path: dist/proxydock*
+          if-no-files-found: error
+          retention-days: ${{ needs.metadata.outputs.publish == 'true' && 7 || 14 }}
+
+  publish:
+    name: Publish GitHub Release
+    needs: [metadata, build]
+    if: needs.metadata.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate version file and checksum manifest
+        working-directory: dist
+        run: |
+          printf '%s\n' "${RELEASE_TAG}" > version
+          cp ../scripts/install.sh install.sh
+          sha256sum proxydock_linux_*_"${RELEASE_TAG}" version install.sh > SHA256SUMS
+
+      - name: Generate direct commit notes
+        id: release_notes
+        shell: bash
+        run: |
+          previous_tag=""
+          while IFS= read -r tag; do
+            if [[ "${tag}" != "${RELEASE_TAG}" && "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+              previous_tag=${tag}
+              break
+            fi
+          done < <(git tag --merged "${RELEASE_TAG}" --sort=-version:refname)
+
+          if [[ -n "${previous_tag}" ]]; then
+            commit_range="${previous_tag}..${RELEASE_TAG}"
+          else
+            commit_range="${RELEASE_TAG}"
+          fi
+
+          notes_file="${RUNNER_TEMP}/proxydock-direct-commits.md"
+          commit_count=$(git rev-list --no-merges --count "${commit_range}")
+          {
+            printf '## Direct commits\n\n'
+            if [[ ${commit_count} -gt 0 ]]; then
+              git log --no-merges --format="- %s ([\`%h\`](https://github.com/${GITHUB_REPOSITORY}/commit/%H))" "${commit_range}"
+            else
+              printf -- '- No direct commits.\n'
+            fi
+          } > "${notes_file}"
+
+          printf 'previous_tag=%s\n' "${previous_tag}" >> "${GITHUB_OUTPUT}"
+          printf 'notes_file=%s\n' "${notes_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREVIOUS_TAG: ${{ steps.release_notes.outputs.previous_tag }}
+          NOTES_FILE: ${{ steps.release_notes.outputs.notes_file }}
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist/proxydock_linux_*_"${RELEASE_TAG}" dist/version dist/install.sh dist/SHA256SUMS --clobber
+          else
+            release_args=(
+              --verify-tag
+              --generate-notes
+              --title "ProxyDock ${RELEASE_TAG}"
+              --notes "$(<"${NOTES_FILE}")"
+            )
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              release_args+=(--notes-start-tag "${PREVIOUS_TAG}")
+            fi
+            if [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+              release_args+=(--prerelease)
+            fi
+            gh release create "${RELEASE_TAG}" \
+              dist/proxydock_linux_*_"${RELEASE_TAG}" dist/version dist/install.sh dist/SHA256SUMS \
+              "${release_args[@]}"
+          fi
