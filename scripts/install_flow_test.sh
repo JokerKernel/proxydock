@@ -129,7 +129,7 @@ test_successful_upgrade_has_clear_progress_and_completion() (
   fixture
   fake_version=v1.2.2
   fake_installed=true
-  PROXYDOCK_VERSION=v1.2.3
+  PROXYDOCK_VERSION=v1.2.4
   printf 'original program\n' > "${install_path}"
   # Real version output includes build metadata; installation should only show
   # the concise success line after validating the candidate.
@@ -138,7 +138,7 @@ test_successful_upgrade_has_clear_progress_and_completion() (
   release_checksum=${release_checksum%% *}
   printf -v manifest_body '%s  %s\n' "${release_checksum}" "${asset_name}"
   local output
-  output=$(run_installer)
+  output=$(run_installer v1.2.3 --yes)
   cmp -s "${install_path}" "${fixture_root}/release" || fail "verified program was not installed"
   [[ $(stat -c '%a' "${install_path}") == 755 ]] || fail "installed program permissions are not 0755"
   local expected

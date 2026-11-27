@@ -53,6 +53,7 @@ fi
 current_version=""
 current_installed=false
 requested_action="install"
+version_argument=""
 
 selected_asset=""
 selected_checksum=""
@@ -255,14 +256,15 @@ download_asset() {
 
 print_usage() {
   cat <<'USAGE'
-用法：bash install.sh [uninstall] [--yes]
+用法：bash install.sh [版本 | uninstall] [--yes]
 
-默认安装或更新 ProxyDock；uninstall 仅卸载管理程序。
+默认安装或更新到最新正式版，可传入发布标签，例如 v1.2.3。
+uninstall 仅卸载管理程序。
   -h, --help       显示帮助，无需 root 或网络
   -y, --yes        兼容自动化调用，无需交互确认
 
 环境变量：
-  PROXYDOCK_VERSION  latest（默认）或指定发布标签，如 v1.2.3
+  PROXYDOCK_VERSION  未传入版本参数时使用，默认 latest
   PROXYDOCK_COLOR    auto（默认）、always、never；自动模式遵循 NO_COLOR
 USAGE
 }
@@ -318,6 +320,7 @@ uninstall_proxydock() {
 }
 
 parse_arguments() {
+  version_argument=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --yes | -y)
@@ -331,11 +334,20 @@ parse_arguments() {
         requested_action="help"
         return
         ;;
+      v[0-9]*)
+        [[ -z "${version_argument}" ]] || die "只能指定一个版本"
+        valid_version "$1" || die "版本标签格式无效：$1"
+        version_argument=$1
+        shift
+        ;;
       *)
         die "未知参数：$1"
         ;;
     esac
   done
+  if [[ "${requested_action}" == "uninstall" && -n "${version_argument}" ]]; then
+    die "卸载不能指定版本"
+  fi
 }
 
 detect_current_version() {
@@ -670,7 +682,7 @@ main() {
 
   local architecture
   architecture=$(detect_architecture)
-  local requested_version=${PROXYDOCK_VERSION:-latest}
+  local requested_version=${version_argument:-${PROXYDOCK_VERSION:-latest}}
   resolved_version=""
   local release_base
   case "${requested_version}" in

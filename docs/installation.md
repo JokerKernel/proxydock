@@ -24,10 +24,12 @@ sudo bash /tmp/proxydock-install.sh
 ## 固定版本
 
 ```bash
-# VERSION 替换为本仓库已有的发布标签，例如 v1.0.0
-sudo PROXYDOCK_VERSION=VERSION bash /tmp/proxydock-install.sh
-sudo proxydock update --version VERSION
+curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | sudo bash -s -- v1.0.0
 ```
+
+把 `v1.0.0` 换成所需的发布标签。已下载脚本时，可运行 `sudo bash /tmp/proxydock-install.sh v1.0.0`。已安装 ProxyDock 时，可运行 `sudo proxydock update --version v1.0.0`。
+
+命令行版本参数优先于 `PROXYDOCK_VERSION`。
 
 版本使用带 `v` 前缀的发布标签。同版本直接跳过。当前程序版本更高时也跳过，避免降级。程序版本与 Xray 镜像版本独立。
 

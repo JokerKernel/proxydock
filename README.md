@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/install.sh | \
-  sudo PROXYDOCK_VERSION=v1.0.0 bash
+  sudo bash -s -- v1.0.0
 ```
 
 版本号应替换为本仓库已发布的版本。安装和卸载见[安装与更新指南](docs/installation.md)。

@@ -119,6 +119,12 @@ test_arguments() (
   [[ "${output}" == *"未知参数"* ]] || fail "wrong argument error: ${output}"
   if output=$(parse_arguments --version v1.2.3 2>&1); then fail "version flag accepted"; fi
   [[ "${output}" == *"未知参数"* ]] || fail "version flag error: ${output}"
+
+  if output=$(parse_arguments v1.2.3 v1.2.4 2>&1); then fail "multiple version tags accepted"; fi
+  [[ "${output}" == *"只能指定一个版本"* ]] || fail "multiple version tags error: ${output}"
+
+  if output=$(parse_arguments v1.2.3 uninstall 2>&1); then fail "version accepted for uninstall"; fi
+  [[ "${output}" == *"卸载不能指定版本"* ]] || fail "uninstall with version error: ${output}"
 )
 
 test_uninstall_removes_only_proxydock_binary() (
