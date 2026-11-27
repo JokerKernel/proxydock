@@ -75,7 +75,7 @@ sudo bash /tmp/proxydock-install.sh uninstall
 
 ## 从源码安装
 
-需要 Go 1.23 或更高版本：
+需要 Go 1.27.4 或更高版本：
 
 ```bash
 ./scripts/build.sh

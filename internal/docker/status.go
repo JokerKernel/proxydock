@@ -46,9 +46,10 @@ type inspection struct {
 	}
 }
 
-type dockerQueryError struct{ error }
+type dockerQueryError struct{ cause error }
 
-func (e *dockerQueryError) Unwrap() error { return e.error }
+func (e *dockerQueryError) Error() string { return e.cause.Error() }
+func (e *dockerQueryError) Unwrap() error { return e.cause }
 
 type Status struct {
 	Label          string `json:"label"`

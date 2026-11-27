@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/JokerKernel/proxydock/main/scripts/
 
 ## 从源码安装
 
-需要 Go 1.23 或更高版本，在仓库根目录运行：
+需要 Go 1.27.4 或更高版本，在仓库根目录运行：
 
 ```bash
 ./scripts/build.sh

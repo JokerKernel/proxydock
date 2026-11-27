@@ -29,7 +29,7 @@ Go 模块为 `proxydock`，依赖标准库和 Cobra。Docker 子包的依赖边�
 
 ## 构建与验证
 
-需要 Go 1.23 或更高版本：
+需要 Go 1.27.4 或更高版本：
 
 ```bash
 ./scripts/build.sh
